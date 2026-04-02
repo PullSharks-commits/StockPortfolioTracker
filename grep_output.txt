@@ -1,0 +1,96 @@
+58:  activeTab
+98:            <span>{getCurrencySymbol(activeTab)}</span>
+109:          formatCurrency(holding.displayAvgPrice, activeTab)
+113:        {formatCurrency(holding.costBasis, activeTab)}
+117:          {formatCurrency(holding.currentPrice, activeTab)}
+133:          {formatCurrency(holding.dayChange, activeTab, true)}
+137:        {formatCurrency(holding.currentValue, activeTab)}
+151:          {formatCurrency(holding.profitLoss, activeTab, true)}
+269:const CustomTooltip = ({ active, payload, label, activeTab }: any) => {
+286:              {formatCurrency(value, activeTab)}
+295:              {formatCurrency(profitLoss, activeTab, true)}
+348:const FinancialCalendar = ({ earningsEvents, metadata, className, onResize, onRemove, size, activeTab }: { earningsEvents: EarningsEvent[], metadata: any, className?: string, onResize?: () => void, onRemove?: () => void, size?: number, activeTab: string }) => {
+476:                            <div className="text-[8px] text-zinc-500 font-mono">EST: {getCurrencySymbol(activeTab)}{event.estimate.toFixed(2)}</div>
+489:                              <span className="font-mono">{event.estimate ? `${getCurrencySymbol(activeTab)}${event.estimate.toFixed(2)}` : 'N/A'}</span>
+493:                              <span className="font-mono">{event.high ? `${getCurrencySymbol(activeTab)}${event.high.toFixed(2)}` : 'N/A'} / {event.low ? `${getCurrencySymbol(activeTab)}${event.low.toFixed(2)}` : 'N/A'}</span>
+562:  activeTab, 
+570:  activeTab: string, 
+678:                  activeTab === tab ? "bg-indigo-50/30 border-indigo-100 ring-1 ring-indigo-100" : "bg-white border-zinc-100"
+682:                    {activeTab === tab && <span className="text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded-full uppercase tracking-tighter">Active</span>}
+764:  const [activeTab, setActiveTab] = useState<'global' | 'india' | 'australia'>('global');
+767:    return allHoldings.filter(h => (h.portfolioType || 'global') === activeTab);
+768:  }, [allHoldings, activeTab]);
+993:  const benchmarkTicker = tabSettings[activeTab]?.benchmark || 'SPY';
+994:  const activeCurrency = tabSettings[activeTab]?.currency || (activeTab === 'india' ? 'INR' : activeTab === 'australia' ? 'AUD' : 'USD');
+1101:        const docsToDelete = snapshot.docs.filter(d => (d.data().portfolioType || 'global') === activeTab);
+1110:            portfolioType: activeTab,
+1438:          avgPriceCurrency: activeTab === 'india' ? 'INR' : (activeTab === 'australia' ? 'AUD' : 'USD'),
+1440:          portfolioType: activeTab,
+1561:          Average Price: ${getCurrencySymbol(activeTab)}${holding.displayAvgPrice}
+1562:          Current Price: ${getCurrencySymbol(activeTab)}${holding.currentPrice}
+1563:          Current Value: ${getCurrencySymbol(activeTab)}${holding.currentValue}
+1564:          Profit/Loss: ${getCurrencySymbol(activeTab)}${holding.profitLoss} (${holding.profitLossPercent.toFixed(2)}%)
+1608:        - Total Value: ${formatCurrency(totalValue, activeTab)}
+1609:        - Total Profit/Loss: ${formatCurrency(totalProfit, activeTab, true)} (${totalProfitPercent.toFixed(2)}%)
+1708:                activeTab === 'india'
+1710:                  : activeTab === 'australia'
+1751:                activeTab === 'india'
+1757:                  : activeTab === 'australia'
+1827:      const docsToDelete = snapshot.docs.filter(d => (d.data().portfolioType || 'global') === activeTab);
+1854:          where('portfolioType', '==', activeTab)
+1888:        avgPriceCurrency: holding.currency || (activeTab === 'india' ? 'INR' : (activeTab === 'australia' ? 'AUD' : 'USD')),
+1890:        portfolioType: activeTab,
+1907:      const targetCurrency = activeTab === 'australia' ? 'AUD' : (activeTab === 'india' ? 'INR' : 'USD');
+1932:        if (activeTab === 'australia' && storedCurrency !== 'AUD') {
+2020:    const targetCurrency = activeTab === 'australia' ? 'AUD' : (activeTab === 'india' ? 'INR' : 'USD');
+2087:  }, [allHoldings, quotes, activeTab]);
+2289:        activeTab={activeTab}
+2338:                <span className="text-2xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, activeTab)}</span>
+2344:                    {formatCurrency(combinedStats.totalProfitLoss, activeTab, true)}
+2355:                    {formatCurrency(combinedStats.totalDayChange, activeTab, true)}
+2368:            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+2374:            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'india' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+2380:            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+2484:              [activeTab]: {
+2485:                ...tabSettings[activeTab],
+2496:          activeTab={activeTab}
+2497:          riskProfile={tabSettings[activeTab]?.riskProfile}
+2498:          targetReturn={tabSettings[activeTab]?.targetReturn}
+2607:                            <XAxis type="number" dataKey="cost" name="Investment Cost" tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
+2608:                            <YAxis type="number" dataKey="value" name="Market Value" tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
+2617:                                      Cost: {formatCurrency(data.cost, activeTab)}
+2620:                                      Value: {formatCurrency(data.value, activeTab)}
+2624:                                        {formatCurrency(data.profitLoss, activeTab, true)}
+2680:                              content={chartView === 'asset' ? <CustomTooltip activeTab={activeTab} /> : ({ active, payload }) => {
+2686:                                        Value: {formatCurrency(payload[0].value as number, activeTab)}
+2710:                              tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
+2713:                              content={chartView === 'asset' ? <CustomTooltip activeTab={activeTab} /> : ({ active, payload }) => {
+2719:                                        Value: {formatCurrency(payload[0].value as number, activeTab)}
+2753:                            {formatCurrency(portfolioStats.totalValue, activeTab, false, 0)}
+2795:                                        Cost: {formatCurrency(payload[0].value as number, activeTab)}
+2819:                              tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
+2828:                                        Cost: {formatCurrency(payload[0].value as number, activeTab)}
+2855:                            {formatCurrency(portfolioStats.totalCost, activeTab, false, 0)}
+2888:                                  {formatCurrency(entry.value, activeTab, false, 0)}
+2899:                                  {formatCurrency(costValue, activeTab, false, 0)}
+2937:                        activeTab={activeTab}
+2973:                        {renderSortableHeader(`Avg Cost (${getCurrencySymbol(activeTab).trim()})`, 'displayAvgPrice')}
+2974:                        {renderSortableHeader(`Investment Cost (${getCurrencySymbol(activeTab).trim()})`, 'costBasis')}
+2975:                        {renderSortableHeader(`Price (${getCurrencySymbol(activeTab).trim()})`, 'currentPrice')}
+2976:                        {renderSortableHeader(`Day Change (${getCurrencySymbol(activeTab).trim()})`, 'dayChange')}
+2977:                        {renderSortableHeader(`Total Value (${getCurrencySymbol(activeTab).trim()})`, 'currentValue')}
+2978:                        {renderSortableHeader(`Total Return (${getCurrencySymbol(activeTab).trim()})`, 'profitLoss')}
+3029:                                <span>{getCurrencySymbol(activeTab)}</span>
+3040:                              formatCurrency(holding.displayAvgPrice, activeTab)
+3044:                            {formatCurrency(holding.costBasis, activeTab)}
+3048:                              {formatCurrency(holding.currentPrice, activeTab)}
+3064:                              {formatCurrency(holding.dayChange, activeTab, true)}
+3068:                            {formatCurrency(holding.currentValue, activeTab)}
+3082:                              {formatCurrency(holding.profitLoss, activeTab, true)}
+3235:                    <label htmlFor="avgPrice" className="block text-sm font-medium text-zinc-700 mb-1">{transactionType === 'buy' ? 'Avg Cost' : 'Sell Price'} ({getCurrencySymbol(activeTab)})</label>
+3504:                                    tickFormatter={(val) => `${getCurrencySymbol(activeTab)}${(val / 1e9).toFixed(1)}B`}
+3507:                                    formatter={(value: number, name: string) => [`${getCurrencySymbol(activeTab)}${(value / 1e9).toFixed(2)}B`, name]}
+3529:                                    tickFormatter={(val) => `${getCurrencySymbol(activeTab)}${(val / 1e9).toFixed(1)}B`}
+3532:                                    formatter={(value: number, name: string) => [`${getCurrencySymbol(activeTab)}${(value / 1e9).toFixed(2)}B`, name]}
+3616:                            {formatCurrency(tx.price, activeTab)}
+3619:                            {formatCurrency(tx.shares * tx.price, activeTab)}

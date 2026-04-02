@@ -1,0 +1,5 @@
+{
+  "name": "Stock Portfolio Tracker",
+  "description": "A web application to manage and track your stock portfolio with real-time prices.",
+  "requestFramePermissions": []
+}

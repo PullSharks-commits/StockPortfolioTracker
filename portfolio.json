@@ -1,0 +1,17 @@
+[
+  {
+    "ticker": "AAPL",
+    "shares": 10,
+    "avg_price": 150.0
+  },
+  {
+    "ticker": "MSFT",
+    "shares": 5,
+    "avg_price": 300.0
+  },
+  {
+    "ticker": "GOOGL",
+    "shares": 8,
+    "avg_price": 120.0
+  }
+]

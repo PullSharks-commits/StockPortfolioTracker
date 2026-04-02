@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "Holding": {
+      "title": "Holding",
+      "description": "A stock holding in the user's portfolio",
+      "type": "object",
+      "properties": {
+        "ticker": { "type": "string", "description": "Stock ticker symbol" },
+        "shares": { "type": "number", "description": "Number of shares owned" },
+        "avg_price": { "type": "number", "description": "Average cost per share" },
+        "avgPriceCurrency": { "type": "string", "description": "The currency of the average price (e.g., 'AUD', 'USD', 'INR')" },
+        "userId": { "type": "string", "description": "The owner's user ID" },
+        "portfolioType": { "type": "string", "description": "The portfolio tab this holding belongs to (global, india, australia)" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["ticker", "shares", "avg_price", "userId"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A buy or sell transaction",
+      "type": "object",
+      "properties": {
+        "holdingId": { "type": "string", "description": "ID of the associated holding" },
+        "type": { "type": "string", "enum": ["buy", "sell"], "description": "Transaction type" },
+        "shares": { "type": "number", "description": "Number of shares traded" },
+        "price": { "type": "number", "description": "Price per share" },
+        "date": { "type": "string", "format": "date-time", "description": "Transaction date" },
+        "userId": { "type": "string", "description": "The owner's user ID" }
+      },
+      "required": ["holdingId", "type", "shares", "price", "date", "userId"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "User profile and portfolio settings",
+      "type": "object",
+      "properties": {
+        "tabs": {
+          "type": "object",
+          "description": "Tab-specific investment settings"
+        },
+        "user": {
+          "type": "object",
+          "description": "User profile information",
+          "properties": {
+            "displayName": { "type": "string" },
+            "avatarUrl": { "type": "string" },
+            "showCombinedSummary": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "holdings": {
+      "schema": "Holding",
+      "description": "User stock holdings"
+    },
+    "transactions": {
+      "schema": "Transaction",
+      "description": "History of portfolio transactions"
+    },
+    "settings": {
+      "schema": "Settings",
+      "description": "User-specific application settings"
+    }
+  }
+}
