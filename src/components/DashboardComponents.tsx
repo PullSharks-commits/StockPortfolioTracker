@@ -1,6 +1,7 @@
 import React, { memo, useState } from 'react';
 import { TrendingUp, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
+import ThreeDBarChart from './ThreeDBarChart';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -83,6 +84,7 @@ export const PortfolioSummary = memo(({
   benchmarkYtdReturn,
   onBenchmarkChange,
   activeCurrency,
+  onCurrencyChange,
   riskProfile,
   targetReturn
 }: {
@@ -97,6 +99,7 @@ export const PortfolioSummary = memo(({
   benchmarkYtdReturn?: number;
   onBenchmarkChange: (ticker: string) => void;
   activeCurrency: string;
+  onCurrencyChange: (currency: string) => void;
   riskProfile?: string;
   targetReturn?: number;
 }) => {
@@ -122,8 +125,22 @@ export const PortfolioSummary = memo(({
             <Briefcase className="w-5 h-5" />
             <span className="text-sm font-semibold uppercase tracking-widest">Total Portfolio Value</span>
           </div>
-          <div className="text-5xl md:text-6xl lg:text-7xl font-light tracking-tight text-zinc-900">
-            {formatCurrency(totalValue, activeCurrency)}
+          <div className="flex items-center gap-4 text-5xl md:text-6xl lg:text-7xl font-light tracking-tight text-zinc-900 group">
+            <span>{formatCurrency(totalValue, activeCurrency)}</span>
+            <select
+              value={activeCurrency}
+              onChange={(e) => onCurrencyChange(e.target.value)}
+              className="text-xs font-bold bg-zinc-100 border border-zinc-200 rounded-md px-1.5 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200"
+              title="Change display currency"
+            >
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="AUD">AUD</option>
+              <option value="CAD">CAD</option>
+              <option value="INR">INR</option>
+              <option value="SGD">SGD</option>
+            </select>
           </div>
           {(riskProfile || targetReturn) && (
             <div className="flex flex-wrap gap-3 mt-4">
@@ -247,15 +264,7 @@ export const PortfolioSummary = memo(({
 });
 PortfolioSummary.displayName = 'PortfolioSummary';
 
-interface AllocationChartProps {
-  data: any[];
-  view: 'asset' | 'industry' | 'sector';
-  onViewChange: (view: 'asset' | 'industry' | 'sector') => void;
-  colors: string[];
-  tooltip: React.ReactNode;
-}
-
-export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip }: AllocationChartProps) => {
+export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip, activeCurrency }: { data: any[], view: string, onViewChange: (v: any) => void, colors: string[], tooltip: any, activeCurrency: string }) => {
   if (data.length === 0) return null;
 
   return (
@@ -290,33 +299,14 @@ export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip
       </div>
 
       <div className="h-[400px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={data}
-              cx="50%"
-              cy="50%"
-              innerRadius={100}
-              outerRadius={140}
-              paddingAngle={5}
-              dataKey="value"
-              stroke="none"
-              animationBegin={0}
-              animationDuration={1000}
-              animationEasing="ease-out"
-            >
-              {data.map((entry, index) => (
-                <Cell 
-                  key={`cell-${index}`} 
-                  fill={colors[index % colors.length]} 
-                  stroke="rgba(255,255,255,0.5)"
-                  strokeWidth={2}
-                />
-              ))}
-            </Pie>
-            {tooltip}
-          </PieChart>
-        </ResponsiveContainer>
+        <ThreeDBarChart
+          data={data.map((entry, index) => ({
+            name: entry.name,
+            value: entry.value,
+            color: colors[index % colors.length]
+          }))}
+          activeCurrency={activeCurrency}
+        />
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mt-8">

@@ -118,6 +118,17 @@ service cloud.firestore {
       allow delete: if isDocOwner();
     }
 
+    match /backups/{userId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId) && 
+        hasOnlyAllowedFields(['holdings', 'transactions', 'tab', 'timestamp']) &&
+        request.resource.data.holdings is list &&
+        request.resource.data.transactions is list &&
+        request.resource.data.tab is string &&
+        request.resource.data.timestamp is string;
+      allow delete: if isOwner(userId);
+    }
+
     // Default deny
     match /{path=**} {
       allow read, write: if false;

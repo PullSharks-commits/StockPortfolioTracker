@@ -19,8 +19,17 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
     if (activeTab === 'india') {
       return ticker.replace('.NS', '').replace('.BO', '');
     }
+    if (activeTab === 'australia') {
+      return ticker.replace('.AX', '');
+    }
     return ticker;
   };
+
+  useEffect(() => {
+    if (activeTab && query === '') {
+      // No-op
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -42,9 +51,22 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
       setLoading(true);
       try {
         const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-        const data = await response.json();
-        setResults(data.quotes || []);
-        setIsOpen(true);
+        if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
+          const data = await response.json();
+          let filtered = data.quotes || [];
+          
+          // Filter results based on active tab to help user find correct exchange
+          if (activeTab === 'india') {
+            filtered = filtered.filter((r: any) => r.symbol.endsWith('.NS') || r.symbol.endsWith('.BO') || r.exchange === 'NSI' || r.exchange === 'BSE');
+          } else if (activeTab === 'australia') {
+            filtered = filtered.filter((r: any) => r.symbol.endsWith('.AX') || r.exchange === 'ASX');
+          }
+
+          setResults(filtered);
+          setIsOpen(true);
+        } else {
+          setResults([]);
+        }
       } catch (error) {
         console.error('Search error:', error);
       } finally {
@@ -53,17 +75,20 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, activeTab]);
 
   return (
-    <div className="relative w-full max-w-md" ref={wrapperRef}>
+    <div className="relative w-full" ref={wrapperRef}>
       <div className="relative">
         <input
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search stocks..."
-          className="w-full pl-10 pr-4 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setIsOpen(true);
+          }}
+          placeholder={activeTab === 'india' ? "Search Indian stocks..." : activeTab === 'australia' ? "Search Australian stocks..." : "Search stocks..."}
+          className="w-full pl-10 pr-4 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent uppercase placeholder:normal-case"
         />
         <Search className="absolute left-3 top-2.5 h-5 w-5 text-zinc-400" />
         {loading && <Loader2 className="absolute right-3 top-2.5 h-5 w-5 text-zinc-400 animate-spin" />}
@@ -73,15 +98,18 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
           {results.map((result, index) => (
             <li
               key={`${result.symbol}-${index}`}
-              className="px-4 py-2 hover:bg-zinc-100 cursor-pointer"
+              className="px-4 py-2 hover:bg-zinc-100 cursor-pointer border-b border-zinc-50 last:border-0"
               onClick={() => {
                 onSelect(result.symbol);
-                setQuery('');
+                setQuery(result.symbol);
                 setIsOpen(false);
               }}
             >
-              <div className="font-semibold">{formatTicker(result.symbol)}</div>
-              <div className="text-sm text-zinc-500">{result.shortname} ({result.exchange})</div>
+              <div className="flex justify-between items-center">
+                <div className="font-semibold text-zinc-900">{result.symbol}</div>
+                <div className="text-[10px] font-bold px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded uppercase">{result.exchange}</div>
+              </div>
+              <div className="text-xs text-zinc-500 truncate">{result.shortname}</div>
             </li>
           ))}
         </ul>

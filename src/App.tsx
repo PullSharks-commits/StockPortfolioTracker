@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ScatterChart, Scatter, ZAxis } from 'recharts';
-import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle } from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ScatterChart, Scatter, ZAxis, Legend } from 'recharts';
+import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle, Undo2, Download, Upload } from 'lucide-react';
 import { format, isSameMonth, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, addMonths, subMonths, parseISO } from 'date-fns';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, horizontalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -8,6 +8,7 @@ import { CSS } from '@dnd-kit/utilities';
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { Chart } from "react-google-charts";
 import { GoogleGenAI, Type } from '@google/genai';
 import { 
   auth, 
@@ -40,6 +41,13 @@ const getExchangeRate = (fromCurrency: string, toCurrency: string, quotes: any) 
   
   const getRateToUSD = (currency: string) => {
     if (currency === 'USD') return 1;
+    
+    // Handle GBp (pence)
+    if (currency === 'GBp') {
+      const gbpRate = quotes['GBP=X']?.price || (1 / 0.79);
+      return (1 / gbpRate) / 100; // Convert pence to GBP, then to USD
+    }
+
     const rate = quotes[`${currency}=X`]?.price;
     if (rate) return 1 / rate;
     
@@ -64,9 +72,11 @@ const HoldingRow = React.memo(({
   editTicker,
   editShares, 
   editAvgPrice,
+  editAvgPriceCurrency,
   setEditTicker,
   setEditShares,
   setEditAvgPrice,
+  setEditAvgPriceCurrency,
   handleSaveEdit,
   handleCancelEdit,
   handleEditClick,
@@ -111,24 +121,38 @@ const HoldingRow = React.memo(({
             step="any"
           />
         ) : (
-          holding.shares.toLocaleString()
+          holding.ticker === 'CASH' ? formatCurrency(holding.shares, holding.avgPriceCurrency || activeCurrency) : holding.shares.toLocaleString()
         )}
       </td>
       <td className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => e.stopPropagation()}>
         {editingId === holding.id ? (
           <div className="flex items-center justify-end gap-1">
-            <span>{getCurrencySymbol(activeCurrency)}</span>
-            <input
-              type="number"
-              value={editAvgPrice}
-              onChange={(e) => setEditAvgPrice(e.target.value)}
-              className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
-              min="0.01"
-              step="any"
-            />
+            <select
+              value={editAvgPriceCurrency}
+              onChange={(e) => setEditAvgPriceCurrency(e.target.value)}
+              className="px-1 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 bg-white"
+            >
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="AUD">AUD</option>
+              <option value="CAD">CAD</option>
+              <option value="INR">INR</option>
+              <option value="SGD">SGD</option>
+            </select>
+            {editTicker.toUpperCase() !== 'CASH' && (
+              <input
+                type="number"
+                value={editAvgPrice}
+                onChange={(e) => setEditAvgPrice(e.target.value)}
+                className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
+                min="0.01"
+                step="any"
+              />
+            )}
           </div>
         ) : (
-          formatCurrency(holding.displayAvgPrice, activeCurrency)
+          holding.ticker === 'CASH' ? '-' : formatCurrency(holding.displayAvgPrice, activeCurrency)
         )}
       </td>
       <td className="px-6 py-4 text-right font-mono text-sm">
@@ -136,42 +160,54 @@ const HoldingRow = React.memo(({
       </td>
       <td className="px-6 py-4 text-right font-mono text-sm font-medium">
         <div className="flex items-center justify-end">
-          {formatCurrency(holding.currentPrice, activeCurrency)}
+          {holding.ticker === 'CASH' ? '-' : formatCurrency(holding.currentPrice, activeCurrency)}
           {getMarketStateBadge((holding as any).marketState)}
         </div>
       </td>
       <td className="px-6 py-4 text-right">
-        <div className={cn(
-          "inline-flex items-center gap-1 font-medium text-sm",
-          holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
-        )}>
-          {holding.dayChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          {holding.dayChange >= 0 ? '+' : '-'}{Math.abs(holding.dayChangePercent).toFixed(2)}%
-        </div>
-        <div className={cn(
-          "text-xs mt-0.5 font-mono",
-          holding.dayChange >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
-        )}>
-          {formatCurrency(holding.dayChange, activeCurrency, true)}
-        </div>
+        {holding.ticker === 'CASH' ? (
+          <span className="text-zinc-400">-</span>
+        ) : (
+          <>
+            <div className={cn(
+              "inline-flex items-center gap-1 font-medium text-sm",
+              holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
+            )}>
+              {holding.dayChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              {holding.dayChange >= 0 ? '+' : '-'}{Math.abs(holding.dayChangePercent).toFixed(2)}%
+            </div>
+            <div className={cn(
+              "text-xs mt-0.5 font-mono",
+              holding.dayChange >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
+            )}>
+              {formatCurrency(holding.dayChange, activeCurrency, true)}
+            </div>
+          </>
+        )}
       </td>
       <td className="px-6 py-4 text-right font-mono text-sm font-medium">
         {formatCurrency(holding.currentValue, activeCurrency)}
       </td>
       <td className="px-6 py-4 text-right">
-        <div className={cn(
-          "inline-flex items-center gap-1 font-medium text-sm",
-          holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
-        )}>
-          {holding.profitLoss >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          {holding.profitLoss >= 0 ? '+' : '-'}{Math.abs(holding.profitLossPercent).toFixed(2)}%
-        </div>
-        <div className={cn(
-          "text-xs mt-0.5 font-mono",
-          holding.profitLoss >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
-        )}>
-          {formatCurrency(holding.profitLoss, activeCurrency, true)}
-        </div>
+        {holding.ticker === 'CASH' ? (
+          <span className="text-zinc-400">-</span>
+        ) : (
+          <>
+            <div className={cn(
+              "inline-flex items-center gap-1 font-medium text-sm",
+              holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
+            )}>
+              {holding.profitLoss >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              {holding.profitLoss >= 0 ? '+' : '-'}{Math.abs(holding.profitLossPercent).toFixed(2)}%
+            </div>
+            <div className={cn(
+              "text-xs mt-0.5 font-mono",
+              holding.profitLoss >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
+            )}>
+              {formatCurrency(holding.profitLoss, activeCurrency, true)}
+            </div>
+          </>
+        )}
       </td>
       <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
         {editingId === holding.id ? (
@@ -258,7 +294,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss';
+type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'marketCap';
 
 interface Holding {
   id: string;
@@ -298,6 +334,7 @@ interface Transaction {
   type: 'buy' | 'sell';
   shares: number;
   price: number;
+  currency: string;
   date: string;
   userId: string;
 }
@@ -334,8 +371,9 @@ interface EconomicEvent {
 const CustomTooltip = ({ active, payload, label, activeCurrency }: any) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload;
-    const value = data.value;
-    const profitLoss = data.profitLoss;
+    const value = data.value || 0;
+    const profitLoss = data.profitLoss || 0;
+    const cost = data.cost ?? (value - profitLoss);
     const name = data.name || label;
     
     return (
@@ -344,8 +382,17 @@ const CustomTooltip = ({ active, payload, label, activeCurrency }: any) => {
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-violet-500" />
+              <span className="text-zinc-500">Cost:</span>
+            </div>
+            <span className="font-mono font-bold text-zinc-900">
+              {formatCurrency(cost, activeCurrency)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-indigo-500" />
-              <span className="text-zinc-500">Market Value:</span>
+              <span className="text-zinc-500">Value:</span>
             </div>
             <span className="font-mono font-bold text-zinc-900">
               {formatCurrency(value, activeCurrency)}
@@ -364,7 +411,7 @@ const CustomTooltip = ({ active, payload, label, activeCurrency }: any) => {
             <div className="flex items-center justify-between text-[10px] uppercase tracking-wider font-bold">
               <span className="text-zinc-400">Return %:</span>
               <span className={profitLoss >= 0 ? 'text-emerald-500' : 'text-rose-500'}>
-                {value > 0 ? ((profitLoss / (value - profitLoss)) * 100).toFixed(2) : '0.00'}%
+                {cost > 0 ? ((profitLoss / cost) * 100).toFixed(2) : '0.00'}%
               </span>
             </div>
           </div>
@@ -410,7 +457,7 @@ const CompanyLogo = ({ ticker, logo, size = 'md' }: { ticker: string, logo?: str
   );
 };
 
-const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className, onResize, onRemove, size, activeCurrency }: { earningsEvents: EarningsEvent[], economicEvents: EconomicEvent[], metadata: any, className?: string, onResize?: () => void, onRemove?: () => void, size?: number, activeCurrency: string }) => {
+const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className, onResize, onRemove, size, activeCurrency, onEarningsClick }: { earningsEvents: EarningsEvent[], economicEvents: EconomicEvent[], metadata: any, className?: string, onResize?: () => void, onRemove?: () => void, size?: number, activeCurrency: string, onEarningsClick?: (event: EarningsEvent) => void }) => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
 
   const monthStart = startOfMonth(currentMonth);
@@ -473,6 +520,47 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              if (earningsEvents.length === 0) return;
+              
+              let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Earnings Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Earnings Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
+              
+              earningsEvents.forEach(event => {
+                if (!event.date) return;
+                const date = new Date(event.date);
+                const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 8);
+                const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+                
+                ics += 'BEGIN:VEVENT\r\n';
+                ics += `UID:${event.symbol}-earnings-${dateStr}@stocktracker\r\n`;
+                ics += `DTSTAMP:${dtstamp}\r\n`;
+                ics += `DTSTART;VALUE=DATE:${dateStr}\r\n`;
+                ics += `SUMMARY:${event.symbol} Earnings\r\n`;
+                ics += `DESCRIPTION:Estimated EPS: ${event.estimate || 'N/A'}\\nHigh: ${event.high || 'N/A'}\\nLow: ${event.low || 'N/A'}\r\n`;
+                ics += 'END:VEVENT\r\n';
+              });
+              
+              ics += 'END:VCALENDAR\r\n';
+              
+              const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+              const url = window.URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.setAttribute('download', 'earnings.ics');
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              window.URL.revokeObjectURL(url);
+            }}
+            disabled={earningsEvents.length === 0}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Export Earnings to Calendar"
+          >
+            <Download className="w-4 h-4" />
+            <span className="hidden sm:inline">Export Calendar (.ics)</span>
+          </button>
+
           {onResize && (
             <button 
               onClick={onResize} 
@@ -553,7 +641,11 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
                     return (
                       <div 
                         key={`earn-${idx}`}
-                        className="group relative flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-zinc-200 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all cursor-default"
+                        onClick={() => onEarningsClick && onEarningsClick(event)}
+                        className={cn(
+                          "group relative flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-zinc-200 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all",
+                          onEarningsClick ? "cursor-pointer" : "cursor-default"
+                        )}
                       >
                         <CompanyLogo ticker={event.symbol} logo={metadata[event.symbol]?.logo} size="sm" />
                         <div className="min-w-0">
@@ -850,6 +942,22 @@ const SettingsModal = ({
                 </button>
                 <span className="text-sm font-bold text-zinc-700">Show Combined Portfolio Summary</span>
               </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-zinc-700">Combined Portfolio Currency</label>
+                <select 
+                  value={localUserSettings.combinedCurrency || 'USD'}
+                  onChange={(e) => handleUserSettingChange('combinedCurrency', e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-sm"
+                >
+                  <option value="USD">USD ($)</option>
+                  <option value="INR">INR (₹)</option>
+                  <option value="AUD">AUD (A$)</option>
+                  <option value="EUR">EUR (€)</option>
+                  <option value="GBP">GBP (£)</option>
+                  <option value="CAD">CAD (C$)</option>
+                  <option value="SGD">SGD (S$)</option>
+                </select>
+              </div>
             </div>
           </section>
 
@@ -967,6 +1075,7 @@ export default function App() {
   const [ticker, setTicker] = useState('');
   const [shares, setShares] = useState('');
   const [avgPrice, setAvgPrice] = useState('');
+  const [formCurrency, setFormCurrency] = useState('');
   const [transactionDate, setTransactionDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [transactionType, setTransactionType] = useState<'buy' | 'sell'>('buy');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -977,6 +1086,13 @@ export default function App() {
   const [importMode, setImportMode] = useState<'replace' | 'merge'>('replace');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Reset state
+  const [isResetting, setIsResetting] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [hasBackup, setHasBackup] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 
   // Edit state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -997,6 +1113,8 @@ export default function App() {
   const [historyHolding, setHistoryHolding] = useState<Holding | null>(null);
   const [historyTransactions, setHistoryTransactions] = useState<Transaction[]>([]);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [confirmUndoId, setConfirmUndoId] = useState<string | null>(null);
+  const [undoError, setUndoError] = useState<string | null>(null);
 
   // Portfolio Analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -1007,11 +1125,18 @@ export default function App() {
   const [quickAddHolding, setQuickAddHolding] = useState<Holding | null>(null);
   const [quickAddShares, setQuickAddShares] = useState('');
   const [quickAddPrice, setQuickAddPrice] = useState('');
+  const [quickAddCurrency, setQuickAddCurrency] = useState('USD');
   const [quickAddDate, setQuickAddDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isQuickAdding, setIsQuickAdding] = useState(false);
   const [analysisTicker, setAnalysisTicker] = useState<string | null>(null);
   const [analysisSources, setAnalysisSources] = useState<{uri: string, title: string}[]>([]);
   const [analysisSentiment, setAnalysisSentiment] = useState<string>('neutral');
+  
+  // Earnings Analysis state
+  const [selectedEarningsEvent, setSelectedEarningsEvent] = useState<EarningsEvent | null>(null);
+  const [isAnalyzingEarnings, setIsAnalyzingEarnings] = useState(false);
+  const [earningsAnalysisResult, setEarningsAnalysisResult] = useState('');
+  const [showEarningsAnalysisModal, setShowEarningsAnalysisModal] = useState(false);
 
   // Chart state
   const [chartType, setChartType] = useState<'pie' | 'bar' | 'scatter'>('pie');
@@ -1173,13 +1298,13 @@ export default function App() {
   };
   
   // Save state
-  const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{text: string, type: 'success' | 'error'} | null>(null);
 
   // Sort state
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'currentValue', direction: 'desc' });
+  const [filterGroup, setFilterGroup] = useState<string | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>([
-    'ticker', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'profitLoss'
+    'ticker', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'profitLoss', 'marketCap'
   ]);
 
   // Settings state
@@ -1188,10 +1313,11 @@ export default function App() {
     india: { benchmark: '^NSEI', riskProfile: 'moderate', targetReturn: 12, currency: 'INR' },
     australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' },
   });
-  const [userSettings, setUserSettings] = useState<{ displayName: string, avatarUrl: string, showCombinedSummary: boolean }>({
+  const [userSettings, setUserSettings] = useState<{ displayName: string, avatarUrl: string, showCombinedSummary: boolean, combinedCurrency: string }>({
     displayName: '',
     avatarUrl: '',
     showCombinedSummary: true,
+    combinedCurrency: 'USD',
   });
   const [showSettings, setShowSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -1209,6 +1335,7 @@ export default function App() {
           displayName: data.user.displayName || '',
           avatarUrl: data.user.avatarUrl || '',
           showCombinedSummary: data.user.showCombinedSummary !== undefined ? data.user.showCombinedSummary : true,
+          combinedCurrency: data.user.combinedCurrency || 'USD',
         });
       } else {
         // Initialize default settings in Firestore
@@ -1222,6 +1349,7 @@ export default function App() {
             displayName: user.displayName || user.email?.split('@')[0] || 'Investor',
             avatarUrl: user.photoURL || '',
             showCombinedSummary: true,
+            combinedCurrency: 'USD',
           }
         });
       }
@@ -1260,23 +1388,6 @@ export default function App() {
       direction = 'desc';
     }
     setSortConfig({ key, direction });
-  };
-
-  const handleSaveToFile = async () => {
-    setIsSaving(true);
-    setSaveMessage(null);
-    try {
-      // With Firebase, we don't need to sync to a local file, 
-      // but we can offer a JSON download as a backup.
-      handleDownload();
-      setSaveMessage({ text: `Portfolio downloaded`, type: 'success' });
-    } catch (error) {
-      console.error('Error downloading:', error);
-      setSaveMessage({ text: 'Error downloading', type: 'error' });
-    } finally {
-      setIsSaving(false);
-      setTimeout(() => setSaveMessage(null), 3000);
-    }
   };
 
   const handleDownload = () => {
@@ -1354,7 +1465,7 @@ export default function App() {
     setIsRefreshing(true);
     try {
       await Promise.all([
-        fetchQuotes(holdings),
+        fetchQuotes(allHoldings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
         fetchDividends(holdings)
@@ -1369,6 +1480,90 @@ export default function App() {
     }
   };
 
+  const handleResetPortfolio = async () => {
+    if (!user) return;
+    setIsResetting(true);
+    try {
+      // Find all holdings for the active tab
+      const holdingsToDelete = allHoldings.filter(h => (h.portfolioType || 'global') === activeTab);
+      const holdingIds = holdingsToDelete.map(h => h.id);
+      
+      // Fetch raw holdings to backup
+      const holdingsSnapshot = await getDocs(query(collection(db, 'holdings'), where('userId', '==', user.uid)));
+      const rawHoldingsToBackup = holdingsSnapshot.docs.filter(d => holdingIds.includes(d.id)).map(d => ({ id: d.id, data: d.data() }));
+
+      // Fetch raw transactions to backup
+      let rawTransactionsToBackup: any[] = [];
+      let transactionsToDelete: any[] = [];
+      if (holdingIds.length > 0) {
+        const q = query(collection(db, 'transactions'), where('userId', '==', user.uid));
+        const snapshot = await getDocs(q);
+        transactionsToDelete = snapshot.docs.filter(d => holdingIds.includes(d.data().holdingId));
+        rawTransactionsToBackup = transactionsToDelete.map(d => ({ id: d.id, data: d.data() }));
+      }
+
+      // Save backup
+      await setDoc(doc(db, 'backups', user.uid), {
+        holdings: rawHoldingsToBackup,
+        transactions: rawTransactionsToBackup,
+        tab: activeTab,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Delete holdings
+      await Promise.all(holdingsToDelete.map(h => deleteDoc(doc(db, 'holdings', h.id))));
+      
+      // Delete associated transactions
+      if (transactionsToDelete.length > 0) {
+        await Promise.all(transactionsToDelete.map(d => deleteDoc(d.ref)));
+      }
+      
+      setSaveMessage({ text: 'Portfolio reset successfully', type: 'success' });
+      setShowResetConfirm(false);
+    } catch (error) {
+      console.error('Error resetting portfolio:', error);
+      setSaveMessage({ text: 'Failed to reset portfolio', type: 'error' });
+    } finally {
+      setIsResetting(false);
+      setTimeout(() => setSaveMessage(null), 3000);
+    }
+  };
+
+  const handleRestorePortfolio = async () => {
+    if (!user) return;
+    setIsRestoring(true);
+    try {
+      const backupDoc = await getDoc(doc(db, 'backups', user.uid));
+      if (backupDoc.exists()) {
+        const backupData = backupDoc.data();
+        
+        // Restore holdings
+        if (backupData.holdings && backupData.holdings.length > 0) {
+          await Promise.all(backupData.holdings.map((h: any) => setDoc(doc(db, 'holdings', h.id), h.data)));
+        }
+        
+        // Restore transactions
+        if (backupData.transactions && backupData.transactions.length > 0) {
+          await Promise.all(backupData.transactions.map((t: any) => setDoc(doc(db, 'transactions', t.id), t.data)));
+        }
+        
+        // Delete backup
+        await deleteDoc(doc(db, 'backups', user.uid));
+        
+        setSaveMessage({ text: 'Portfolio restored successfully', type: 'success' });
+        setShowRestoreConfirm(false);
+      } else {
+        setSaveMessage({ text: 'No backup found to restore', type: 'error' });
+      }
+    } catch (error) {
+      console.error('Error restoring portfolio:', error);
+      setSaveMessage({ text: 'Failed to restore portfolio', type: 'error' });
+    } finally {
+      setIsRestoring(false);
+      setTimeout(() => setSaveMessage(null), 3000);
+    }
+  };
+
   const handleLogout = async () => {
     await signOut(auth);
   };
@@ -1379,12 +1574,17 @@ export default function App() {
   };
 
   const fetchQuotes = async (currentHoldings: Holding[]) => {
-    const symbolsToFetch = Array.from(new Set([...currentHoldings.map(h => h.ticker), benchmarkTicker, 'AUD=X', 'INR=X', 'EUR=X', 'GBP=X', 'CAD=X', 'SGD=X'])).join(',');
+    const allBenchmarks = [
+      tabSettings['global']?.benchmark || 'SPY',
+      tabSettings['india']?.benchmark || '^NSEI',
+      tabSettings['australia']?.benchmark || '^AXJO'
+    ];
+    const symbolsToFetch = Array.from(new Set([...currentHoldings.map(h => h.ticker), ...allBenchmarks, 'AUD=X', 'INR=X', 'EUR=X', 'GBP=X', 'CAD=X', 'SGD=X'])).join(',');
     try {
       const res = await fetch(`/api/quotes?symbols=${symbolsToFetch}`);
-      if (res.ok) {
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const data = await res.json();
-        setQuotes(data);
+        setQuotes(prev => ({ ...prev, ...data }));
       }
     } catch (error) {
       console.error('Error fetching quotes:', error);
@@ -1397,7 +1597,7 @@ export default function App() {
     const symbols = Array.from(new Set(currentHoldings.map(h => h.ticker))).join(',');
     try {
       const res = await fetch(`/api/metadata?symbols=${symbols}`);
-      if (res.ok) {
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const data = await res.json();
         console.log('Fetched metadata:', data);
         setMetadata(data);
@@ -1413,7 +1613,7 @@ export default function App() {
     const symbols = Array.from(new Set(currentHoldings.map(h => h.ticker))).join(',');
     try {
       const res = await fetch(`/api/earnings?symbols=${symbols}`);
-      if (res.ok) {
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const data = await res.json();
         setEarningsEvents(data);
       }
@@ -1428,7 +1628,7 @@ export default function App() {
     const symbols = Array.from(new Set(currentHoldings.map(h => h.ticker))).join(',');
     try {
       const res = await fetch(`/api/dividends?symbols=${symbols}`);
-      if (res.ok) {
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const data = await res.json();
         setDividendEvents(data);
       }
@@ -1442,7 +1642,7 @@ export default function App() {
       const from = format(subMonths(new Date(), 1), 'yyyy-MM-dd');
       const to = format(addMonths(new Date(), 2), 'yyyy-MM-dd');
       const res = await fetch(`/api/economic-events?from=${from}&to=${to}`);
-      if (res.ok) {
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const data = await res.json();
         setEconomicEvents(data);
       }
@@ -1453,12 +1653,13 @@ export default function App() {
 
   // Debounced data fetching to prevent excessive API calls
   useEffect(() => {
-    if (holdings.length === 0) return;
+    if (allHoldings.length === 0) return;
 
     const timer = setTimeout(() => {
       // Fetch all data in parallel
+      // We fetch quotes for ALL holdings to keep the Combined Value accurate across tabs
       Promise.all([
-        fetchQuotes(holdings),
+        fetchQuotes(allHoldings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
         fetchDividends(holdings),
@@ -1467,12 +1668,13 @@ export default function App() {
     }, 500); // 500ms debounce
 
     return () => clearTimeout(timer);
-  }, [holdings, benchmarkTicker]);
+  }, [allHoldings, holdings, tabSettings]);
 
   useEffect(() => {
     if (!user) {
       setAllHoldings([]);
       setLoading(false);
+      setHasBackup(false);
       return;
     }
 
@@ -1490,7 +1692,14 @@ export default function App() {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    const backupUnsubscribe = onSnapshot(doc(db, 'backups', user.uid), (snapshot) => {
+      setHasBackup(snapshot.exists());
+    });
+
+    return () => {
+      unsubscribe();
+      backupUnsubscribe();
+    };
   }, [user]);
 
   useEffect(() => {
@@ -1499,7 +1708,7 @@ export default function App() {
         setIsFinancialsLoading(true);
         try {
           const res = await fetch(`/api/financials?symbol=${selectedChartTicker}`);
-          if (res.ok) {
+          if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
             const data = await res.json();
             setFinancialsData(data);
           } else {
@@ -1612,8 +1821,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (holdings.length > 0 || benchmarkTicker) {
-      const symbols = Array.from(new Set([...holdings.map(h => h.ticker), benchmarkTicker]));
+    const allBenchmarks = [
+      tabSettings['global']?.benchmark || 'SPY',
+      tabSettings['india']?.benchmark || '^NSEI',
+      tabSettings['australia']?.benchmark || '^AXJO'
+    ];
+    if (holdings.length > 0 || allBenchmarks.length > 0) {
+      const symbols = Array.from(new Set([...holdings.map(h => h.ticker), ...allBenchmarks]));
       const subscribeMsg = JSON.stringify({ type: 'subscribe', symbols });
       
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1624,18 +1838,19 @@ export default function App() {
         }, { once: true });
       }
     }
-  }, [holdings, benchmarkTicker]);
+  }, [holdings, tabSettings]);
 
   const handleAddStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ticker || !shares || !avgPrice || !user) return;
+    const finalTicker = ticker.trim().toUpperCase();
+    const isCash = finalTicker === 'CASH';
+    
+    if (!ticker || !shares || (!isCash && !avgPrice) || !user) return;
 
     setIsSubmitting(true);
     try {
-      let finalTicker = ticker.trim().toUpperCase();
-
       const numShares = parseFloat(shares);
-      const numPrice = parseFloat(avgPrice);
+      const numPrice = isCash ? 1 : parseFloat(avgPrice);
       const isSell = transactionType === 'sell';
 
       // Check for existing holding in the current portfolio
@@ -1647,8 +1862,14 @@ export default function App() {
         
         // Calculate new average price (only for buys)
         let newAvgPrice = existingHolding.avg_price;
+        const targetCurrency = existingHolding.avgPriceCurrency || activeCurrency;
+        const currentTxCurrency = formCurrency || activeCurrency;
+
         if (!isSell) {
-          const totalCost = (existingHolding.shares * existingHolding.avg_price) + (numShares * numPrice);
+          // Convert existing avg price to target currency (though it should already be)
+          // and convert current transaction price to the same target currency
+          const numPriceInTarget = numPrice * getExchangeRate(currentTxCurrency, targetCurrency, quotes);
+          const totalCost = (existingHolding.shares * existingHolding.avg_price) + (numShares * numPriceInTarget);
           newAvgPrice = totalCost / newShares;
         }
 
@@ -1664,16 +1885,18 @@ export default function App() {
           type: transactionType,
           shares: numShares,
           price: numPrice,
+          currency: currentTxCurrency,
           date: new Date(transactionDate).toISOString(),
           userId: user.uid
         });
       } else {
         // Create new holding
+        const txCurrency = formCurrency || activeCurrency;
         const holdingData = {
           ticker: finalTicker,
           shares: isSell ? -numShares : numShares,
           avg_price: numPrice,
-          avgPriceCurrency: activeCurrency,
+          avgPriceCurrency: txCurrency,
           userId: user.uid,
           portfolioType: activeTab,
           updatedAt: serverTimestamp()
@@ -1687,6 +1910,7 @@ export default function App() {
           type: transactionType,
           shares: numShares,
           price: numPrice,
+          currency: txCurrency,
           date: new Date(transactionDate).toISOString(),
           userId: user.uid
         });
@@ -1695,6 +1919,7 @@ export default function App() {
       setTicker('');
       setShares('');
       setAvgPrice('');
+      setFormCurrency('');
       setTransactionDate(format(new Date(), 'yyyy-MM-dd'));
       setTransactionType('buy');
     } catch (error) {
@@ -1720,21 +1945,28 @@ export default function App() {
     setQuickAddHolding(holding);
     setQuickAddPrice((holding.currentPrice || holding.avg_price).toString());
     setQuickAddShares('');
+    setQuickAddCurrency(holding.avgPriceCurrency || activeCurrency);
     setQuickAddDate(format(new Date(), 'yyyy-MM-dd'));
     setShowQuickAddModal(true);
   };
 
   const handleQuickAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quickAddHolding || !quickAddShares || !quickAddPrice || !user) return;
+    if (!quickAddHolding || !user) return;
+    const isCash = quickAddHolding.ticker === 'CASH';
+    if (!quickAddShares || (!isCash && !quickAddPrice)) return;
 
     setIsQuickAdding(true);
     try {
       const numShares = parseFloat(quickAddShares);
-      const numPrice = parseFloat(quickAddPrice);
+      const numPrice = isCash ? 1 : parseFloat(quickAddPrice);
 
       const newShares = quickAddHolding.shares + numShares;
-      const totalCost = (quickAddHolding.shares * quickAddHolding.avg_price) + (numShares * numPrice);
+      const targetCurrency = quickAddHolding.avgPriceCurrency || activeCurrency;
+      const currentTxCurrency = quickAddCurrency || activeCurrency;
+      const numPriceInTarget = numPrice * getExchangeRate(currentTxCurrency, targetCurrency, quotes);
+      
+      const totalCost = (quickAddHolding.shares * quickAddHolding.avg_price) + (numShares * numPriceInTarget);
       const newAvgPrice = totalCost / newShares;
 
       await updateDoc(doc(db, 'holdings', quickAddHolding.id), {
@@ -1748,6 +1980,7 @@ export default function App() {
         type: 'buy',
         shares: numShares,
         price: numPrice,
+        currency: currentTxCurrency,
         date: new Date(quickAddDate).toISOString(),
         userId: user.uid
       });
@@ -1782,14 +2015,14 @@ export default function App() {
   };
 
   const handleSaveEdit = async (id: string) => {
-    if (!editTicker || !editShares || !editAvgPrice || !user) return;
+    const finalTicker = editTicker.trim().toUpperCase();
+    const isCash = finalTicker === 'CASH';
+    if (!editTicker || !editShares || (!isCash && !editAvgPrice) || !user) return;
     try {
-      let finalTicker = editTicker.trim().toUpperCase();
-
       await updateDoc(doc(db, 'holdings', id), {
         ticker: finalTicker,
         shares: parseFloat(editShares),
-        avg_price: parseFloat(editAvgPrice),
+        avg_price: isCash ? 1 : parseFloat(editAvgPrice),
         avgPriceCurrency: editAvgPriceCurrency,
         updatedAt: serverTimestamp()
       });
@@ -1820,6 +2053,136 @@ export default function App() {
       console.error('Error fetching transactions:', error);
     } finally {
       setIsHistoryLoading(false);
+    }
+  };
+
+  const handleUndoTransaction = async (tx: Transaction) => {
+    if (!user || !historyHolding) return;
+    
+    setUndoError(null);
+    setIsHistoryLoading(true);
+    try {
+      const isBuy = tx.type === 'buy';
+      const numShares = tx.shares;
+      const numPrice = tx.price;
+
+      // Use the latest holding data from the main holdings list
+      const latestHolding = holdings.find(h => h.id === historyHolding.id);
+      if (!latestHolding) throw new Error("Holding not found");
+
+      let newShares = isBuy ? latestHolding.shares - numShares : latestHolding.shares + numShares;
+      
+      // Safety check: don't allow undoing a buy if it results in negative shares
+      if (newShares < 0) {
+        setUndoError("Cannot undo this transaction as it would result in negative shares. Please adjust your other transactions first.");
+        setIsHistoryLoading(false);
+        return;
+      }
+      
+      // Recalculate average price only for undoing a buy
+      let newAvgPrice = latestHolding.avg_price;
+      const targetCurrency = latestHolding.avgPriceCurrency || activeCurrency;
+      if (isBuy) {
+        if (newShares > 0) {
+          const currentTotalCost = latestHolding.shares * latestHolding.avg_price;
+          const txPriceInTarget = numPrice * getExchangeRate(tx.currency || activeCurrency, targetCurrency, quotes);
+          const txTotalCost = numShares * txPriceInTarget;
+          newAvgPrice = (currentTotalCost - txTotalCost) / newShares;
+        } else {
+          newAvgPrice = 0;
+        }
+      }
+
+      // Update holding
+      await updateDoc(doc(db, 'holdings', latestHolding.id), {
+        shares: newShares,
+        avg_price: newAvgPrice,
+        updatedAt: serverTimestamp()
+      });
+
+      // Delete transaction
+      await deleteDoc(doc(db, 'transactions', tx.id));
+
+      // Refresh history
+      await handleViewHistory(latestHolding);
+      setConfirmUndoId(null);
+      
+      setSaveMessage({ text: 'Transaction undone successfully', type: 'success' });
+      setTimeout(() => setSaveMessage(null), 3000);
+    } catch (error) {
+      console.error('Error undoing transaction:', error);
+      setUndoError('Failed to undo transaction');
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const handleAnalyzeEarnings = async (event: EarningsEvent) => {
+    setSelectedEarningsEvent(event);
+    setShowEarningsAnalysisModal(true);
+    setIsAnalyzingEarnings(true);
+    setEarningsAnalysisResult('');
+
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        setEarningsAnalysisResult('Error: GEMINI_API_KEY is not configured.');
+        setIsAnalyzingEarnings(false);
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      
+      const eventDate = parseISO(event.date);
+      const isPast = eventDate < new Date();
+      
+      let prompt = '';
+      
+      if (isPast) {
+        prompt = `You are a professional investment strategist. Analyze the recent earnings report for ${event.symbol} that occurred around ${format(eventDate, 'MMM d, yyyy')}.
+        
+        Estimated EPS was: ${event.estimate ? event.estimate.toFixed(2) : 'N/A'}
+        
+        Please provide:
+        1. **Actual Results vs Expectations**: Did they beat or miss estimates? Summarize the actual EPS and revenue vs expectations.
+        2. **Market Reaction**: How did the stock price react following the report?
+        3. **Key Takeaways & Guidance**: What were the main highlights from the earnings call and any forward guidance provided by management?
+        4. **Strategic Implications**: What does this mean for the company's outlook and the stock going forward?
+        
+        Use the search tool to get the actual reported numbers, news, and analyst reactions following this specific earnings event.
+        Use professional Markdown formatting.`;
+      } else {
+        prompt = `You are a professional investment strategist. Analyze the upcoming earnings event for ${event.symbol}.
+        
+        Earnings Date: ${format(eventDate, 'MMM d, yyyy')}
+        Estimated EPS: ${event.estimate ? event.estimate.toFixed(2) : 'N/A'}
+        High Estimate: ${event.high ? event.high.toFixed(2) : 'N/A'}
+        Low Estimate: ${event.low ? event.low.toFixed(2) : 'N/A'}
+        
+        Please provide:
+        1. **Analyst Expectations**: Summarize what the market is expecting for this quarter.
+        2. **Key Themes to Watch**: What are the main topics or metrics investors will be focusing on during the earnings call?
+        3. **Recent Performance Context**: How has the stock performed leading up to this earnings report?
+        4. **Potential Surprises**: What could cause a positive or negative surprise?
+        
+        Use the search tool to get the most up-to-date information, news, and analyst reports from the last 3 months regarding this specific earnings event.
+        Use professional Markdown formatting.`;
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      setEarningsAnalysisResult(response.text || 'Failed to generate analysis.');
+    } catch (error) {
+      console.error('Earnings analysis error:', error);
+      setEarningsAnalysisResult('An error occurred during analysis.');
+    } finally {
+      setIsAnalyzingEarnings(false);
     }
   };
 
@@ -2192,6 +2555,47 @@ export default function App() {
     let totalDayChange = 0;
 
     const enrichedHoldings = holdings.map(h => {
+      // Handle Cash
+      if (h.ticker === 'CASH') {
+        const targetCurrency = activeCurrency;
+        const sourceCurrency = h.avgPriceCurrency || targetCurrency;
+        
+        let currentPriceVal = 1;
+        let previousCloseVal = 1;
+        let convertedAvgPrice = 1;
+
+        if (sourceCurrency !== targetCurrency) {
+          const rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
+          currentPriceVal = rate;
+          previousCloseVal = rate;
+          convertedAvgPrice = rate;
+        }
+
+        const currentValue = currentPriceVal * h.shares;
+        const costBasis = convertedAvgPrice * h.shares;
+        const profitLoss = 0;
+        const profitLossPercent = 0;
+        const dayChange = 0;
+        const dayChangePercent = 0;
+
+        totalValue += currentValue;
+        totalCost += costBasis;
+
+        return {
+          ...h,
+          displayAvgPrice: convertedAvgPrice,
+          currentPrice: currentPriceVal,
+          currentValue,
+          costBasis,
+          profitLoss,
+          profitLossPercent,
+          dayChange,
+          dayChangePercent,
+          marketState: 'REGULAR',
+          marketCap: undefined
+        };
+      }
+
       const quote = quotes[h.ticker] as any;
       let currentPrice = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
       let previousClose = quote?.previousClose != null ? quote.previousClose : currentPrice;
@@ -2235,6 +2639,15 @@ export default function App() {
       
       const dayChange = (currentPriceVal - previousCloseVal) * h.shares;
       const dayChangePercent = previousCloseVal > 0 ? ((currentPriceVal - previousCloseVal) / previousCloseVal) * 100 : 0;
+      
+      let marketCap = quote?.marketCap;
+      if (marketCap && sourceCurrency) {
+        const marketCapCurrency = sourceCurrency === 'GBp' ? 'GBP' : sourceCurrency;
+        if (marketCapCurrency !== targetCurrency) {
+          const rate = getExchangeRate(marketCapCurrency, targetCurrency, quotes);
+          marketCap *= rate;
+        }
+      }
 
       totalValue += currentValue;
       totalCost += costBasis;
@@ -2250,7 +2663,8 @@ export default function App() {
         profitLossPercent,
         dayChange,
         dayChangePercent,
-        marketState
+        marketState,
+        marketCap
       };
     });
 
@@ -2290,9 +2704,22 @@ export default function App() {
     let totalCost = 0;
     let totalDayChange = 0;
 
-    const targetCurrency = activeCurrency;
+    const targetCurrency = userSettings.combinedCurrency || 'USD';
 
     allHoldings.forEach(h => {
+      // Handle Cash
+      if (h.ticker === 'CASH') {
+        const sourceCurrency = h.avgPriceCurrency || (h.portfolioType === 'india' ? 'INR' : (h.portfolioType === 'australia' ? 'AUD' : 'USD'));
+        let rate = 1;
+        if (sourceCurrency !== targetCurrency) {
+          rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
+        }
+        const value = h.shares * rate;
+        totalValue += value;
+        totalCost += value;
+        return;
+      }
+
       const quote = quotes[h.ticker] as any;
       let currentPrice = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
       let previousClose = quote?.previousClose != null ? quote.previousClose : currentPrice;
@@ -2337,16 +2764,30 @@ export default function App() {
       totalDayChange,
       totalDayChangePercent
     };
-  }, [allHoldings, quotes, activeTab]);
+  }, [allHoldings, quotes, userSettings.combinedCurrency]);
 
   const sortedHoldings = useMemo(() => {
     let sortableItems = [...portfolioStats.enrichedHoldings];
+    
+    if (filterGroup) {
+      if (chartView === 'asset') {
+        sortableItems = sortableItems.filter(h => h.ticker === filterGroup);
+      } else if (chartView === 'industry') {
+        sortableItems = sortableItems.filter(h => {
+          const sector = h.ticker === 'CASH' ? 'Cash' : (metadata[h.ticker]?.sector || 'Unknown');
+          return sector === filterGroup;
+        });
+      }
+    }
+
     if (sortConfig !== null) {
       sortableItems.sort((a, b) => {
-        if (a[sortConfig.key] < b[sortConfig.key]) {
+        const aVal = a[sortConfig.key] ?? -Infinity;
+        const bVal = b[sortConfig.key] ?? -Infinity;
+        if (aVal < bVal) {
           return sortConfig.direction === 'asc' ? -1 : 1;
         }
-        if (a[sortConfig.key] > b[sortConfig.key]) {
+        if (aVal > bVal) {
           return sortConfig.direction === 'asc' ? 1 : -1;
         }
         return 0;
@@ -2375,44 +2816,19 @@ export default function App() {
   }, [portfolioStats.enrichedHoldings]);
 
   const sectorData = useMemo(() => {
-    const grouped: Record<string, { value: number, cost: number }> = {};
+    const grouped: Record<string, { value: number, cost: number, profitLoss: number }> = {};
     portfolioStats.enrichedHoldings.forEach(h => {
-      const sector = metadata[h.ticker]?.sector || 'Unknown';
+      const sector = h.ticker === 'CASH' ? 'Cash' : (metadata[h.ticker]?.sector || 'Unknown');
       if (!grouped[sector]) {
-        grouped[sector] = { value: 0, cost: 0 };
+        grouped[sector] = { value: 0, cost: 0, profitLoss: 0 };
       }
       grouped[sector].value += h.currentValue;
       grouped[sector].cost += h.costBasis;
+      grouped[sector].profitLoss += h.profitLoss;
     });
 
     return Object.entries(grouped)
-      .map(([name, data]) => ({ name, value: data.value, cost: data.cost }))
-      .sort((a, b) => b.value - a.value);
-  }, [portfolioStats.enrichedHoldings, metadata]);
-
-  const costChartData = useMemo(() => {
-    const grouped: Record<string, number> = {};
-    portfolioStats.enrichedHoldings.forEach(h => {
-      if (!grouped[h.ticker]) {
-        grouped[h.ticker] = 0;
-      }
-      grouped[h.ticker] += h.costBasis;
-    });
-    
-    return Object.entries(grouped)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [portfolioStats.enrichedHoldings]);
-
-  const costSectorData = useMemo(() => {
-    const grouped: Record<string, number> = {};
-    portfolioStats.enrichedHoldings.forEach(h => {
-      const sector = metadata[h.ticker]?.sector || 'Unknown';
-      grouped[sector] = (grouped[sector] || 0) + h.costBasis;
-    });
-
-    return Object.entries(grouped)
-      .map(([name, value]) => ({ name, value }))
+      .map(([name, data]) => ({ name, value: data.value, cost: data.cost, profitLoss: data.profitLoss }))
       .sort((a, b) => b.value - a.value);
   }, [portfolioStats.enrichedHoldings, metadata]);
 
@@ -2476,44 +2892,45 @@ export default function App() {
     );
   }
 
-  const getMarketStatus = () => {
+  const getMarketStatus = (tabId: string) => {
     // Check the benchmark ticker's market state as a proxy for the general market
-    const benchmarkQuote = quotes[benchmarkTicker] as any;
+    const tabBenchmark = tabSettings[tabId]?.benchmark || (tabId === 'india' ? '^NSEI' : tabId === 'australia' ? '^AXJO' : 'SPY');
+    const benchmarkQuote = quotes[tabBenchmark] as any;
     if (!benchmarkQuote) return null;
     
     const state = benchmarkQuote.marketState;
     if (!state || state === 'REGULAR') {
       return (
-        <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-xs font-bold border border-emerald-100">
+        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-bold border border-emerald-100 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          MARKET OPEN
+          OPEN
         </div>
       );
     }
     
     if (state === 'PRE') {
       return (
-        <div className="flex items-center gap-2 px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-xs font-bold border border-amber-100">
+        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-50 text-amber-700 rounded-full text-[10px] font-bold border border-amber-100 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-          PRE-MARKET
+          PRE
         </div>
       );
     }
     
     if (state === 'POST' || state === 'POSTPOST') {
       return (
-        <div className="flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-xs font-bold border border-indigo-100">
+        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-bold border border-indigo-100 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-          POST-MARKET
+          POST
         </div>
       );
     }
 
     if (state === 'CLOSED') {
       return (
-        <div className="flex items-center gap-2 px-3 py-1 bg-zinc-100 text-zinc-600 rounded-full text-xs font-bold border border-zinc-200">
+        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-zinc-100 text-zinc-600 rounded-full text-[10px] font-bold border border-zinc-200 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
-          MARKET CLOSED
+          CLOSED
         </div>
       );
     }
@@ -2530,6 +2947,7 @@ export default function App() {
     { id: 'dayChange', label: `Day Change (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'dayChange' as SortKey },
     { id: 'currentValue', label: `Total Value (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'currentValue' as SortKey },
     { id: 'profitLoss', label: `Total Return (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'profitLoss' as SortKey },
+    { id: 'marketCap', label: `Market Cap (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'marketCap' as SortKey },
   ];
 
   const handleDragEndColumns = (event: DragEndEvent) => {
@@ -2685,6 +3103,18 @@ export default function App() {
             </div>
           </td>
         );
+      case 'marketCap':
+        return (
+          <td key={colId} className="px-6 py-4 text-right font-mono text-sm">
+            {holding.marketCap ? (
+              holding.marketCap >= 1e12 
+                ? `${formatCurrency(holding.marketCap / 1e12, activeCurrency, false, 2)}T`
+                : holding.marketCap >= 1e9 
+                  ? `${formatCurrency(holding.marketCap / 1e9, activeCurrency, false, 2)}B`
+                  : `${formatCurrency(holding.marketCap / 1e6, activeCurrency, false, 2)}M`
+            ) : '-'}
+          </td>
+        );
       default:
         return null;
     }
@@ -2709,9 +3139,6 @@ export default function App() {
               <Briefcase className="w-5 h-5 text-white" />
             </div>
             <h1 className="text-xl font-semibold tracking-tight">Portfolio Tracker</h1>
-          </div>
-          <div className="hidden sm:flex items-center gap-4">
-            {getMarketStatus()}
           </div>
           <div className="flex items-center gap-4">
             <div className="hidden sm:flex items-center gap-3 px-3 py-1.5 bg-zinc-50 border border-zinc-100 rounded-xl">
@@ -2745,14 +3172,40 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-4">
             <div className="flex flex-wrap items-center gap-x-12 gap-y-4">
               <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Combined Value</span>
-                <span className="text-2xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, activeCurrency)}</span>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Combined Value</span>
+                  <select 
+                    value={userSettings.combinedCurrency || 'USD'}
+                    onChange={async (e) => {
+                      const newCurrency = e.target.value;
+                      const updatedSettings = { ...userSettings, combinedCurrency: newCurrency };
+                      setUserSettings(updatedSettings);
+                      if (user) {
+                        try {
+                          await setDoc(doc(db, 'settings', user.uid), { user: updatedSettings }, { merge: true });
+                        } catch (error) {
+                          console.error('Error updating combined currency:', error);
+                        }
+                      }
+                    }}
+                    className="text-[10px] font-bold bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded border-none focus:ring-1 focus:ring-zinc-300 outline-none cursor-pointer hover:bg-zinc-200 transition-colors"
+                  >
+                    <option value="USD">USD</option>
+                    <option value="INR">INR</option>
+                    <option value="AUD">AUD</option>
+                    <option value="EUR">EUR</option>
+                    <option value="GBP">GBP</option>
+                    <option value="CAD">CAD</option>
+                    <option value="SGD">SGD</option>
+                  </select>
+                </div>
+                <span className="text-2xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, userSettings.combinedCurrency || 'USD')}</span>
               </div>
               <div className="flex flex-col">
                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Combined Return</span>
                 <div className="flex items-center gap-2">
                   <span className={cn("text-2xl font-semibold tracking-tight", combinedStats.totalProfitLoss >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                    {formatCurrency(combinedStats.totalProfitLoss, activeCurrency, true)}
+                    {formatCurrency(combinedStats.totalProfitLoss, userSettings.combinedCurrency || 'USD', true)}
                   </span>
                   <span className={cn("text-xs font-bold px-2 py-0.5 rounded-full", combinedStats.totalProfitLossPercent >= 0 ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100")}>
                     {combinedStats.totalProfitLossPercent >= 0 ? '+' : ''}{combinedStats.totalProfitLossPercent.toFixed(2)}%
@@ -2763,7 +3216,7 @@ export default function App() {
                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Combined Day Change</span>
                 <div className="flex items-center gap-2">
                   <span className={cn("text-2xl font-semibold tracking-tight", combinedStats.totalDayChange >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                    {formatCurrency(combinedStats.totalDayChange, activeCurrency, true)}
+                    {formatCurrency(combinedStats.totalDayChange, userSettings.combinedCurrency || 'USD', true)}
                   </span>
                   <span className={cn("text-xs font-bold px-2 py-0.5 rounded-full", combinedStats.totalDayChangePercent >= 0 ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100")}>
                     {combinedStats.totalDayChangePercent >= 0 ? '+' : ''}{combinedStats.totalDayChangePercent.toFixed(2)}%
@@ -2776,21 +3229,24 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center gap-6">
           <button
             onClick={() => setActiveTab('global')}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+            className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
           >
             Global Portfolio
+            {getMarketStatus('global')}
           </button>
           <button
             onClick={() => setActiveTab('india')}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'india' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+            className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'india' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
           >
             India Investment
+            {getMarketStatus('india')}
           </button>
           <button
             onClick={() => setActiveTab('australia')}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+            className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
           >
             Australia Investment
+            {getMarketStatus('australia')}
           </button>
         </div>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between border-t border-zinc-100">
@@ -2826,22 +3282,31 @@ export default function App() {
                 className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all"
                 title="Download Portfolio JSON"
               >
-                <ChevronDown className="w-4 h-4" />
+                <Download className="w-4 h-4" />
               </button>
               <label className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Portfolio JSON">
-                <ChevronUp className="w-4 h-4" />
+                <Upload className="w-4 h-4" />
                 <input type="file" accept=".json" className="hidden" onChange={handleImport} />
               </label>
-
+              <button
+                onClick={() => setShowResetConfirm(true)}
+                disabled={isResetting || holdings.length === 0}
+                className="p-2 text-zinc-600 hover:text-rose-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Reset Portfolio"
+              >
+                {isResetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              </button>
+              {hasBackup && (
+                <button
+                  onClick={() => setShowRestoreConfirm(true)}
+                  disabled={isRestoring}
+                  className="p-2 text-zinc-600 hover:text-emerald-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Restore Last Reset"
+                >
+                  {isRestoring ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
+                </button>
+              )}
             </div>
-            <button
-              onClick={handleSaveToFile}
-              disabled={isSaving}
-              className="flex items-center gap-2 px-4 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Sync
-            </button>
             <div className="relative" ref={addWidgetRef}>
               <button
                 onClick={() => setShowAddWidget(!showAddWidget)}
@@ -2905,6 +3370,21 @@ export default function App() {
             }
           }}
           activeCurrency={activeCurrency}
+          onCurrencyChange={(currency) => {
+            const newTabSettings = {
+              ...tabSettings,
+              [activeTab]: {
+                ...tabSettings[activeTab],
+                currency
+              }
+            };
+            setTabSettings(newTabSettings);
+            if (user) {
+              setDoc(doc(db, 'settings', user.uid), {
+                tabs: newTabSettings
+              }, { merge: true }).catch(err => console.error('Error saving currency:', err));
+            }
+          }}
           riskProfile={tabSettings[activeTab]?.riskProfile}
           targetReturn={tabSettings[activeTab]?.targetReturn}
         />
@@ -2943,7 +3423,7 @@ export default function App() {
                   <div className="flex items-center gap-2 self-start sm:self-center">
                     <div className="flex bg-zinc-100 p-1 rounded-xl">
                       <button
-                        onClick={() => setChartView('asset')}
+                        onClick={() => { setChartView('asset'); setFilterGroup(null); }}
                         className={cn(
                           "px-4 py-1.5 text-xs font-semibold rounded-lg transition-all",
                           chartView === 'asset' 
@@ -2954,7 +3434,7 @@ export default function App() {
                         By Asset
                       </button>
                       <button
-                        onClick={() => setChartView('industry')}
+                        onClick={() => { setChartView('industry'); setFilterGroup(null); }}
                         className={cn(
                           "px-4 py-1.5 text-xs font-semibold rounded-lg transition-all",
                           chartView === 'industry' 
@@ -3018,29 +3498,23 @@ export default function App() {
                             <XAxis type="number" dataKey="cost" name="Investment Cost" tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
                             <YAxis type="number" dataKey="value" name="Market Value" tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
                             <ZAxis type="number" dataKey="value" range={[60, 400]} name="Size" />
-                            <RechartsTooltip cursor={{ strokeDasharray: '3 3' }} content={({ active, payload }) => {
-                              if (active && payload && payload.length) {
-                                const data = payload[0].payload;
-                                return (
-                                  <div className="bg-white p-3 rounded-xl shadow-xl border border-zinc-100">
-                                    <p className="text-sm font-semibold text-zinc-900 mb-1">{data.name}</p>
-                                    <p className="text-sm font-mono text-zinc-600">
-                                      Cost: {formatCurrency(data.cost, activeCurrency)}
-                                    </p>
-                                    <p className="text-sm font-mono text-zinc-600">
-                                      Value: {formatCurrency(data.value, activeCurrency)}
-                                    </p>
-                                    {data.profitLoss !== undefined && (
-                                      <p className={cn("text-xs mt-1 font-medium", data.profitLoss >= 0 ? "text-emerald-500" : "text-rose-500")}>
-                                        {formatCurrency(data.profitLoss, activeCurrency, true)}
-                                      </p>
-                                    )}
-                                  </div>
-                                );
-                              }
-                              return null;
-                            }} />
-                            <Scatter name="Assets" data={chartView === 'asset' ? chartData : sectorData} fill="#8b5cf6" animationDuration={1000} animationEasing="ease-out">
+                            <RechartsTooltip 
+                              cursor={{ strokeDasharray: '3 3' }} 
+                              content={<CustomTooltip activeCurrency={activeCurrency} />} 
+                            />
+                            <Scatter 
+                              name="Assets" 
+                              data={chartView === 'asset' ? chartData : sectorData} 
+                              fill="#8b5cf6" 
+                              animationDuration={1000} 
+                              animationEasing="ease-out"
+                              onClick={(data) => {
+                                if (data && (data as any).name) {
+                                  setFilterGroup(prev => prev === (data as any).name ? null : (data as any).name);
+                                }
+                              }}
+                              style={{ cursor: 'pointer' }}
+                            >
                               {(chartView === 'asset' ? chartData : sectorData).map((entry, index) => (
                                 <Cell key={`cell-${index}`} fill={COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} fillOpacity={0.7} stroke={COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} strokeWidth={1.5} />
                               ))}
@@ -3067,83 +3541,90 @@ export default function App() {
                           <span>Loss</span>
                         </div>
                       </div>
-                      <ResponsiveContainer width="100%" height="100%">
+                      <div className="h-full w-full">
                         {chartType === 'pie' ? (
-                          <PieChart>
-                            <Pie
-                              data={chartView === 'asset' ? chartData : sectorData}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={70}
-                              outerRadius={90}
-                              paddingAngle={4}
-                              dataKey="value"
-                              stroke="none"
-                              animationDuration={1000}
-                              animationEasing="ease-out"
-                            >
-                              {(chartView === 'asset' ? chartData : sectorData).map((entry, index) => (
-                                <Cell 
-                                  key={`cell-${index}`} 
-                                  fill={COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} 
-                                  stroke="rgba(255,255,255,0.5)"
-                                  strokeWidth={2}
-                                />
-                              ))}
-                            </Pie>
-                            <RechartsTooltip 
-                              content={chartView === 'asset' ? <CustomTooltip activeCurrency={activeCurrency} /> : ({ active, payload }) => {
-                                if (active && payload && payload.length) {
-                                  return (
-                                    <div className="bg-white p-3 rounded-xl shadow-xl border border-zinc-100">
-                                      <p className="text-sm font-semibold text-zinc-900 mb-1">{payload[0].name}</p>
-                                      <p className="text-sm font-mono text-zinc-600">
-                                        Value: {formatCurrency(payload[0].value as number, activeCurrency)}
-                                      </p>
-                                      <p className="text-xs text-zinc-400 mt-1">
-                                        {(((payload[0].value as number) / portfolioStats.totalValue) * 100).toFixed(1)}% of portfolio
-                                      </p>
-                                    </div>
-                                  );
+                          <div className="w-full h-full pb-8">
+                            <Chart
+                              chartType="PieChart"
+                              data={[
+                                ['Name', 'Market Value'],
+                                ...(chartView === 'asset' ? chartData : sectorData).map(entry => [entry.name, entry.value])
+                              ]}
+                              chartEvents={[
+                                {
+                                  eventName: "select",
+                                  callback: ({ chartWrapper }) => {
+                                    const chart = chartWrapper.getChart();
+                                    const selection = chart.getSelection();
+                                    if (selection.length > 0) {
+                                      const rowIndex = selection[0].row;
+                                      const data = chartView === 'asset' ? chartData : sectorData;
+                                      if (rowIndex !== null && data[rowIndex]) {
+                                        const selectedName = data[rowIndex].name;
+                                        setFilterGroup(prev => prev === selectedName ? null : selectedName);
+                                      }
+                                    } else {
+                                      setFilterGroup(null);
+                                    }
+                                  }
                                 }
-                                return null;
-                              }} 
+                              ]}
+                              options={{
+                                is3D: true,
+                                backgroundColor: 'transparent',
+                                colors: (chartView === 'asset' ? chartData : sectorData).map((_, index) => COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]),
+                                legend: { position: 'right', textStyle: { color: '#71717a', fontSize: 12 } },
+                                chartArea: { width: '90%', height: '90%' },
+                                pieSliceText: 'percentage',
+                              }}
+                              width="100%"
+                              height="100%"
                             />
-                          </PieChart>
+                          </div>
                         ) : (
-                          <BarChart 
-                            data={chartView === 'asset' ? chartData : sectorData} 
-                            margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                            barGap={8}
-                          >
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart 
+                              data={chartView === 'asset' ? chartData : sectorData} 
+                              margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+                              barGap={4}
+                              onClick={(data) => {
+                                if (data && data.activeLabel) {
+                                  const label = data.activeLabel.toString();
+                                  setFilterGroup(prev => prev === label ? null : label);
+                                }
+                              }}
+                            >
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
-                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
+                            <XAxis 
+                              dataKey="name" 
+                              axisLine={false} 
+                              tickLine={false} 
+                              tick={{ fontSize: 11, fill: '#71717a', angle: -45, textAnchor: 'end' }} 
+                              height={60}
+                              interval={0}
+                            />
                             <YAxis 
                               axisLine={false} 
                               tickLine={false} 
-                              tick={{ fontSize: 12, fill: '#71717a' }}
+                              tick={{ fontSize: 11, fill: '#71717a' }}
                               tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
+                              width={60}
+                              tickCount={8}
                             />
                             <RechartsTooltip 
-                              content={chartView === 'asset' ? <CustomTooltip activeCurrency={activeCurrency} /> : ({ active, payload }) => {
-                                if (active && payload && payload.length) {
-                                  return (
-                                    <div className="bg-white p-3 rounded-xl shadow-xl border border-zinc-100">
-                                      <p className="text-sm font-semibold text-zinc-900 mb-1">{payload[0].name}</p>
-                                      <p className="text-sm font-mono text-zinc-600">
-                                        Value: {formatCurrency(payload[0].value as number, activeCurrency)}
-                                      </p>
-                                      <p className="text-xs text-zinc-400 mt-1">
-                                        {(((payload[0].value as number) / portfolioStats.totalValue) * 100).toFixed(1)}% of portfolio
-                                      </p>
-                                    </div>
-                                  );
-                                }
-                                return null;
-                              }}
-                              cursor={{ fill: '#f4f4f5' }}
+                              content={<CustomTooltip activeCurrency={activeCurrency} />}
+                              cursor={{ fill: '#f4f4f5', opacity: 0.4 }}
                             />
-                            <Bar dataKey="value" name="Market Value" radius={[6, 6, 0, 0]} barSize={chartView === 'asset' ? 20 : 40} animationDuration={1000} animationEasing="ease-out">
+                            <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
+                            <Bar 
+                              dataKey="value" 
+                              name="Market Value" 
+                              radius={[4, 4, 0, 0]} 
+                              barSize={chartView === 'asset' ? 24 : 48} 
+                              animationDuration={1000} 
+                              animationEasing="ease-out"
+                              activeBar={{ stroke: '#4f46e5', strokeWidth: 2, fillOpacity: 0.8 }}
+                            >
                               {(chartView === 'asset' ? chartData : sectorData).map((entry, index) => (
                                 <Cell 
                                   key={`cell-${index}`} 
@@ -3152,23 +3633,24 @@ export default function App() {
                               ))}
                             </Bar>
                             {chartView === 'asset' && (
-                              <Bar dataKey="profitLoss" name="Profit/Loss" radius={[6, 6, 0, 0]} barSize={20} animationDuration={1000} animationEasing="ease-out">
+                              <Bar 
+                                dataKey="profitLoss" 
+                                name="Profit/Loss" 
+                                radius={[4, 4, 0, 0]} 
+                                barSize={24} 
+                                animationDuration={1000} 
+                                animationEasing="ease-out"
+                                activeBar={{ stroke: '#059669', strokeWidth: 2, fillOpacity: 0.8 }}
+                              >
                                 {chartData.map((entry, index) => (
                                   <Cell key={`cell-pl-${index}`} fill={entry.profitLoss >= 0 ? '#10b981' : '#ef4444'} />
                                 ))}
                               </Bar>
                             )}
                           </BarChart>
+                          </ResponsiveContainer>
                         )}
-                      </ResponsiveContainer>
-                      {chartType === 'pie' && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pt-10">
-                          <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">Total</span>
-                          <span className="text-xl font-bold text-zinc-900">
-                            {formatCurrency(portfolioStats.totalValue, activeCurrency, false, 0)}
-                          </span>
-                        </div>
-                      )}
+                      </div>
                     </div>
 
                     {/* Investment Cost Chart */}
@@ -3180,84 +3662,91 @@ export default function App() {
                           <span>Total Cost</span>
                         </div>
                       </div>
-                      <ResponsiveContainer width="100%" height="100%">
+                      <div className="h-full w-full">
                         {chartType === 'pie' ? (
-                          <PieChart>
-                            <Pie
-                              data={chartView === 'asset' ? costChartData : costSectorData}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={70}
-                              outerRadius={90}
-                              paddingAngle={4}
-                              dataKey="value"
-                              stroke="none"
-                              animationDuration={1000}
-                              animationEasing="ease-out"
-                            >
-                              {(chartView === 'asset' ? costChartData : costSectorData).map((entry, index) => (
-                                <Cell 
-                                  key={`cell-cost-${index}`} 
-                                  fill={COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} 
-                                  stroke="rgba(255,255,255,0.5)"
-                                  strokeWidth={2}
-                                />
-                              ))}
-                            </Pie>
-                            <RechartsTooltip 
-                              content={({ active, payload }) => {
-                                if (active && payload && payload.length) {
-                                  return (
-                                    <div className="bg-white p-3 rounded-xl shadow-xl border border-zinc-100">
-                                      <p className="text-sm font-semibold text-zinc-900 mb-1">{payload[0].name}</p>
-                                      <p className="text-sm font-mono text-zinc-600">
-                                        Cost: {formatCurrency(payload[0].value as number, activeCurrency)}
-                                      </p>
-                                      <p className="text-xs text-zinc-400 mt-1">
-                                        {(((payload[0].value as number) / portfolioStats.totalCost) * 100).toFixed(1)}% of total cost
-                                      </p>
-                                    </div>
-                                  );
+                          <div className="w-full h-full pb-8">
+                            <Chart
+                              chartType="PieChart"
+                              data={[
+                                ['Name', 'Investment Cost'],
+                                ...(chartView === 'asset' ? chartData : sectorData).map(entry => [entry.name, entry.cost])
+                              ]}
+                              chartEvents={[
+                                {
+                                  eventName: "select",
+                                  callback: ({ chartWrapper }) => {
+                                    const chart = chartWrapper.getChart();
+                                    const selection = chart.getSelection();
+                                    if (selection.length > 0) {
+                                      const rowIndex = selection[0].row;
+                                      const data = chartView === 'asset' ? chartData : sectorData;
+                                      if (rowIndex !== null && data[rowIndex]) {
+                                        const selectedName = data[rowIndex].name;
+                                        setFilterGroup(prev => prev === selectedName ? null : selectedName);
+                                      }
+                                    } else {
+                                      setFilterGroup(null);
+                                    }
+                                  }
                                 }
-                                return null;
-                              }} 
+                              ]}
+                              options={{
+                                is3D: true,
+                                backgroundColor: 'transparent',
+                                colors: (chartView === 'asset' ? chartData : sectorData).map((_, index) => COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]),
+                                legend: { position: 'right', textStyle: { color: '#71717a', fontSize: 12 } },
+                                chartArea: { width: '90%', height: '90%' },
+                                pieSliceText: 'percentage',
+                              }}
+                              width="100%"
+                              height="100%"
                             />
-                          </PieChart>
+                          </div>
                         ) : (
-                          <BarChart 
-                            data={chartView === 'asset' ? costChartData : costSectorData} 
-                            margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                            barGap={8}
-                          >
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart 
+                              data={chartView === 'asset' ? chartData : sectorData} 
+                              margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+                              barGap={4}
+                              onClick={(data) => {
+                                if (data && data.activeLabel) {
+                                  const label = data.activeLabel.toString();
+                                  setFilterGroup(prev => prev === label ? null : label);
+                                }
+                              }}
+                            >
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
-                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
+                            <XAxis 
+                              dataKey="name" 
+                              axisLine={false} 
+                              tickLine={false} 
+                              tick={{ fontSize: 11, fill: '#71717a', angle: -45, textAnchor: 'end' }} 
+                              height={60}
+                              interval={0}
+                            />
                             <YAxis 
                               axisLine={false} 
                               tickLine={false} 
-                              tick={{ fontSize: 12, fill: '#71717a' }}
+                              tick={{ fontSize: 11, fill: '#71717a' }}
                               tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
+                              width={60}
+                              tickCount={8}
                             />
                             <RechartsTooltip 
-                              content={({ active, payload }) => {
-                                if (active && payload && payload.length) {
-                                  return (
-                                    <div className="bg-white p-3 rounded-xl shadow-xl border border-zinc-100">
-                                      <p className="text-sm font-semibold text-zinc-900 mb-1">{payload[0].name}</p>
-                                      <p className="text-sm font-mono text-zinc-600">
-                                        Cost: {formatCurrency(payload[0].value as number, activeCurrency)}
-                                      </p>
-                                      <p className="text-xs text-zinc-400 mt-1">
-                                        {(((payload[0].value as number) / portfolioStats.totalCost) * 100).toFixed(1)}% of total cost
-                                      </p>
-                                    </div>
-                                  );
-                                }
-                                return null;
-                              }}
-                              cursor={{ fill: '#f4f4f5' }}
+                              content={<CustomTooltip activeCurrency={activeCurrency} />}
+                              cursor={{ fill: '#f4f4f5', opacity: 0.4 }}
                             />
-                            <Bar dataKey="value" name="Investment Cost" radius={[6, 6, 0, 0]} barSize={chartView === 'asset' ? 20 : 40} animationDuration={1000} animationEasing="ease-out">
-                              {(chartView === 'asset' ? costChartData : costSectorData).map((entry, index) => (
+                            <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
+                            <Bar 
+                              dataKey="cost" 
+                              name="Investment Cost" 
+                              radius={[4, 4, 0, 0]} 
+                              barSize={chartView === 'asset' ? 24 : 48} 
+                              animationDuration={1000} 
+                              animationEasing="ease-out"
+                              activeBar={{ stroke: '#7c3aed', strokeWidth: 2, fillOpacity: 0.8 }}
+                            >
+                              {(chartView === 'asset' ? chartData : sectorData).map((entry, index) => (
                                 <Cell 
                                   key={`cell-cost-${index}`} 
                                   fill={chartView === 'asset' ? '#8b5cf6' : COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} 
@@ -3265,16 +3754,9 @@ export default function App() {
                               ))}
                             </Bar>
                           </BarChart>
+                          </ResponsiveContainer>
                         )}
-                      </ResponsiveContainer>
-                      {chartType === 'pie' && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pt-10">
-                          <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">Total Cost</span>
-                          <span className="text-xl font-bold text-zinc-900">
-                            {formatCurrency(portfolioStats.totalCost, activeCurrency, false, 0)}
-                          </span>
-                        </div>
-                      )}
+                      </div>
                     </div>
                   </>
                   )}
@@ -3284,8 +3766,7 @@ export default function App() {
                     <h3 className="text-sm font-semibold text-zinc-900 mb-4">Allocation Details</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                       {(chartView === 'asset' ? chartData : sectorData).slice(0, showAllAllocation ? undefined : 9).map((entry, index) => {
-                        const costEntry = (chartView === 'asset' ? costChartData : costSectorData).find(c => c.name === entry.name);
-                        const costValue = costEntry ? costEntry.value : 0;
+                        const costValue = entry.cost || 0;
                         return (
                           <div 
                             key={entry.name} 
@@ -3355,6 +3836,7 @@ export default function App() {
                         onRemove={() => removeWidget('calendar')}
                         size={widgetSizes.calendar}
                         activeCurrency={activeCurrency}
+                        onEarningsClick={handleAnalyzeEarnings}
                       />
                     </SortableWidget>
                   );
@@ -3365,7 +3847,20 @@ export default function App() {
                     <SortableWidget key="holdings" id="holdings" className={cn("overflow-hidden", getWidgetClass('holdings'))} onDoubleClick={() => toggleWidgetSize('holdings')}>
                       <div className="px-6 py-5 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/50">
                         <div className="flex items-center gap-4 relative z-20">
-                          <h2 className="text-lg font-semibold">Current Holdings</h2>
+                          <h2 className="text-lg font-semibold flex items-center gap-2">
+                            Current Holdings
+                            {filterGroup && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                                {filterGroup}
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); setFilterGroup(null); }}
+                                  className="hover:bg-indigo-200 rounded-full p-0.5 ml-1 transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </span>
+                            )}
+                          </h2>
                           <button onClick={() => toggleWidgetSize('holdings')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
                             {widgetSizes.holdings === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                           </button>
@@ -3616,15 +4111,22 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="ticker" className="block text-sm font-medium text-zinc-700 mb-1">Ticker Symbol</label>
-                    <input
-                      id="ticker"
-                      type="text"
-                      required
-                      placeholder="e.g. AAPL"
-                      className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent uppercase placeholder:normal-case"
-                      value={ticker}
-                      onChange={(e) => setTicker(e.target.value)}
-                    />
+                    <div className="relative">
+                      <input
+                        id="ticker"
+                        type="text"
+                        required
+                        placeholder="e.g. AAPL or CASH"
+                        className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent uppercase placeholder:normal-case"
+                        value={ticker}
+                        onChange={(e) => setTicker(e.target.value)}
+                      />
+                      {ticker.toUpperCase() === 'CASH' && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                          <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase">Cash Mode</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label htmlFor="transactionDate" className="block text-sm font-medium text-zinc-700 mb-1">Date</label>
@@ -3640,7 +4142,7 @@ export default function App() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label htmlFor="shares" className="block text-sm font-medium text-zinc-700 mb-1">Shares</label>
+                    <label htmlFor="shares" className="block text-sm font-medium text-zinc-700 mb-1">{ticker.toUpperCase() === 'CASH' ? 'Amount' : 'Shares'}</label>
                     <input
                       id="shares"
                       type="number"
@@ -3654,18 +4156,40 @@ export default function App() {
                     />
                   </div>
                   <div>
-                    <label htmlFor="avgPrice" className="block text-sm font-medium text-zinc-700 mb-1">{transactionType === 'buy' ? 'Avg Cost' : 'Sell Price'} ({getCurrencySymbol(activeCurrency)})</label>
-                    <input
-                      id="avgPrice"
-                      type="number"
-                      required
-                      min="0.01"
-                      step="any"
-                      placeholder="0.00"
-                      className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent"
-                      value={avgPrice}
-                      onChange={(e) => setAvgPrice(e.target.value)}
-                    />
+                    <label htmlFor="avgPrice" className="block text-sm font-medium text-zinc-700 mb-1">
+                      {ticker.toUpperCase() === 'CASH' ? 'Currency' : (transactionType === 'buy' ? 'Avg Cost' : 'Sell Price')}
+                    </label>
+                    <div className="flex">
+                      <select
+                        className={cn(
+                          "px-2 py-2 border border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent bg-zinc-50 text-zinc-700",
+                          ticker.toUpperCase() === 'CASH' ? "w-full rounded-lg" : "rounded-l-lg border-r-0"
+                        )}
+                        value={formCurrency || activeCurrency}
+                        onChange={(e) => setFormCurrency(e.target.value)}
+                      >
+                        <option value="USD">USD</option>
+                        <option value="AUD">AUD</option>
+                        <option value="INR">INR</option>
+                        <option value="EUR">EUR</option>
+                        <option value="GBP">GBP</option>
+                        <option value="CAD">CAD</option>
+                        <option value="SGD">SGD</option>
+                      </select>
+                      {ticker.toUpperCase() !== 'CASH' && (
+                        <input
+                          id="avgPrice"
+                          type="number"
+                          required
+                          min="0.01"
+                          step="any"
+                          placeholder="0.00"
+                          className="w-full px-3 py-2 border border-zinc-300 rounded-r-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent"
+                          value={avgPrice}
+                          onChange={(e) => setAvgPrice(e.target.value)}
+                        />
+                      )}
+                    </div>
                   </div>
                 </div>
                 <button
@@ -3885,6 +4409,7 @@ export default function App() {
                                         tickLine={false} 
                                         tick={{ fontSize: 12, fill: '#71717a' }}
                                         tickFormatter={(val) => val >= 1000000 ? `${(val / 1000000).toFixed(1)}M` : val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}
+                                        tickCount={8}
                                       />
                                       <RechartsTooltip 
                                         formatter={(value: number, name: string, props: any) => {
@@ -3895,7 +4420,14 @@ export default function App() {
                                         contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                                         cursor={{ fill: '#f4f4f5' }}
                                       />
-                                      <Bar dataKey={kpiValueKey} name={kpiName} radius={[6, 6, 0, 0]} animationDuration={1000} animationEasing="ease-out">
+                                      <Bar 
+                                        dataKey={kpiValueKey} 
+                                        name={kpiName} 
+                                        radius={[4, 4, 0, 0]} 
+                                        animationDuration={1000} 
+                                        animationEasing="ease-out"
+                                        activeBar={{ stroke: '#f59e0b', strokeWidth: 2, fillOpacity: 0.8 }}
+                                      >
                                         {businessKpisData.map((entry: any, index: number) => {
                                           const defaultColor = kpiIndex === 1 ? "#f59e0b" : kpiIndex === 2 ? "#ec4899" : "#06b6d4";
                                           const projectionColor = kpiIndex === 1 ? "#fcd34d" : kpiIndex === 2 ? "#f9a8d4" : "#67e8f9";
@@ -3917,7 +4449,15 @@ export default function App() {
                             <h4 className="text-base font-semibold mb-4 text-zinc-800">Revenue & Net Income</h4>
                             <div className="h-80">
                               <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={financialsData.kpis} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
+                                <BarChart data={financialsData.kpis.map((kpi: any) => {
+                                  const nativeCurrency = financialsData.financialData?.financialCurrency || 'USD';
+                                  const rate = getExchangeRate(nativeCurrency, activeCurrency, quotes);
+                                  return {
+                                    ...kpi,
+                                    revenue: kpi.revenue * rate,
+                                    netIncome: kpi.netIncome * rate
+                                  };
+                                })} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
                                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
                                   <XAxis dataKey="year" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
                                   <YAxis 
@@ -3925,6 +4465,7 @@ export default function App() {
                                     tickLine={false} 
                                     tick={{ fontSize: 12, fill: '#71717a' }}
                                     tickFormatter={(val) => `${getCurrencySymbol(activeCurrency)}${(val / 1e9).toFixed(1)}B`}
+                                    tickCount={8}
                                   />
                                   <RechartsTooltip 
                                     formatter={(value: number, name: string) => [`${getCurrencySymbol(activeCurrency)}${(value / 1e9).toFixed(2)}B`, name]}
@@ -3932,8 +4473,9 @@ export default function App() {
                                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                                     cursor={{ fill: '#f4f4f5' }}
                                   />
-                                  <Bar dataKey="revenue" name="Revenue" fill="#6366f1" radius={[6, 6, 0, 0]} animationDuration={1000} animationEasing="ease-out" />
-                                  <Bar dataKey="netIncome" name="Net Income" fill="#10b981" radius={[6, 6, 0, 0]} animationDuration={1000} animationEasing="ease-out" />
+                                  <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                                  <Bar dataKey="revenue" name="Revenue" fill="#6366f1" radius={[4, 4, 0, 0]} animationDuration={1000} animationEasing="ease-out" activeBar={{ stroke: '#4f46e5', strokeWidth: 2, fillOpacity: 0.8 }} />
+                                  <Bar dataKey="netIncome" name="Net Income" fill="#10b981" radius={[4, 4, 0, 0]} animationDuration={1000} animationEasing="ease-out" activeBar={{ stroke: '#059669', strokeWidth: 2, fillOpacity: 0.8 }} />
                                 </BarChart>
                               </ResponsiveContainer>
                             </div>
@@ -3943,7 +4485,15 @@ export default function App() {
                             <h4 className="text-base font-semibold mb-4 text-zinc-800">Cash Flow</h4>
                             <div className="h-80">
                               <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={financialsData.kpis} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
+                                <BarChart data={financialsData.kpis.map((kpi: any) => {
+                                  const nativeCurrency = financialsData.financialData?.financialCurrency || 'USD';
+                                  const rate = getExchangeRate(nativeCurrency, activeCurrency, quotes);
+                                  return {
+                                    ...kpi,
+                                    operatingCashflow: (kpi.operatingCashflow || 0) * rate,
+                                    freeCashflow: (kpi.freeCashflow || 0) * rate
+                                  };
+                                })} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
                                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
                                   <XAxis dataKey="year" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
                                   <YAxis 
@@ -3951,6 +4501,7 @@ export default function App() {
                                     tickLine={false} 
                                     tick={{ fontSize: 12, fill: '#71717a' }}
                                     tickFormatter={(val) => `${getCurrencySymbol(activeCurrency)}${(val / 1e9).toFixed(1)}B`}
+                                    tickCount={8}
                                   />
                                   <RechartsTooltip 
                                     formatter={(value: number, name: string) => [`${getCurrencySymbol(activeCurrency)}${(value / 1e9).toFixed(2)}B`, name]}
@@ -3958,8 +4509,9 @@ export default function App() {
                                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                                     cursor={{ fill: '#f4f4f5' }}
                                   />
-                                  <Bar dataKey="operatingCashflow" name="Operating Cash Flow" fill="#3b82f6" radius={[6, 6, 0, 0]} animationDuration={1000} animationEasing="ease-out" />
-                                  <Bar dataKey="freeCashflow" name="Free Cash Flow" fill="#8b5cf6" radius={[6, 6, 0, 0]} animationDuration={1000} animationEasing="ease-out" />
+                                  <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                                  <Bar dataKey="operatingCashflow" name="Operating Cash Flow" fill="#3b82f6" radius={[4, 4, 0, 0]} animationDuration={1000} animationEasing="ease-out" activeBar={{ stroke: '#2563eb', strokeWidth: 2, fillOpacity: 0.8 }} />
+                                  <Bar dataKey="freeCashflow" name="Free Cash Flow" fill="#8b5cf6" radius={[4, 4, 0, 0]} animationDuration={1000} animationEasing="ease-out" activeBar={{ stroke: '#7c3aed', strokeWidth: 2, fillOpacity: 0.8 }} />
                                 </BarChart>
                               </ResponsiveContainer>
                             </div>
@@ -3999,6 +4551,15 @@ export default function App() {
               </button>
             </div>
             <div className="flex-1 overflow-auto p-6 bg-zinc-50">
+              {undoError && (
+                <div className="mb-4 p-3 bg-rose-50 border border-rose-100 rounded-lg flex items-center gap-2 text-rose-700 text-sm">
+                  <AlertCircle className="w-4 h-4" />
+                  {undoError}
+                  <button onClick={() => setUndoError(null)} className="ml-auto text-rose-400 hover:text-rose-600">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
               {isHistoryLoading ? (
                 <div className="flex items-center justify-center h-40">
                   <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
@@ -4018,10 +4579,11 @@ export default function App() {
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Shares</th>
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Price</th>
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Total</th>
+                        <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-center">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
-                      {historyTransactions.map((tx) => (
+                      {historyTransactions.map((tx, index) => (
                         <tr key={tx.id} className="hover:bg-zinc-100/50 transition-all duration-200 group/row">
                           <td className="px-4 py-3 text-sm text-zinc-900">
                             {new Date(tx.date).toLocaleDateString()} {new Date(tx.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -4038,10 +4600,44 @@ export default function App() {
                             {tx.shares.toLocaleString(undefined, { maximumFractionDigits: 5 })}
                           </td>
                           <td className="px-4 py-3 text-sm text-right font-mono text-zinc-900">
-                            {formatCurrency(tx.price, activeCurrency)}
+                            {(() => {
+                              const rate = getExchangeRate(tx.currency || activeCurrency, activeCurrency, quotes);
+                              return formatCurrency(tx.price * rate, activeCurrency);
+                            })()}
                           </td>
                           <td className="px-4 py-3 text-sm text-right font-mono font-medium text-zinc-900">
-                            {formatCurrency(tx.shares * tx.price, activeCurrency)}
+                            {(() => {
+                              const rate = getExchangeRate(tx.currency || activeCurrency, activeCurrency, quotes);
+                              return formatCurrency(tx.shares * tx.price * rate, activeCurrency);
+                            })()}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            {confirmUndoId === tx.id ? (
+                              <div className="flex items-center justify-center gap-2">
+                                <button
+                                  onClick={() => handleUndoTransaction(tx)}
+                                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
+                                  title="Confirm Undo"
+                                >
+                                  <Check className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => setConfirmUndoId(null)}
+                                  className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                  title="Cancel Undo"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setConfirmUndoId(tx.id)}
+                                className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                title="Undo Transaction"
+                              >
+                                <Undo2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -4055,6 +4651,104 @@ export default function App() {
       )}
 
       {/* Analysis Modal */}
+      {/* Reset Confirmation Modal */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-rose-50/50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center">
+                  <AlertCircle className="w-5 h-5 text-rose-600" />
+                </div>
+                <h2 className="text-xl font-bold text-zinc-900">Reset Portfolio</h2>
+              </div>
+              <button 
+                onClick={() => setShowResetConfirm(false)}
+                className="text-zinc-400 hover:text-zinc-600 transition-colors p-2 hover:bg-zinc-100 rounded-full"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <p className="text-zinc-600">
+                Are you sure you want to completely reset the <strong>{activeTab === 'global' ? 'Global Portfolio' : activeTab === 'india' ? 'India Investment' : 'Australia Investment'}</strong>?
+              </p>
+              <p className="text-sm text-rose-600 font-medium bg-rose-50 p-3 rounded-lg border border-rose-100">
+                This action cannot be undone. All holdings and associated transactions in this tab will be permanently deleted.
+              </p>
+            </div>
+            
+            <div className="p-6 border-t border-zinc-100 bg-zinc-50 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 text-sm font-bold text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetPortfolio}
+                disabled={isResetting}
+                className="flex items-center gap-2 px-6 py-2 bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isResetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Yes, Reset Portfolio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restore Confirmation Modal */}
+      {showRestoreConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-emerald-50/50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center">
+                  <Undo2 className="w-5 h-5 text-emerald-600" />
+                </div>
+                <h2 className="text-xl font-bold text-zinc-900">Restore Portfolio</h2>
+              </div>
+              <button 
+                onClick={() => setShowRestoreConfirm(false)}
+                className="text-zinc-400 hover:text-zinc-600 transition-colors p-2 hover:bg-zinc-100 rounded-full"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <p className="text-zinc-600">
+                Are you sure you want to restore the previously reset portfolio?
+              </p>
+              <p className="text-sm text-emerald-600 font-medium bg-emerald-50 p-3 rounded-lg border border-emerald-100">
+                This will recover the holdings and transactions from your last reset. The backup will be consumed and cannot be restored again.
+              </p>
+            </div>
+            
+            <div className="p-6 border-t border-zinc-100 bg-zinc-50 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowRestoreConfirm(false)}
+                className="px-4 py-2 text-sm font-bold text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRestorePortfolio}
+                disabled={isRestoring}
+                className="flex items-center gap-2 px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isRestoring ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
+                Yes, Restore
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Quick Add Modal */}
       {showQuickAddModal && quickAddHolding && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -4073,7 +4767,9 @@ export default function App() {
             </div>
             <form onSubmit={handleQuickAddSubmit} className="p-6 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Quantity to Add</label>
+                <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">
+                  {quickAddHolding.ticker === 'CASH' ? 'Amount to Add' : 'Quantity to Add'}
+                </label>
                 <input
                   type="number"
                   value={quickAddShares}
@@ -4085,18 +4781,38 @@ export default function App() {
                   autoFocus
                 />
               </div>
-              <div>
-                <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Price per Share ({getCurrencySymbol(activeCurrency)})</label>
-                <input
-                  type="number"
-                  value={quickAddPrice}
-                  onChange={(e) => setQuickAddPrice(e.target.value)}
-                  className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono"
-                  placeholder="0.00"
-                  step="any"
-                  required
-                />
-              </div>
+              {quickAddHolding.ticker !== 'CASH' && (
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="col-span-2">
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Price per Share</label>
+                    <input
+                      type="number"
+                      value={quickAddPrice}
+                      onChange={(e) => setQuickAddPrice(e.target.value)}
+                      className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono"
+                      placeholder="0.00"
+                      step="any"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Currency</label>
+                    <select
+                      value={quickAddCurrency}
+                      onChange={(e) => setQuickAddCurrency(e.target.value)}
+                      className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono text-sm"
+                    >
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                      <option value="GBP">GBP</option>
+                      <option value="AUD">AUD</option>
+                      <option value="CAD">CAD</option>
+                      <option value="INR">INR</option>
+                      <option value="SGD">SGD</option>
+                    </select>
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Transaction Date</label>
                 <input
@@ -4228,6 +4944,66 @@ export default function App() {
         </div>
       )}
 
+      {showEarningsAnalysisModal && selectedEarningsEvent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between bg-white sticky top-0 z-10">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600">
+                  <CalendarIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-zinc-900">
+                    Earnings Analysis: {selectedEarningsEvent.symbol}
+                  </h3>
+                  <div className="text-sm text-zinc-500">
+                    {format(parseISO(selectedEarningsEvent.date), 'MMMM d, yyyy')}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowEarningsAnalysisModal(false)}
+                className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-6 bg-zinc-50">
+              {isAnalyzingEarnings ? (
+                <div className="flex flex-col items-center justify-center h-64">
+                  <div className="relative">
+                    <Loader2 className="w-12 h-12 text-indigo-600 animate-spin" />
+                    <Zap className="w-5 h-5 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-500 animate-pulse" />
+                  </div>
+                  <p className="text-zinc-500 mt-4 font-medium animate-pulse">
+                    Analyzing earnings for {selectedEarningsEvent.symbol}...
+                  </p>
+                  <p className="text-xs text-zinc-400 mt-1 italic">Scanning earnings data, analyst expectations, and recent news</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="bg-white border border-zinc-200 rounded-xl p-6 shadow-sm">
+                    <div className="prose prose-indigo prose-sm max-w-none">
+                      <Markdown>{earningsAnalysisResult}</Markdown>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-zinc-200 bg-white flex justify-between items-center">
+              <p className="text-[10px] text-zinc-400 italic">
+                AI-generated insights. Verify with official sources.
+              </p>
+              <button
+                onClick={() => setShowEarningsAnalysisModal(false)}
+                className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

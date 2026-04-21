@@ -19,6 +19,53 @@ import crypto from 'crypto';
 import dns from 'node:dns/promises';
 
 const yahooFinance = new YahooFinance();
+
+// Disable Yahoo Finance schema validation errors which can happen when Yahoo changes their API format
+// @ts-ignore
+yahooFinance.setGlobalConfig({
+  validation: {
+    logErrors: false,
+    throwErrors: false
+  }
+});
+
+async function yahooWithRetry<T>(fn: () => Promise<T>, retries = 3, backoff = 1000): Promise<T> {
+  const retryableErrors = [
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'EHOSTUNREACH',
+    'EPIPE',
+    'fetch failed',
+    'socket hang up',
+    'UND_ERR_CONNECT_TIMEOUT'
+  ];
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const errorCode = err.code || err.cause?.code;
+      const errorMessage = err.message || '';
+      const causeMessage = err.cause?.message || '';
+      
+      const isRetryable = retryableErrors.some(e => 
+        errorCode === e || 
+        errorMessage.includes(e) || 
+        causeMessage.includes(e)
+      );
+      
+      if (isRetryable && i < retries - 1) {
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        backoff *= 2;
+        continue;
+      }
+      throw err;
+    }
+  }
+  return await fn(); // Final attempt
+}
 const authTokens = new Map<string, any>();
 
 // Cache for API responses
@@ -289,11 +336,18 @@ async function startServer() {
       return res.status(400).json({ error: 'Query parameter "q" is required' });
     }
     try {
-      const results = await yahooFinance.search(q);
+      const results = await yahooWithRetry(() => yahooFinance.search(q));
       res.json(results);
-    } catch (error) {
-      console.error('Search error:', error);
-      res.status(500).json({ error: 'Failed to search stocks' });
+    } catch (error: any) {
+      const errorCode = error.code || error.cause?.code;
+      const errorMessage = error.message || '';
+      if (errorCode === 'ECONNRESET' || errorCode === 'UND_ERR_CONNECT_TIMEOUT' || errorMessage.includes('fetch failed') || errorMessage.includes('socket hang up')) {
+        console.warn(`Yahoo Finance search warning: ${errorCode || errorMessage}.`);
+        res.status(503).json({ error: 'Service temporarily unavailable' });
+      } else {
+        console.error('Search error:', error);
+        res.status(500).json({ error: 'Failed to search stocks' });
+      }
     }
   });
 
@@ -567,7 +621,7 @@ async function startServer() {
 
     // Try Yahoo Finance first for bulk quotes (more reliable for multiple symbols)
     try {
-      const results = await yahooFinance.quote(symbolsToFetch);
+      const results = await yahooWithRetry(() => yahooFinance.quote(symbolsToFetch));
       const quotesArray = Array.isArray(results) ? results : [results];
       
       const getCurrencyFromSymbol = (symbol: string) => {
@@ -598,14 +652,21 @@ async function startServer() {
             marketState,
             changePercent: quote.regularMarketChangePercent,
             ytdReturn: quote.ytdReturn || (quote.fiftyDayAverageChangePercent ? quote.fiftyDayAverageChangePercent * 100 : 0),
-            currency: quote.currency || getCurrencyFromSymbol(quote.symbol)
+            currency: quote.currency || getCurrencyFromSymbol(quote.symbol),
+            marketCap: quote.marketCap
           };
           quotes[quote.symbol] = quoteData;
           quoteCache.set(quote.symbol, { data: quoteData, timestamp: now });
         }
       });
-    } catch (error) {
-      console.error('Yahoo Finance bulk quote error:', error);
+    } catch (error: any) {
+      const errorCode = error.code || error.cause?.code;
+      const errorMessage = error.message || '';
+      if (errorCode === 'ECONNRESET' || errorCode === 'UND_ERR_CONNECT_TIMEOUT' || errorMessage.includes('fetch failed') || errorMessage.includes('socket hang up')) {
+        console.warn(`Yahoo Finance bulk quote warning: ${errorCode || errorMessage}.`);
+      } else {
+        console.error('Yahoo Finance bulk quote error:', error);
+      }
     }
 
     // Fallback to Finnhub for any missing symbols if key is available
@@ -662,9 +723,9 @@ async function startServer() {
     }
 
     try {
-      await Promise.all(symbolList.map(async (symbol) => {
+      for (const symbol of symbolList) {
         try {
-          const result = await yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] });
+          const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] }));
           if (result && result.calendarEvents && result.calendarEvents.earnings) {
             const earningsData = result.calendarEvents.earnings;
             if (earningsData.earningsDate && earningsData.earningsDate.length > 0) {
@@ -681,11 +742,13 @@ async function startServer() {
           const msg = err?.message || String(err);
           if (msg.includes('No fundamentals data found') || msg.includes('Quote not found') || msg.includes('Not Found')) {
             console.log(`No earnings data available for ${symbol}`);
+          } else if (err?.cause?.code === 'ECONNRESET' || err?.code === 'UND_ERR_CONNECT_TIMEOUT' || msg.includes('fetch failed') || msg.includes('socket hang up')) {
+            console.warn(`Yahoo Finance earnings warning for ${symbol}: ${err?.code || err?.cause?.code || msg}.`);
           } else {
             console.log(`Error fetching earnings for ${symbol}: ${msg}`);
           }
         }
-      }));
+      }
       
       earningsCache.set(cacheKey, { data: earnings, timestamp: now });
       res.json(earnings);
@@ -693,6 +756,79 @@ async function startServer() {
       console.error('Error fetching earnings:', error);
       res.status(500).json({ error: 'Failed to fetch earnings' });
     }
+  });
+
+  app.get('/api/calendar/earnings.ics', async (req, res) => {
+    const symbols = req.query.symbols as string;
+    if (!symbols) return res.status(400).send('Symbols required');
+
+    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase());
+    const now = Date.now();
+    const earnings: any[] = [];
+
+    const cacheKey = symbolList.sort().join(',');
+    const cached = earningsCache.get(cacheKey);
+    
+    let eventsToProcess = [];
+    if (cached && (now - cached.timestamp < EARNINGS_TTL)) {
+      eventsToProcess = cached.data;
+    } else {
+      try {
+        for (const symbol of symbolList) {
+          try {
+            const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] }));
+            if (result && result.calendarEvents && result.calendarEvents.earnings) {
+              const earningsData = result.calendarEvents.earnings;
+              if (earningsData.earningsDate && earningsData.earningsDate.length > 0) {
+                earnings.push({
+                  symbol,
+                  date: earningsData.earningsDate[0],
+                  estimate: earningsData.earningsAverage,
+                  high: earningsData.earningsHigh,
+                  low: earningsData.earningsLow
+                });
+              }
+            }
+          } catch (err) {
+            // ignore errors for individual symbols
+          }
+        }
+        earningsCache.set(cacheKey, { data: earnings, timestamp: now });
+        eventsToProcess = earnings;
+      } catch (error) {
+        console.error('Error fetching earnings for ICS:', error);
+        return res.status(500).send('Error generating calendar');
+      }
+    }
+
+    let ics = 'BEGIN:VCALENDAR\r\n';
+    ics += 'VERSION:2.0\r\n';
+    ics += 'PRODID:-//Stock Portfolio Tracker//Earnings Calendar//EN\r\n';
+    ics += 'CALSCALE:GREGORIAN\r\n';
+    ics += 'METHOD:PUBLISH\r\n';
+    ics += 'X-WR-CALNAME:Earnings Calendar\r\n';
+    ics += 'X-WR-TIMEZONE:UTC\r\n';
+    
+    eventsToProcess.forEach(event => {
+      if (!event.date) return;
+      const date = new Date(event.date);
+      const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 8);
+      const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+      
+      ics += 'BEGIN:VEVENT\r\n';
+      ics += `UID:${event.symbol}-earnings-${dateStr}@stocktracker\r\n`;
+      ics += `DTSTAMP:${dtstamp}\r\n`;
+      ics += `DTSTART;VALUE=DATE:${dateStr}\r\n`;
+      ics += `SUMMARY:${event.symbol} Earnings\r\n`;
+      ics += `DESCRIPTION:Estimated EPS: ${event.estimate || 'N/A'}\\nHigh: ${event.high || 'N/A'}\\nLow: ${event.low || 'N/A'}\r\n`;
+      ics += 'END:VEVENT\r\n';
+    });
+    
+    ics += 'END:VCALENDAR\r\n';
+
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="earnings.ics"');
+    res.send(ics);
   });
 
   app.get('/api/dividends', async (req, res) => {
@@ -703,9 +839,9 @@ async function startServer() {
     const dividends: any[] = [];
 
     try {
-      await Promise.all(symbolList.map(async (symbol) => {
+      for (const symbol of symbolList) {
         try {
-          const result = await yahooFinance.quoteSummary(symbol, { modules: ['summaryDetail', 'calendarEvents'] });
+          const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['summaryDetail', 'calendarEvents'] }));
           if (result) {
             const summary = result.summaryDetail;
             const calendar = result.calendarEvents;
@@ -724,11 +860,15 @@ async function startServer() {
           }
         } catch (err: any) {
           const msg = err?.message || String(err);
-          if (!msg.includes('No fundamentals data found') && !msg.includes('Quote not found') && !msg.includes('Not Found')) {
+          if (msg.includes('No fundamentals data found') || msg.includes('Quote not found') || msg.includes('Not Found')) {
+            // Ignore
+          } else if (err?.cause?.code === 'ECONNRESET' || err?.code === 'UND_ERR_CONNECT_TIMEOUT' || msg.includes('fetch failed') || msg.includes('socket hang up')) {
+            console.warn(`Yahoo Finance dividends warning for ${symbol}: ${err?.code || err?.cause?.code || msg}.`);
+          } else {
             console.log(`Error fetching dividends for ${symbol}: ${msg}`);
           }
         }
-      }));
+      }
       
       res.json(dividends);
     } catch (error) {
@@ -791,9 +931,9 @@ async function startServer() {
     if (!symbol) return res.status(400).json({ error: 'Symbol is required' });
 
     try {
-      const result = await yahooFinance.quoteSummary(symbol, { 
+      const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { 
         modules: ['incomeStatementHistory', 'balanceSheetHistory', 'cashflowStatementHistory', 'financialData'] 
-      });
+      }));
       
       const incomeStatement = result.incomeStatementHistory?.incomeStatementHistory || [];
       const balanceSheet = result.balanceSheetHistory?.balanceSheetStatements || [];
@@ -836,9 +976,16 @@ async function startServer() {
         kpis,
         financialData: result.financialData
       });
-    } catch (error) {
-      console.error('Error fetching financials:', error);
-      res.status(500).json({ error: 'Failed to fetch financials' });
+    } catch (error: any) {
+      const errorCode = error.code || error.cause?.code;
+      const errorMessage = error.message || '';
+      if (errorCode === 'ECONNRESET' || errorCode === 'UND_ERR_CONNECT_TIMEOUT' || errorMessage.includes('fetch failed') || errorMessage.includes('socket hang up')) {
+        console.warn(`Yahoo Finance financials warning for ${symbol}: ${errorCode || errorMessage}.`);
+        res.status(503).json({ error: 'Service temporarily unavailable' });
+      } else {
+        console.error('Error fetching financials:', error);
+        res.status(500).json({ error: 'Failed to fetch financials' });
+      }
     }
   });
 
@@ -884,7 +1031,7 @@ async function startServer() {
     };
 
     try {
-      await Promise.all(symbolsToFetch.map(async (symbol) => {
+      for (const symbol of symbolsToFetch) {
         try {
           let sector = 'Unknown';
           let industry = 'Unknown';
@@ -896,7 +1043,7 @@ async function startServer() {
           }
 
           try {
-            const result = await yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] });
+            const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }));
             if (result && result.assetProfile) {
               sector = result.assetProfile.sector || 'Unknown';
               industry = result.assetProfile.industry || 'Unknown';
@@ -930,7 +1077,7 @@ async function startServer() {
         } catch (err) {
           metadata[symbol] = { sector: 'Unknown', industry: 'Unknown' };
         }
-      }));
+      }
       
       res.json(metadata);
     } catch (error) {
@@ -1021,45 +1168,54 @@ async function startServer() {
     if (subscribedSymbols.size === 0) return;
     
     const symbols = Array.from(subscribedSymbols);
-    try {
-      const results = await yahooFinance.quote(symbols);
-      const quotesArray = Array.isArray(results) ? results : [results];
-      
-      const trades = quotesArray.map((quote: any) => {
-        let price = quote.regularMarketPrice;
-        let previousClose = quote.regularMarketPreviousClose;
+    
+    if (symbols.length > 0) {
+      try {
+        const results = await yahooWithRetry(() => yahooFinance.quote(symbols));
+        const quotesArray = Array.isArray(results) ? results : [results];
         
-        if (quote.marketState === 'PRE' && quote.preMarketPrice) {
-          price = quote.preMarketPrice;
-        } else if ((quote.marketState === 'POST' || quote.marketState === 'CLOSED' || quote.marketState === 'POSTPOST') && quote.postMarketPrice) {
-          price = quote.postMarketPrice;
-        } else if (quote.postMarketPrice && quote.marketState !== 'REGULAR') {
-          price = quote.postMarketPrice;
-        }
-
-        return {
-          s: quote.symbol,
-          p: price,
-          pc: previousClose,
-          ms: quote.marketState
-        };
-      });
-
-      if (trades.length > 0) {
-        const messageStr = JSON.stringify({ type: 'trade', data: trades });
-        wss.clients.forEach(client => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(messageStr);
+        const trades = quotesArray.map((quote: any) => {
+          let price = quote.regularMarketPrice;
+          let previousClose = quote.regularMarketPreviousClose;
+          
+          if (quote.marketState === 'PRE' && quote.preMarketPrice) {
+            price = quote.preMarketPrice;
+          } else if ((quote.marketState === 'POST' || quote.marketState === 'CLOSED' || quote.marketState === 'POSTPOST') && quote.postMarketPrice) {
+            price = quote.postMarketPrice;
+          } else if (quote.postMarketPrice && quote.marketState !== 'REGULAR') {
+            price = quote.postMarketPrice;
           }
+
+          return {
+            s: quote.symbol,
+            p: price,
+            pc: previousClose,
+            ms: quote.marketState
+          };
         });
+
+        if (trades.length > 0) {
+          const messageStr = JSON.stringify({ type: 'trade', data: trades });
+          wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(messageStr);
+            }
+          });
+        }
+      } catch (err: any) {
+        const errorCode = err.code || err.cause?.code;
+        const errorMessage = err.message || '';
+        if (errorCode === 'ECONNRESET' || errorCode === 'UND_ERR_CONNECT_TIMEOUT' || errorMessage.includes('fetch failed') || errorMessage.includes('socket hang up')) {
+          // Silently ignore retryable errors during polling
+        } else {
+          console.error('Yahoo Finance polling error:', err);
+        }
       }
-    } catch (err) {
-      console.error('Yahoo Finance polling error:', err);
     }
   }
 
-  // Poll Yahoo Finance every 3 seconds for "real-time" updates including extended hours
-  setInterval(fetchYahooQuotes, 3000);
+  // Poll Yahoo Finance every 15 seconds for "real-time" updates including extended hours
+  setInterval(fetchYahooQuotes, 15000);
 
   wss.on('connection', (ws) => {
     ws.on('message', (message) => {
