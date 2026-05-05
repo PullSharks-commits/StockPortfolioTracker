@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ScatterChart, Scatter, ZAxis, Legend } from 'recharts';
-import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle, Undo2, Download, Upload } from 'lucide-react';
-import { format, isSameMonth, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, addMonths, subMonths, parseISO } from 'date-fns';
+import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle, Undo2, Download, Upload, History, Activity } from 'lucide-react';
+import { format, isSameMonth, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, addMonths, subMonths, subYears, parseISO } from 'date-fns';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, horizontalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -10,6 +10,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Chart } from "react-google-charts";
 import { GoogleGenAI, Type } from '@google/genai';
+import Papa from 'papaparse';
 import { 
   auth, 
   db, 
@@ -32,6 +33,8 @@ import {
   User
 } from './firebase';
 import { StatCard, AllocationChart, PortfolioSummary } from './components/DashboardComponents';
+import { PerformanceChart } from './components/PerformanceChart';
+import { HistoricalPriceChart } from './components/HistoricalPriceChart';
 import { StockSearch } from './components/StockSearch';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
@@ -80,7 +83,7 @@ const HoldingRow = React.memo(({
   handleSaveEdit,
   handleCancelEdit,
   handleEditClick,
-  handleAnalyze,
+  promptAnalysisStrategy,
   setSelectedChartTicker,
   handleViewHistory,
   handleDelete,
@@ -113,7 +116,8 @@ const HoldingRow = React.memo(({
       <td className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => e.stopPropagation()}>
         {editingId === holding.id ? (
           <input
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={editShares}
             onChange={(e) => setEditShares(e.target.value)}
             className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
@@ -142,7 +146,8 @@ const HoldingRow = React.memo(({
             </select>
             {editTicker.toUpperCase() !== 'CASH' && (
               <input
-                type="number"
+                type="text"
+                inputMode="decimal"
                 value={editAvgPrice}
                 onChange={(e) => setEditAvgPrice(e.target.value)}
                 className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
@@ -173,7 +178,7 @@ const HoldingRow = React.memo(({
               "inline-flex items-center gap-1 font-medium text-sm",
               holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
             )}>
-              {holding.dayChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              {holding.dayChange >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
               {holding.dayChange >= 0 ? '+' : '-'}{Math.abs(holding.dayChangePercent).toFixed(2)}%
             </div>
             <div className={cn(
@@ -197,7 +202,7 @@ const HoldingRow = React.memo(({
               "inline-flex items-center gap-1 font-medium text-sm",
               holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
             )}>
-              {holding.profitLoss >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              {holding.profitLoss >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
               {holding.profitLoss >= 0 ? '+' : '-'}{Math.abs(holding.profitLossPercent).toFixed(2)}%
             </div>
             <div className={cn(
@@ -217,14 +222,14 @@ const HoldingRow = React.memo(({
               className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
               title="Save changes"
             >
-              <Check className="w-4 h-4" />
+              <Check size={16} />
             </button>
             <button
               onClick={handleCancelEdit}
               className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
               title="Cancel edit"
             >
-              <X className="w-4 h-4" />
+              <X size={16} />
             </button>
           </div>
         ) : (
@@ -232,12 +237,12 @@ const HoldingRow = React.memo(({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                handleAnalyze(holding.ticker);
+                promptAnalysisStrategy(holding.ticker);
               }}
               className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
               title="Analyze Stock"
             >
-              <Zap className="w-4 h-4" />
+              <Zap size={16} />
             </button>
             <button
               onClick={(e) => {
@@ -247,28 +252,28 @@ const HoldingRow = React.memo(({
               className="p-1.5 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
               title="Add More Quantity"
             >
-              <PlusCircle className="w-4 h-4" />
+              <PlusCircle size={16} />
             </button>
             <button
               onClick={() => handleEditClick(holding)}
               className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
               title="Edit holding"
             >
-              <Edit2 className="w-4 h-4" />
+              <Edit2 size={16} />
             </button>
             <button
               onClick={() => setSelectedChartTicker(holding.ticker)}
               className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
               title="View Chart"
             >
-              <LineChart className="w-4 h-4" />
+              <LineChart size={16} />
             </button>
             <button
               onClick={() => handleViewHistory(holding)}
               className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
               title="View History"
             >
-              <FileText className="w-4 h-4" />
+              <FileText size={16} />
             </button>
             <button
               onClick={() => {
@@ -279,7 +284,7 @@ const HoldingRow = React.memo(({
               className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
               title="Delete stock"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 size={16} />
             </button>
           </div>
         )}
@@ -334,7 +339,6 @@ interface Transaction {
   type: 'buy' | 'sell';
   shares: number;
   price: number;
-  currency: string;
   date: string;
   userId: string;
 }
@@ -428,12 +432,13 @@ const CompanyLogo = ({ ticker, logo, size = 'md' }: { ticker: string, logo?: str
   const fontSize = size === 'sm' ? 'text-[8px]' : 'text-[10px]';
 
   useEffect(() => {
-    if (logo) {
-      console.log(`CompanyLogo for ${ticker}: logo=${logo}`);
-    }
-  }, [ticker, logo]);
+    // Reset error if ticker changes
+    setError(false);
+  }, [ticker]);
 
-  if (!logo || error) {
+  const displayLogo = logo || `/api/logo/${ticker}`;
+
+  if (error) {
     return (
       <div className={cn(dimensions, "rounded-lg bg-zinc-100 flex items-center justify-center shrink-0 border border-zinc-200")}>
         <span className={cn("font-bold text-zinc-400", fontSize)}>{ticker.slice(0, 2)}</span>
@@ -444,12 +449,12 @@ const CompanyLogo = ({ ticker, logo, size = 'md' }: { ticker: string, logo?: str
   return (
     <div className={cn(dimensions, "rounded-lg bg-white flex items-center justify-center overflow-hidden shrink-0 border border-zinc-200 p-0.5")}>
       <img 
-        src={logo} 
+        src={displayLogo} 
         alt={ticker} 
         className="w-full h-full object-contain"
         referrerPolicy="no-referrer"
         onError={() => {
-          console.error(`Failed to load logo for ${ticker}: ${logo}`);
+          // Log only once per session per ticker to avoid spam
           setError(true);
         }}
       />
@@ -459,6 +464,7 @@ const CompanyLogo = ({ ticker, logo, size = 'md' }: { ticker: string, logo?: str
 
 const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className, onResize, onRemove, size, activeCurrency, onEarningsClick }: { earningsEvents: EarningsEvent[], economicEvents: EconomicEvent[], metadata: any, className?: string, onResize?: () => void, onRemove?: () => void, size?: number, activeCurrency: string, onEarningsClick?: (event: EarningsEvent) => void }) => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [activeTab, setActiveTab] = useState<'earnings' | 'economic'>('earnings');
 
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(monthStart);
@@ -473,92 +479,155 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
   const nextMonth = () => setCurrentMonth(addMonths(currentMonth, 1));
   const prevMonth = () => setCurrentMonth(subMonths(currentMonth, 1));
 
-  const eventsByDate = useMemo(() => {
-    const map: Record<string, { type: 'earnings' | 'economic', data: any }[]> = {};
-    
+  const earningsByDate = useMemo(() => {
+    const map: Record<string, EarningsEvent[]> = {};
     earningsEvents.forEach(event => {
       const dateKey = format(parseISO(event.date), 'yyyy-MM-dd');
       if (!map[dateKey]) map[dateKey] = [];
-      map[dateKey].push({ type: 'earnings', data: event });
+      map[dateKey].push(event);
     });
+    return map;
+  }, [earningsEvents]);
 
+  const economicByDate = useMemo(() => {
+    const map: Record<string, EconomicEvent[]> = {};
     if (economicEvents) {
       economicEvents.forEach(event => {
         const dateKey = format(parseISO(event.time), 'yyyy-MM-dd');
         if (!map[dateKey]) map[dateKey] = [];
-        map[dateKey].push({ type: 'economic', data: event });
+        map[dateKey].push(event);
       });
     }
-
-    // Sort events within each day: high impact economic first, then medium, then low, then earnings
+    // Sort by impact
     Object.keys(map).forEach(key => {
       map[key].sort((a, b) => {
-        if (a.type === 'economic' && b.type === 'economic') {
-          const impactScore = { 'High': 3, 'Medium': 2, 'Low': 1 };
-          return (impactScore[b.data.impact as keyof typeof impactScore] || 0) - (impactScore[a.data.impact as keyof typeof impactScore] || 0);
-        }
-        if (a.type === 'economic') return -1;
-        if (b.type === 'economic') return 1;
-        return 0;
+        const impactScore = { 'High': 3, 'Medium': 2, 'Low': 1 };
+        return (impactScore[b.impact as keyof typeof impactScore] || 0) - (impactScore[a.impact as keyof typeof impactScore] || 0);
       });
     });
-
     return map;
-  }, [earningsEvents, economicEvents]);
+  }, [economicEvents]);
+
+  const handleExport = () => {
+    if (activeTab === 'earnings') {
+      if (earningsEvents.length === 0) return;
+      let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Earnings Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Earnings Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
+      earningsEvents.forEach(event => {
+        if (!event.date) return;
+        const date = new Date(event.date);
+        const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 8);
+        const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        ics += 'BEGIN:VEVENT\r\n';
+        ics += `UID:${event.symbol}-earnings-${dateStr}@stocktracker\r\n`;
+        ics += `DTSTAMP:${dtstamp}\r\n`;
+        ics += `DTSTART;VALUE=DATE:${dateStr}\r\n`;
+        ics += `SUMMARY:${event.symbol} Earnings\r\n`;
+        ics += `DESCRIPTION:Estimated EPS: ${event.estimate || 'N/A'}\\nHigh: ${event.high || 'N/A'}\\nLow: ${event.low || 'N/A'}\r\n`;
+        ics += 'END:VEVENT\r\n';
+      });
+      ics += 'END:VCALENDAR\r\n';
+      const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'earnings.ics');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } else {
+      if (economicEvents.length === 0) return;
+      let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Economic Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Economic Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
+      economicEvents.forEach(event => {
+        if (!event.time) return;
+        const date = parseISO(event.time);
+        const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        ics += 'BEGIN:VEVENT\r\n';
+        ics += `UID:${event.event.replace(/\s+/g, '-')}-${dateStr}@stocktracker\r\n`;
+        ics += `DTSTAMP:${dtstamp}\r\n`;
+        ics += `DTSTART:${dateStr}\r\n`;
+        const endDateShort = new Date(date.getTime() + 30 * 60000);
+        const endDateStr = endDateShort.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        ics += `DTEND:${endDateStr}\r\n`;
+        ics += `SUMMARY:Economic: ${event.event}\r\n`;
+        ics += `DESCRIPTION:Country: ${event.country}\\nImpact: ${event.impact}\\nEstimate: ${event.estimate || 'N/A'}${event.unit || ''}\\nPrevious: ${event.previous || 'N/A'}${event.unit || ''}\r\n`;
+        ics += 'END:VEVENT\r\n';
+      });
+      ics += 'END:VCALENDAR\r\n';
+      const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'economic_events.ics');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    }
+  };
 
   return (
     <div className={cn("flex flex-col flex-1 h-full", className)}>
-      <div className="p-6 border-b border-zinc-100 flex flex-col md:flex-row md:items-center justify-between bg-zinc-50/50 gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
-            <CalendarIcon size={20} />
+      <div className="p-6 border-b border-zinc-100 bg-zinc-50/50 flex flex-col xl:flex-row xl:items-center justify-between gap-6">
+        <div className="flex flex-col md:flex-row md:items-center gap-6">
+          <div className="flex items-center gap-3">
+            <div className={cn(
+              "w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-lg transition-colors",
+              activeTab === 'earnings' ? "bg-indigo-600 shadow-indigo-100" : "bg-amber-500 shadow-amber-100"
+            )}>
+              {activeTab === 'earnings' ? <CalendarIcon size={20} /> : <Zap size={20} />}
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-zinc-900">Financial Calendar</h2>
+              <div className="flex items-center gap-2 text-sm text-zinc-500">
+                <span>{activeTab === 'earnings' ? 'Corporate Earnings' : 'US Macro Economic Events'}</span>
+              </div>
+            </div>
           </div>
-          <div>
-            <h2 className="text-xl font-bold text-zinc-900">Financial Calendar</h2>
-            <p className="text-sm text-zinc-500">Earnings & Economic Events</p>
+
+          <div className="flex p-1 bg-zinc-100 rounded-xl w-fit">
+            <button
+              onClick={() => setActiveTab('earnings')}
+              className={cn(
+                "px-4 py-1.5 text-sm font-medium rounded-lg transition-all flex items-center gap-2",
+                activeTab === 'earnings' 
+                  ? "bg-white text-indigo-600 shadow-sm" 
+                  : "text-zinc-500 hover:text-zinc-700"
+              )}
+            >
+              <CalendarIcon size={16} />
+              Earnings
+            </button>
+            <button
+              onClick={() => setActiveTab('economic')}
+              className={cn(
+                "px-4 py-1.5 text-sm font-medium rounded-lg transition-all flex items-center gap-2",
+                activeTab === 'economic' 
+                  ? "bg-white text-amber-600 shadow-sm" 
+                  : "text-zinc-500 hover:text-zinc-700"
+              )}
+            >
+              <Zap size={16} />
+              US Economic
+            </button>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => {
-              if (earningsEvents.length === 0) return;
-              
-              let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Earnings Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Earnings Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
-              
-              earningsEvents.forEach(event => {
-                if (!event.date) return;
-                const date = new Date(event.date);
-                const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 8);
-                const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-                
-                ics += 'BEGIN:VEVENT\r\n';
-                ics += `UID:${event.symbol}-earnings-${dateStr}@stocktracker\r\n`;
-                ics += `DTSTAMP:${dtstamp}\r\n`;
-                ics += `DTSTART;VALUE=DATE:${dateStr}\r\n`;
-                ics += `SUMMARY:${event.symbol} Earnings\r\n`;
-                ics += `DESCRIPTION:Estimated EPS: ${event.estimate || 'N/A'}\\nHigh: ${event.high || 'N/A'}\\nLow: ${event.low || 'N/A'}\r\n`;
-                ics += 'END:VEVENT\r\n';
-              });
-              
-              ics += 'END:VCALENDAR\r\n';
-              
-              const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
-              const url = window.URL.createObjectURL(blob);
-              const link = document.createElement('a');
-              link.href = url;
-              link.setAttribute('download', 'earnings.ics');
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              window.URL.revokeObjectURL(url);
-            }}
-            disabled={earningsEvents.length === 0}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Export Earnings to Calendar"
+            onClick={handleExport}
+            disabled={activeTab === 'earnings' ? earningsEvents.length === 0 : economicEvents.length === 0}
+            className={cn(
+              "flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+              activeTab === 'earnings' 
+                ? "text-indigo-600 bg-indigo-50 hover:bg-indigo-100" 
+                : "text-amber-700 bg-amber-50 hover:bg-amber-100"
+            )}
+            title="Export to Calendar (.ics)"
           >
             <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Export Calendar (.ics)</span>
+            <span className="hidden sm:inline">Export Calendar</span>
           </button>
 
           {onResize && (
@@ -567,7 +636,7 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
               className="p-2 text-zinc-400 hover:text-zinc-600 rounded-lg hover:bg-zinc-100 opacity-0 group-hover:opacity-100 transition-opacity relative z-20"
               title="Resize Widget"
             >
-              {size === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              {size === 3 ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
           )}
           {onRemove && (
@@ -576,24 +645,18 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
               className="p-2 text-zinc-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity relative z-20"
               title="Remove Widget"
             >
-              <X className="w-4 h-4" />
+              <X size={16} />
             </button>
           )}
 
           <div className="flex items-center gap-2 bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
-            <button 
-              onClick={prevMonth}
-              className="p-2 hover:bg-zinc-50 rounded-lg transition-colors text-zinc-600"
-            >
+            <button onClick={prevMonth} className="p-2 hover:bg-zinc-50 rounded-lg transition-colors text-zinc-600">
               <ChevronLeft size={20} />
             </button>
             <span className="px-4 font-bold text-zinc-900 min-w-[140px] text-center">
               {format(currentMonth, 'MMMM yyyy')}
             </span>
-            <button 
-              onClick={nextMonth}
-              className="p-2 hover:bg-zinc-50 rounded-lg transition-colors text-zinc-600"
-            >
+            <button onClick={nextMonth} className="p-2 hover:bg-zinc-50 rounded-lg transition-colors text-zinc-600">
               <ChevronRight size={20} />
             </button>
           </div>
@@ -610,35 +673,39 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
         </div>
 
         <div className="grid grid-cols-7">
-        {calendarDays.map((day, i) => {
-          const dateKey = format(day, 'yyyy-MM-dd');
-          const dayEvents = eventsByDate[dateKey] || [];
-          const isCurrentMonth = isSameMonth(day, monthStart);
-          const isToday = isSameDay(day, new Date());
+          {calendarDays.map((day, i) => {
+            const dateKey = format(day, 'yyyy-MM-dd');
+            const eEvents = earningsByDate[dateKey] || [];
+            const ecEvents = economicByDate[dateKey] || [];
+            const isCurrentMonth = isSameMonth(day, monthStart);
+            const isToday = isSameDay(day, new Date());
 
-          return (
-            <div 
-              key={i} 
-              className={cn(
-                "min-h-[140px] p-2 border-r border-b border-zinc-100 transition-colors",
-                !isCurrentMonth && "bg-zinc-50/30",
-                isToday && "bg-indigo-50/30"
-              )}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className={cn(
-                  "text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full",
-                  isToday ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-zinc-500",
-                  !isCurrentMonth && "opacity-30"
-                )}>
-                  {format(day, 'd')}
-                </span>
-              </div>
-              <div className="space-y-1">
-                {dayEvents.map((item, idx) => {
-                  if (item.type === 'earnings') {
-                    const event = item.data as EarningsEvent;
-                    return (
+            const todayColor = activeTab === 'earnings' ? "bg-indigo-50/30" : "bg-amber-50/30";
+            const badgeColor = activeTab === 'earnings' 
+              ? (isToday ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-zinc-500")
+              : (isToday ? "bg-amber-500 text-white shadow-md shadow-amber-100" : "text-zinc-500");
+
+            return (
+              <div 
+                key={i} 
+                className={cn(
+                  "min-h-[140px] p-2 border-r border-b border-zinc-100 transition-colors",
+                  !isCurrentMonth && "bg-zinc-50/30",
+                  isToday && todayColor
+                )}
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <span className={cn(
+                    "text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full",
+                    badgeColor,
+                    !isCurrentMonth && "opacity-30"
+                  )}>
+                    {format(day, 'd')}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {activeTab === 'earnings' ? (
+                    eEvents.map((event, idx) => (
                       <div 
                         key={`earn-${idx}`}
                         onClick={() => onEarningsClick && onEarningsClick(event)}
@@ -654,74 +721,30 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
                             <div className="text-[8px] text-zinc-500 font-mono">EST: {getCurrencySymbol(activeCurrency)}{event.estimate.toFixed(2)}</div>
                           )}
                         </div>
-                        
-                        {/* Tooltip on hover */}
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-3 bg-zinc-900 text-white rounded-xl text-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
-                          <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between">
-                            <span>{event.symbol} Earnings</span>
-                            <span className="text-indigo-400">{format(parseISO(event.date), 'MMM d, yyyy')}</span>
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex justify-between">
-                              <span className="text-zinc-400">Avg Estimate:</span>
-                              <span className="font-mono">{event.estimate ? `${getCurrencySymbol(activeCurrency)}${event.estimate.toFixed(2)}` : 'N/A'}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-zinc-400">Range (H/L):</span>
-                              <span className="font-mono">{event.high ? `${getCurrencySymbol(activeCurrency)}${event.high.toFixed(2)}` : 'N/A'} / {event.low ? `${getCurrencySymbol(activeCurrency)}${event.low.toFixed(2)}` : 'N/A'}</span>
-                            </div>
-                          </div>
-                          <div className="absolute bottom-[-4px] left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 rotate-45" />
-                        </div>
                       </div>
-                    );
-                  }
-                  if (item.type === 'economic') {
-                    const event = item.data as EconomicEvent;
-                    const impactColor = event.impact === 'High' ? 'text-rose-600 bg-rose-50 border-rose-200' : event.impact === 'Medium' ? 'text-amber-600 bg-amber-50 border-amber-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200';
-                    return (
-                      <div 
-                        key={`econ-${idx}`}
-                        className={cn("group relative flex items-center gap-1.5 p-1.5 rounded-lg border shadow-sm hover:shadow-md transition-all cursor-default", impactColor)}
-                      >
-                        <AlertCircle className="w-3 h-3 shrink-0" />
-                        <div className="min-w-0">
-                          <div className="text-[10px] font-bold truncate">{event.event}</div>
-                          <div className="text-[8px] font-mono opacity-80">{format(parseISO(event.time), 'HH:mm')}</div>
-                        </div>
-                        
-                        {/* Tooltip on hover */}
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-3 bg-zinc-900 text-white rounded-xl text-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
-                          <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between">
-                            <span className="truncate pr-2">{event.event}</span>
-                            <span className="shrink-0">{format(parseISO(event.time), 'HH:mm')}</span>
+                    ))
+                  ) : (
+                    ecEvents.map((event, idx) => {
+                      const impactColorClass = event.impact === 'High' ? 'text-rose-600 bg-rose-50 border-rose-200' : event.impact === 'Medium' ? 'text-amber-600 bg-amber-50 border-amber-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200';
+                      return (
+                        <div 
+                          key={`econ-${idx}`}
+                          className={cn("group relative flex items-center gap-1.5 p-1.5 rounded-lg border shadow-sm hover:shadow-md transition-all cursor-default", impactColorClass)}
+                        >
+                          <AlertCircle className="w-3 h-3 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-[10px] font-bold truncate">{event.event}</div>
+                            <div className="text-[8px] font-mono opacity-80">{format(parseISO(event.time), 'HH:mm')}</div>
                           </div>
-                          <div className="space-y-1">
-                            <div className="flex justify-between">
-                              <span className="text-zinc-400">Impact:</span>
-                              <span className={event.impact === 'High' ? 'text-rose-400' : event.impact === 'Medium' ? 'text-amber-400' : 'text-emerald-400'}>{event.impact}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-zinc-400">Estimate:</span>
-                              <span className="font-mono">{event.estimate !== null ? `${event.estimate}${event.unit || ''}` : 'N/A'}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-zinc-400">Previous:</span>
-                              <span className="font-mono">{event.previous !== null ? `${event.previous}${event.unit || ''}` : 'N/A'}</span>
-                            </div>
-                          </div>
-                          <div className="absolute bottom-[-4px] left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 rotate-45" />
                         </div>
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
+                      );
+                    })
+                  )}
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -1102,7 +1125,8 @@ export default function App() {
   const [editAvgPriceCurrency, setEditAvgPriceCurrency] = useState('');
   const [editField, setEditField] = useState<string | null>(null);
   const [selectedChartTicker, setSelectedChartTicker] = useState<string | null>(null);
-  const [chartModalTab, setChartModalTab] = useState<'chart' | 'kpis'>('chart');
+  const [chartModalTab, setChartModalTab] = useState<'chart' | 'kpis' | 'history'>('chart');
+  const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   const [kpiTimeScale, setKpiTimeScale] = useState<'5y' | '10y' | 'all_y' | '8q' | '12q' | '20q'>('5y');
   const [financialsData, setFinancialsData] = useState<any>(null);
   const [isFinancialsLoading, setIsFinancialsLoading] = useState(false);
@@ -1125,18 +1149,29 @@ export default function App() {
   const [quickAddHolding, setQuickAddHolding] = useState<Holding | null>(null);
   const [quickAddShares, setQuickAddShares] = useState('');
   const [quickAddPrice, setQuickAddPrice] = useState('');
-  const [quickAddCurrency, setQuickAddCurrency] = useState('USD');
   const [quickAddDate, setQuickAddDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isQuickAdding, setIsQuickAdding] = useState(false);
   const [analysisTicker, setAnalysisTicker] = useState<string | null>(null);
   const [analysisSources, setAnalysisSources] = useState<{uri: string, title: string}[]>([]);
   const [analysisSentiment, setAnalysisSentiment] = useState<string>('neutral');
+  const [isSavingAnalysis, setIsSavingAnalysis] = useState(false);
+  const [analysisSaved, setAnalysisSaved] = useState(false);
   
   // Earnings Analysis state
   const [selectedEarningsEvent, setSelectedEarningsEvent] = useState<EarningsEvent | null>(null);
   const [isAnalyzingEarnings, setIsAnalyzingEarnings] = useState(false);
   const [earningsAnalysisResult, setEarningsAnalysisResult] = useState('');
   const [showEarningsAnalysisModal, setShowEarningsAnalysisModal] = useState(false);
+  const [isSavingEarningsAnalysis, setIsSavingEarningsAnalysis] = useState(false);
+  const [earningsAnalysisSaved, setEarningsAnalysisSaved] = useState(false);
+
+  const [showEarningsAnalysisStrategyModal, setShowEarningsAnalysisStrategyModal] = useState(false);
+  const [strategyEarningsEvent, setStrategyEarningsEvent] = useState<EarningsEvent | null>(null);
+
+  const promptEarningsAnalysisStrategy = (event: EarningsEvent) => {
+    setStrategyEarningsEvent(event);
+    setShowEarningsAnalysisStrategyModal(true);
+  };
 
   // Chart state
   const [chartType, setChartType] = useState<'pie' | 'bar' | 'scatter'>('pie');
@@ -1212,14 +1247,8 @@ export default function App() {
 
   const [widgetOrder, setWidgetOrder] = useState(() => {
     const saved = localStorage.getItem('widgetOrder');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error('Failed to parse widgetOrder from localStorage', e);
-      }
-    }
-    return [
+    let order = [
+      'performance',
       'allocation',
       'calendar',
       'holdings',
@@ -1227,6 +1256,21 @@ export default function App() {
       'addPosition',
       'upload'
     ];
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // If they don't have the performance widget yet, add it to the top
+          if (!parsed.includes('performance')) {
+            parsed.unshift('performance');
+          }
+          order = parsed;
+        }
+      } catch (e) {
+        console.error('Failed to parse widgetOrder from localStorage', e);
+      }
+    }
+    return order;
   });
 
   useEffect(() => {
@@ -1247,8 +1291,9 @@ export default function App() {
   }, []);
 
   const ALL_WIDGETS = [
+    { id: 'performance', label: 'Performance vs Benchmarks' },
     { id: 'allocation', label: 'Portfolio Allocation' },
-    { id: 'calendar', label: 'Earnings Calendar' },
+    { id: 'calendar', label: 'Financial Calendar' },
     { id: 'holdings', label: 'Current Holdings' },
     { id: 'dividends', label: 'Dividends' },
     { id: 'addPosition', label: 'Add Position' },
@@ -1257,6 +1302,33 @@ export default function App() {
 
   const removeWidget = (id: string) => {
     setWidgetOrder(prev => prev.filter(w => w !== id));
+  };
+
+  const handleSyncHistory = async () => {
+    if (allHoldings.length === 0) return;
+    
+    setIsSyncingHistory(true);
+    try {
+      const tickers = Array.from(new Set(allHoldings.map(h => h.ticker)));
+      const fiveYearsAgo = subYears(new Date(), 5);
+      const fromStr = format(fiveYearsAgo, 'yyyy-MM-dd');
+      
+      const params = new URLSearchParams({
+        symbols: tickers.join(','),
+        from: fromStr,
+        refresh: 'true'
+      });
+      
+      const res = await fetch(`/api/historical-bulk?${params.toString()}`);
+      if (!res.ok) throw new Error('Failed to sync history');
+      
+      alert('Portfolio historical data (5Y) has been synced and cached locally.');
+    } catch (err) {
+      console.error('Error syncing history:', err);
+      alert('Failed to sync historical data. Please try again later.');
+    } finally {
+      setIsSyncingHistory(false);
+    }
   };
 
   const sensors = useSensors(
@@ -1313,14 +1385,52 @@ export default function App() {
     india: { benchmark: '^NSEI', riskProfile: 'moderate', targetReturn: 12, currency: 'INR' },
     australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' },
   });
-  const [userSettings, setUserSettings] = useState<{ displayName: string, avatarUrl: string, showCombinedSummary: boolean, combinedCurrency: string }>({
+  const [userSettings, setUserSettings] = useState<{ displayName: string, avatarUrl: string, showCombinedSummary: boolean, combinedCurrency: string, combinedBenchmark: string }>({
     displayName: '',
     avatarUrl: '',
     showCombinedSummary: true,
     combinedCurrency: 'USD',
+    combinedBenchmark: 'SPY',
   });
   const [showSettings, setShowSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+
+  const [showSavedAnalysesModal, setShowSavedAnalysesModal] = useState(false);
+  const [savedAnalyses, setSavedAnalyses] = useState<any[]>([]);
+  const [isFetchingAnalyses, setIsFetchingAnalyses] = useState(false);
+
+  const [showAnalysisStrategyModal, setShowAnalysisStrategyModal] = useState(false);
+  const [strategyTicker, setStrategyTicker] = useState<string | null>(null);
+
+  const promptAnalysisStrategy = (ticker?: string) => {
+    setStrategyTicker(ticker || null);
+    setShowAnalysisStrategyModal(true);
+  };
+
+  const fetchSavedAnalyses = async (ticker?: string) => {
+    setIsFetchingAnalyses(true);
+    try {
+      const url = ticker ? `/api/analyses?ticker=${encodeURIComponent(ticker)}` : '/api/analyses';
+      const res = await fetch(url);
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json();
+        setSavedAnalyses(data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsFetchingAnalyses(false);
+    }
+  };
+
+  const deleteAnalysis = async (id: number) => {
+    try {
+      await fetch(`/api/analyses/${id}`, { method: 'DELETE' });
+      setSavedAnalyses(prev => prev.filter(a => a.id !== id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const benchmarkTicker = tabSettings[activeTab]?.benchmark || 'SPY';
   const activeCurrency = tabSettings[activeTab]?.currency || (activeTab === 'india' ? 'INR' : activeTab === 'australia' ? 'AUD' : 'USD');
@@ -1336,6 +1446,7 @@ export default function App() {
           avatarUrl: data.user.avatarUrl || '',
           showCombinedSummary: data.user.showCombinedSummary !== undefined ? data.user.showCombinedSummary : true,
           combinedCurrency: data.user.combinedCurrency || 'USD',
+          combinedBenchmark: data.user.combinedBenchmark || 'SPY',
         });
       } else {
         // Initialize default settings in Firestore
@@ -1343,13 +1454,14 @@ export default function App() {
           tabs: {
             global: { benchmark: 'SPY', riskProfile: 'moderate', targetReturn: 8, currency: 'USD' },
             india: { benchmark: '^NSEI', riskProfile: 'moderate', targetReturn: 12, currency: 'INR' },
-            australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' },
+            australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' }
           },
           user: {
             displayName: user.displayName || user.email?.split('@')[0] || 'Investor',
             avatarUrl: user.photoURL || '',
             showCombinedSummary: true,
             combinedCurrency: 'USD',
+            combinedBenchmark: 'SPY',
           }
         });
       }
@@ -1432,6 +1544,274 @@ export default function App() {
       } catch (err) {
         console.error('Import error:', err);
         alert('Failed to import portfolio. Please check the file format.');
+      } finally {
+        setIsSubmitting(false);
+        setTimeout(() => setSaveMessage(null), 3000);
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleDownloadTransactions = async () => {
+    if (!user) return;
+    try {
+      const q = query(collection(db, 'transactions'), where('userId', '==', user.uid));
+      const snapshot = await getDocs(q);
+      
+      const holdingsMap = Object.fromEntries(holdings.map(h => [h.id, h.ticker]));
+
+      const transactionData = snapshot.docs
+        .map(docSnap => {
+          const tx = docSnap.data();
+          return {
+            ...tx,
+            id: docSnap.id,
+            ticker: holdingsMap[tx.holdingId] || 'UNKNOWN'
+          };
+        })
+        .filter(tx => tx.ticker !== 'UNKNOWN');
+
+      const dataStr = JSON.stringify(transactionData, null, 2);
+      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+      const exportFileDefaultName = `transactions_${activeTab}.json`;
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', dataUri);
+      linkElement.setAttribute('download', exportFileDefaultName);
+      linkElement.click();
+    } catch (error) {
+      console.error('Export transactions error:', error);
+      alert('Failed to export transactions');
+    }
+  };
+
+  const handleImportTransactions = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const content = event.target?.result as string;
+        let rawData: any[] = [];
+
+        if (content.trim().startsWith('[') || content.trim().startsWith('{')) {
+          rawData = JSON.parse(content);
+        } else {
+          const results = Papa.parse(content, {
+            header: true,
+            skipEmptyLines: true,
+            dynamicTyping: true
+          });
+          rawData = results.data;
+        }
+
+        if (!Array.isArray(rawData)) throw new Error('Invalid format');
+        
+        if (!user) return;
+
+        setIsSubmitting(true);
+        setSaveMessage({ text: 'Processing transactions history...', type: 'success' });
+
+        const parseFlexDate = (val: any): string => {
+          if (!val) return new Date().toISOString();
+          
+          // Case 1: Already a Date object
+          if (val instanceof Date) return isNaN(val.getTime()) ? new Date().toISOString() : val.toISOString();
+          
+          // Case 2: Number or numeric string (Timestamp)
+          const num = Number(val);
+          if (!isNaN(num) && val.toString().trim() !== '') {
+            // If 10 digits, it's likely seconds. If 13+, likely milliseconds.
+            const date = new Date(num < 10000000000 ? num * 1000 : num);
+            if (!isNaN(date.getTime())) return date.toISOString();
+          }
+
+          // Case 3: String
+          const str = val.toString().trim();
+          
+          // Try standard Date constructor
+          let date = new Date(str);
+          if (!isNaN(date.getTime())) return date.toISOString();
+
+          // Try common manual fixes for exchange exports
+          // 1. Remove bracketed timezones like [UTC]
+          const cleaned = str.replace(/\[.*?\]/g, '').trim();
+          date = new Date(cleaned);
+          if (!isNaN(date.getTime())) return date.toISOString();
+
+          // Last resort: Return current date to prevent crash, but maybe we should log it
+          console.warn('Could not parse date:', val);
+          return new Date().toISOString();
+        };
+
+        const importedTransactions = rawData.map((row: any, rowIndex: number) => {
+          const normalized: any = {};
+          const actualKeys = Object.keys(row);
+
+          if (rowIndex === 0) {
+            console.log('Import mapping debug - First row keys:', actualKeys);
+          }
+
+          const findField = (keywords: string[]) => {
+            // First pass: look for exact match (case-insensitive)
+            for (const kw of keywords) {
+              const exactKey = actualKeys.find(ak => ak.toLowerCase() === kw.toLowerCase() || ak.toLowerCase().replace(/ /g, '_') === kw.toLowerCase());
+              if (exactKey && row[exactKey] !== null && row[exactKey] !== undefined) return row[exactKey];
+            }
+            // Second pass: look for "contains" (case-insensitive)
+            for (const kw of keywords) {
+              const fuzzyKey = actualKeys.find(ak => ak.toLowerCase().includes(kw.toLowerCase()));
+              if (fuzzyKey && row[fuzzyKey] !== null && row[fuzzyKey] !== undefined) return row[fuzzyKey];
+            }
+            return null;
+          };
+
+          normalized.ticker = (findField(['ticker', 'symbol', 'asset', 'coin', 'instrument', 'name', 'token', 'item', 'equity', 'stock', 'product', 'description', 'pair', 'security', 'holding', 'position']) || actualKeys[0] || '').toString().substring(0, 20);
+          normalized.shares = findField(['shares', 'quantity', 'qty', 'amount', 'units', 'vol', 'volume', 'count', 'size', 'quantity transacted', 'amount transacted', 'executed', 'filled', 'bought', 'sold']) || 0;
+          normalized.price = findField(['price', 'avg', 'rate', 'execution', 'cost', 'trade price', 'spot price', 'usd spot price', 'market price', 'value', 'price per share', 'avg_price']) || 0;
+          normalized.type = (findField(['type', 'side', 'action', 'transaction', 'operation', 'direction', 'transaction type', 'activity']) || 'buy').toString().toLowerCase();
+          normalized.date = parseFlexDate(findField(['date', 'time', 'timestamp', 'trade date', 'created', 'transacted at', 'transaction date', 'occurred', 'datetime', 'acquired']));
+          normalized.currency = findField(['currency', 'base', 'quote', 'fiat', 'money']) || null;
+          
+          return normalized;
+        }).map(tx => {
+          // Clean up ticker (handle cases like "Bitcoin BTC" or "BTC-USD")
+          let ticker = tx.ticker.trim();
+          if (ticker.includes(' ')) {
+             // If there's a space, the last word is often the ticker in descriptions
+             const parts = ticker.split(' ');
+             const potentialTicker = parts[parts.length - 1].replace(/[\(\)]/g, '');
+             if (potentialTicker.length <= 10 && potentialTicker === potentialTicker.toUpperCase()) {
+               ticker = potentialTicker;
+             }
+          }
+          tx.ticker = ticker;
+
+          // Normalize numbers and detect sells from negative quantities
+          let numShares = parseFloat((tx.shares || 0).toString().replace(/,/g, '.'));
+          let numPrice = parseFloat((tx.price || 0).toString().replace(/,/g, '.'));
+          
+          if (isNaN(numShares)) numShares = 0;
+          if (isNaN(numPrice)) numPrice = 0;
+
+          tx.shares = Math.abs(numShares);
+          tx.price = Math.abs(numPrice); // Handle platforms where price/subtotal might be negative for sells
+          
+          if (numShares < 0) {
+            tx.type = 'sell';
+          }
+          return tx;
+        }).filter(tx => tx.ticker && tx.shares > 0);
+
+        if (importedTransactions.length === 0) {
+          const sampleKeys = rawData.length > 0 ? Object.keys(rawData[0]).join(', ') : 'none';
+          throw new Error(`No valid transactions found. The file headers don't match our recognized names. Found headers: ${sampleKeys}`);
+        }
+
+        // Group transactions by ticker
+        const transactionsByTicker: Record<string, any[]> = {};
+        for (const tx of importedTransactions) {
+          let ticker = (tx.ticker || '').toString().toUpperCase().trim();
+          if (!ticker) continue;
+
+          if (ticker.includes('/') || ticker.includes('-') || ticker.includes('_')) {
+            ticker = ticker.split(/[\/\-_]/)[0].trim();
+          }
+
+          if (!transactionsByTicker[ticker]) transactionsByTicker[ticker] = [];
+          transactionsByTicker[ticker].push(tx);
+        }
+
+        // Clear existing data only for the tickers present in the import
+        const tickersToImport = new Set(Object.keys(transactionsByTicker));
+        
+        const holdingsQ = query(collection(db, 'holdings'), where('userId', '==', user.uid), where('portfolioType', '==', activeTab || 'global'));
+        const holdingsSnapshot = await getDocs(holdingsQ);
+        
+        // Fetch ALL user transactions once to avoid per-holding queries and index requirements
+        const allTxQ = query(collection(db, 'transactions'), where('userId', '==', user.uid));
+        const allTxSnapshot = await getDocs(allTxQ);
+        const allUserTransactions = allTxSnapshot.docs;
+
+        for (const holdingDoc of holdingsSnapshot.docs) {
+          const hData = holdingDoc.data();
+          if (tickersToImport.has(hData.ticker)) {
+            // Filter transactions for THIS holding locally
+            const txToDelete = allUserTransactions.filter(d => d.data().holdingId === holdingDoc.id);
+            await Promise.all(txToDelete.map(d => deleteDoc(d.ref)));
+            await deleteDoc(holdingDoc.ref);
+          }
+        }
+
+        let totalHoldingsCreated = 0;
+        let totalTransactionsCreated = 0;
+
+        // Re-create holdings and transactions from history
+        for (const ticker of Object.keys(transactionsByTicker)) {
+          const txs = transactionsByTicker[ticker];
+          // Robust date sorting
+          txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          
+          let currentShares = 0;
+          let currentAvgPrice = 0;
+          let firstTxCurrency = txs[0].currency || activeCurrency;
+
+          for (const tx of txs) {
+            const numShares = tx.shares;
+            const numPrice = tx.price;
+            const typeStr = tx.type.toLowerCase();
+            const isSell = typeStr.includes('sell') || typeStr.includes('sale') || typeStr.includes('out') || typeStr.includes('short') || typeStr.includes('withdrawal');
+
+            if (isSell) {
+              currentShares -= numShares;
+            } else {
+              const totalCost = (currentShares * currentAvgPrice) + (numShares * numPrice);
+              currentShares += numShares;
+              currentAvgPrice = currentShares > 0 ? totalCost / currentShares : numPrice;
+            }
+          }
+
+          // Create Holding
+          const holdingData: any = {
+            ticker: ticker.substring(0, 20),
+            shares: Math.max(0, currentShares),
+            avg_price: currentAvgPrice,
+            userId: user.uid,
+            portfolioType: activeTab || 'global',
+            updatedAt: serverTimestamp()
+          };
+
+          if (firstTxCurrency) {
+            holdingData.avgPriceCurrency = firstTxCurrency.toString().substring(0, 10);
+          }
+
+          const holdingRef = await addDoc(collection(db, 'holdings'), holdingData);
+          totalHoldingsCreated++;
+
+          // Create Transactions History
+          for (const tx of txs) {
+            const typeStr = tx.type.toLowerCase();
+            const isSell = typeStr.includes('sell') || typeStr.includes('sale') || typeStr.includes('out') || typeStr.includes('short') || typeStr.includes('withdrawal');
+
+             await addDoc(collection(db, 'transactions'), {
+              holdingId: holdingRef.id,
+              type: isSell ? 'sell' : 'buy',
+              shares: tx.shares,
+              price: tx.price,
+              date: tx.date,
+              userId: user.uid
+            });
+            totalTransactionsCreated++;
+          }
+        }
+
+        setSaveMessage({ 
+          text: `Successfully imported ${totalTransactionsCreated} transactions for ${totalHoldingsCreated} assets.`, 
+          type: 'success' 
+        });
+      } catch (err) {
+        console.error('Import transactions error:', err);
+        alert('Failed to import transactions. Please check the file format.');
       } finally {
         setIsSubmitting(false);
         setTimeout(() => setSaveMessage(null), 3000);
@@ -1738,7 +2118,7 @@ export default function App() {
           const durationUnit = isQuarterly ? 'quarters' : 'years';
 
           const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
+            model: "gemini-3.1-pro-preview",
             contents: `Provide the historical and projected ${periodText} business KPIs (e.g., Daily Active Users, Monthly Active Users, Subscribers, Deliveries, or other relevant operational metrics) for the company with ticker symbol ${selectedChartTicker} over ${durationText} ${durationUnit}, plus the next 2-3 ${durationUnit} of analyst and company projections. If the company is not a tech/service company with users, provide their most relevant operational KPIs (e.g., vehicles delivered for TSLA, stores opened for SBUX). Return the data as a JSON array of objects, where each object has a 'period' (string, e.g., '2023' for annual or 'Q1 2023' for quarterly), a boolean 'isProjection' indicating if it's a future estimate, and 2-3 relevant KPI fields (numbers). Use short, camelCase keys for the KPI fields.`,
             config: {
               responseMimeType: "application/json",
@@ -1849,8 +2229,8 @@ export default function App() {
 
     setIsSubmitting(true);
     try {
-      const numShares = parseFloat(shares);
-      const numPrice = isCash ? 1 : parseFloat(avgPrice);
+      const numShares = parseFloat(shares.toString().replace(/,/g, '.'));
+      const numPrice = isCash ? 1 : parseFloat(avgPrice.toString().replace(/,/g, '.'));
       const isSell = transactionType === 'sell';
 
       // Check for existing holding in the current portfolio
@@ -1862,14 +2242,8 @@ export default function App() {
         
         // Calculate new average price (only for buys)
         let newAvgPrice = existingHolding.avg_price;
-        const targetCurrency = existingHolding.avgPriceCurrency || activeCurrency;
-        const currentTxCurrency = formCurrency || activeCurrency;
-
         if (!isSell) {
-          // Convert existing avg price to target currency (though it should already be)
-          // and convert current transaction price to the same target currency
-          const numPriceInTarget = numPrice * getExchangeRate(currentTxCurrency, targetCurrency, quotes);
-          const totalCost = (existingHolding.shares * existingHolding.avg_price) + (numShares * numPriceInTarget);
+          const totalCost = (existingHolding.shares * existingHolding.avg_price) + (numShares * numPrice);
           newAvgPrice = totalCost / newShares;
         }
 
@@ -1885,18 +2259,16 @@ export default function App() {
           type: transactionType,
           shares: numShares,
           price: numPrice,
-          currency: currentTxCurrency,
           date: new Date(transactionDate).toISOString(),
           userId: user.uid
         });
       } else {
         // Create new holding
-        const txCurrency = formCurrency || activeCurrency;
         const holdingData = {
           ticker: finalTicker,
           shares: isSell ? -numShares : numShares,
           avg_price: numPrice,
-          avgPriceCurrency: txCurrency,
+          avgPriceCurrency: formCurrency || activeCurrency,
           userId: user.uid,
           portfolioType: activeTab,
           updatedAt: serverTimestamp()
@@ -1910,7 +2282,6 @@ export default function App() {
           type: transactionType,
           shares: numShares,
           price: numPrice,
-          currency: txCurrency,
           date: new Date(transactionDate).toISOString(),
           userId: user.uid
         });
@@ -1945,7 +2316,6 @@ export default function App() {
     setQuickAddHolding(holding);
     setQuickAddPrice((holding.currentPrice || holding.avg_price).toString());
     setQuickAddShares('');
-    setQuickAddCurrency(holding.avgPriceCurrency || activeCurrency);
     setQuickAddDate(format(new Date(), 'yyyy-MM-dd'));
     setShowQuickAddModal(true);
   };
@@ -1958,15 +2328,11 @@ export default function App() {
 
     setIsQuickAdding(true);
     try {
-      const numShares = parseFloat(quickAddShares);
-      const numPrice = isCash ? 1 : parseFloat(quickAddPrice);
+      const numShares = parseFloat(quickAddShares.toString().replace(/,/g, '.'));
+      const numPrice = isCash ? 1 : parseFloat(quickAddPrice.toString().replace(/,/g, '.'));
 
       const newShares = quickAddHolding.shares + numShares;
-      const targetCurrency = quickAddHolding.avgPriceCurrency || activeCurrency;
-      const currentTxCurrency = quickAddCurrency || activeCurrency;
-      const numPriceInTarget = numPrice * getExchangeRate(currentTxCurrency, targetCurrency, quotes);
-      
-      const totalCost = (quickAddHolding.shares * quickAddHolding.avg_price) + (numShares * numPriceInTarget);
+      const totalCost = (quickAddHolding.shares * quickAddHolding.avg_price) + (numShares * numPrice);
       const newAvgPrice = totalCost / newShares;
 
       await updateDoc(doc(db, 'holdings', quickAddHolding.id), {
@@ -1980,7 +2346,6 @@ export default function App() {
         type: 'buy',
         shares: numShares,
         price: numPrice,
-        currency: currentTxCurrency,
         date: new Date(quickAddDate).toISOString(),
         userId: user.uid
       });
@@ -2021,8 +2386,8 @@ export default function App() {
     try {
       await updateDoc(doc(db, 'holdings', id), {
         ticker: finalTicker,
-        shares: parseFloat(editShares),
-        avg_price: isCash ? 1 : parseFloat(editAvgPrice),
+        shares: parseFloat(editShares.toString().replace(/,/g, '.')),
+        avg_price: isCash ? 1 : parseFloat(editAvgPrice.toString().replace(/,/g, '.')),
         avgPriceCurrency: editAvgPriceCurrency,
         updatedAt: serverTimestamp()
       });
@@ -2081,12 +2446,10 @@ export default function App() {
       
       // Recalculate average price only for undoing a buy
       let newAvgPrice = latestHolding.avg_price;
-      const targetCurrency = latestHolding.avgPriceCurrency || activeCurrency;
       if (isBuy) {
         if (newShares > 0) {
           const currentTotalCost = latestHolding.shares * latestHolding.avg_price;
-          const txPriceInTarget = numPrice * getExchangeRate(tx.currency || activeCurrency, targetCurrency, quotes);
-          const txTotalCost = numShares * txPriceInTarget;
+          const txTotalCost = numShares * numPrice;
           newAvgPrice = (currentTotalCost - txTotalCost) / newShares;
         } else {
           newAvgPrice = 0;
@@ -2117,11 +2480,32 @@ export default function App() {
     }
   };
 
+  const handleSaveEarningsAnalysis = async () => {
+    if (!earningsAnalysisResult || !selectedEarningsEvent) return;
+    setIsSavingEarningsAnalysis(true);
+    try {
+      await fetch('/api/analyses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: selectedEarningsEvent.symbol,
+          result: `## Earnings Analysis: ${selectedEarningsEvent.symbol} (${format(parseISO(selectedEarningsEvent.date), 'MMMM d, yyyy')})\n\n${earningsAnalysisResult}`,
+        }),
+      });
+      setEarningsAnalysisSaved(true);
+    } catch (err) {
+      console.error('Failed to save earnings analysis');
+    } finally {
+      setIsSavingEarningsAnalysis(false);
+    }
+  };
+
   const handleAnalyzeEarnings = async (event: EarningsEvent) => {
     setSelectedEarningsEvent(event);
     setShowEarningsAnalysisModal(true);
     setIsAnalyzingEarnings(true);
     setEarningsAnalysisResult('');
+    setEarningsAnalysisSaved(false);
 
     try {
       const apiKey = process.env.GEMINI_API_KEY;
@@ -2173,8 +2557,8 @@ export default function App() {
         model: "gemini-3.1-pro-preview",
         contents: prompt,
         config: {
-          tools: [{ googleSearch: {} }],
-        },
+          tools: [{ googleSearch: {} }]
+        }
       });
 
       setEarningsAnalysisResult(response.text || 'Failed to generate analysis.');
@@ -2183,6 +2567,27 @@ export default function App() {
       setEarningsAnalysisResult('An error occurred during analysis.');
     } finally {
       setIsAnalyzingEarnings(false);
+    }
+  };
+
+  const handleSaveAnalysis = async () => {
+    if (!analysisResult) return;
+    setIsSavingAnalysis(true);
+    try {
+      await fetch('/api/analyses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: analysisTicker || 'portfolio',
+          result: analysisResult,
+          sentiment: analysisSentiment
+        }),
+      });
+      setAnalysisSaved(true);
+    } catch (err) {
+      console.error('Failed to save analysis');
+    } finally {
+      setIsSavingAnalysis(false);
     }
   };
 
@@ -2195,6 +2600,7 @@ export default function App() {
     setAnalysisTicker(ticker || null);
     setAnalysisSources([]);
     setAnalysisSentiment('neutral');
+    setAnalysisSaved(false);
 
     try {
       const apiKey = process.env.GEMINI_API_KEY;
@@ -2281,8 +2687,8 @@ export default function App() {
         model: "gemini-3.1-pro-preview",
         contents: prompt,
         config: {
-          tools: [{ googleSearch: {} }],
-        },
+          tools: [{ googleSearch: {} }]
+        }
       });
 
       const fullText = response.text || 'Failed to generate analysis.';
@@ -2421,7 +2827,7 @@ export default function App() {
                 Return a list of current holdings with ticker symbol, number of shares, and average price/cost basis.
                 
                 CSV Data:
-                ${csvText.slice(0, 30000)}`, // Truncate if too long, though Gemini 1.5 Pro handles more
+                ${csvText.slice(0, 30000)}`, // Truncate if too long, though Gemini 3 series models handle more
               ],
               config: {
                 responseMimeType: "application/json",
@@ -2988,7 +3394,8 @@ export default function App() {
           <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); handleEditClick(holding, 'shares'); }}>
             {editingId === holding.id ? (
               <input
-                type="number"
+                type="text"
+                inputMode="decimal"
                 value={editShares}
                 onChange={(e) => setEditShares(e.target.value)}
                 className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
@@ -3032,7 +3439,8 @@ export default function App() {
                   <option value="SGD">SGD</option>
                 </select>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="decimal"
                   value={editAvgPrice}
                   onChange={(e) => setEditAvgPrice(e.target.value)}
                   className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
@@ -3154,6 +3562,17 @@ export default function App() {
               </span>
             </div>
             <button
+              onClick={() => {
+                setShowSavedAnalysesModal(true);
+                fetchSavedAnalyses();
+              }}
+              className="p-2 text-zinc-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all flex items-center gap-2"
+              title="Saved AI Analyses"
+            >
+              <FileText size={20} />
+              <span className="hidden sm:inline text-sm font-semibold">Saved Notes</span>
+            </button>
+            <button
               onClick={() => setShowSettings(true)}
               className="p-2 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-xl transition-all"
               title="Settings"
@@ -3168,64 +3587,76 @@ export default function App() {
             </button>
           </div>
         </div>
-        {userSettings.showCombinedSummary && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-4">
-            <div className="flex flex-wrap items-center gap-x-12 gap-y-4">
-              <div className="flex flex-col">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Combined Value</span>
-                  <select 
-                    value={userSettings.combinedCurrency || 'USD'}
-                    onChange={async (e) => {
-                      const newCurrency = e.target.value;
-                      const updatedSettings = { ...userSettings, combinedCurrency: newCurrency };
-                      setUserSettings(updatedSettings);
-                      if (user) {
-                        try {
-                          await setDoc(doc(db, 'settings', user.uid), { user: updatedSettings }, { merge: true });
-                        } catch (error) {
-                          console.error('Error updating combined currency:', error);
-                        }
-                      }
-                    }}
-                    className="text-[10px] font-bold bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded border-none focus:ring-1 focus:ring-zinc-300 outline-none cursor-pointer hover:bg-zinc-200 transition-colors"
-                  >
-                    <option value="USD">USD</option>
-                    <option value="INR">INR</option>
-                    <option value="AUD">AUD</option>
-                    <option value="EUR">EUR</option>
-                    <option value="GBP">GBP</option>
-                    <option value="CAD">CAD</option>
-                    <option value="SGD">SGD</option>
-                  </select>
-                </div>
-                <span className="text-2xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, userSettings.combinedCurrency || 'USD')}</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Combined Return</span>
-                <div className="flex items-center gap-2">
-                  <span className={cn("text-2xl font-semibold tracking-tight", combinedStats.totalProfitLoss >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                    {formatCurrency(combinedStats.totalProfitLoss, userSettings.combinedCurrency || 'USD', true)}
-                  </span>
-                  <span className={cn("text-xs font-bold px-2 py-0.5 rounded-full", combinedStats.totalProfitLossPercent >= 0 ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100")}>
-                    {combinedStats.totalProfitLossPercent >= 0 ? '+' : ''}{combinedStats.totalProfitLossPercent.toFixed(2)}%
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Combined Day Change</span>
-                <div className="flex items-center gap-2">
-                  <span className={cn("text-2xl font-semibold tracking-tight", combinedStats.totalDayChange >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                    {formatCurrency(combinedStats.totalDayChange, userSettings.combinedCurrency || 'USD', true)}
-                  </span>
-                  <span className={cn("text-xs font-bold px-2 py-0.5 rounded-full", combinedStats.totalDayChangePercent >= 0 ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100")}>
-                    {combinedStats.totalDayChangePercent >= 0 ? '+' : ''}{combinedStats.totalDayChangePercent.toFixed(2)}%
-                  </span>
+        {userSettings.showCombinedSummary && (() => {
+          return (
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-4">
+              <div className="flex flex-col gap-6 bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden">
+                <div className="overflow-x-auto no-scrollbar">
+                  <div className="p-6 md:p-8 flex flex-row items-center gap-8 lg:gap-16 min-w-max">
+                    <div className="flex flex-col min-w-max">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Combined Value</span>
+                        <select 
+                          value={userSettings.combinedCurrency || 'USD'}
+                          onChange={async (e) => {
+                            const newCurrency = e.target.value;
+                            const updatedSettings = { ...userSettings, combinedCurrency: newCurrency };
+                            setUserSettings(updatedSettings);
+                            if (user) {
+                              try {
+                                await setDoc(doc(db, 'settings', user.uid), { user: updatedSettings }, { merge: true });
+                              } catch (error) {
+                                console.error('Error updating combined currency:', error);
+                              }
+                            }
+                          }}
+                          className="text-xs font-bold bg-zinc-100 text-zinc-600 px-2 py-1 rounded border-none focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer hover:bg-zinc-200 transition-colors"
+                        >
+                          <option value="USD">USD</option>
+                          <option value="INR">INR</option>
+                          <option value="AUD">AUD</option>
+                          <option value="EUR">EUR</option>
+                          <option value="GBP">GBP</option>
+                          <option value="CAD">CAD</option>
+                          <option value="SGD">SGD</option>
+                        </select>
+                      </div>
+                      <span className="text-4xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, userSettings.combinedCurrency || 'USD')}</span>
+                    </div>
+
+                    <div className="flex flex-row gap-8 lg:gap-16 ml-auto min-w-max">
+                      <div className="space-y-1">
+                        <div className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
+                          Combined Return
+                        </div>
+                        <div className={cn("text-2xl md:text-3xl font-medium flex items-center gap-2", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {formatCurrency(combinedStats.totalProfitLoss, userSettings.combinedCurrency || 'USD', true)}
+                        </div>
+                        <div className={cn("text-sm font-medium flex items-center gap-1", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedStats.totalProfitLossPercent >= 0 ? <TrendingUp size={16} /> : <TrendingUp size={16} className="rotate-180" />}
+                          {Math.abs(combinedStats.totalProfitLossPercent).toFixed(2)}% All Time
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
+                          Combined Day Change
+                        </div>
+                        <div className={cn("text-2xl md:text-3xl font-medium flex items-center gap-2", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {formatCurrency(combinedStats.totalDayChange, userSettings.combinedCurrency || 'USD', true)}
+                        </div>
+                        <div className={cn("text-sm font-medium flex items-center gap-1", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedStats.totalDayChangePercent >= 0 ? <TrendingUp size={16} /> : <TrendingUp size={16} className="rotate-180" />}
+                          {Math.abs(combinedStats.totalDayChangePercent).toFixed(2)}% Today
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center gap-6">
           <button
             onClick={() => setActiveTab('global')}
@@ -3260,7 +3691,7 @@ export default function App() {
               </span>
             )}
             <button
-              onClick={() => handleAnalyze()}
+              onClick={() => promptAnalysisStrategy()}
               disabled={isAnalyzing || holdings.length === 0}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -3288,6 +3719,23 @@ export default function App() {
                 <Upload className="w-4 h-4" />
                 <input type="file" accept=".json" className="hidden" onChange={handleImport} />
               </label>
+
+              <div className="w-[1px] bg-zinc-200 mx-1 my-1" />
+
+              <button
+                onClick={handleDownloadTransactions}
+                className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all"
+                title="Download Transactions History"
+              >
+                <History className="w-4 h-4 text-emerald-600" />
+              </button>
+              <label className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Transactions History (JSON/CSV)">
+                <FileText className="w-4 h-4 text-emerald-600" />
+                <input type="file" accept=".json,.csv" className="hidden" onChange={handleImportTransactions} />
+              </label>
+
+              <div className="w-[1px] bg-zinc-200 mx-1 my-1" />
+
               <button
                 onClick={() => setShowResetConfirm(true)}
                 disabled={isResetting || holdings.length === 0}
@@ -3369,22 +3817,9 @@ export default function App() {
               }, { merge: true }).catch(err => console.error('Error saving benchmark:', err));
             }
           }}
+          onSyncHistory={handleSyncHistory}
+          isSyncing={isSyncingHistory}
           activeCurrency={activeCurrency}
-          onCurrencyChange={(currency) => {
-            const newTabSettings = {
-              ...tabSettings,
-              [activeTab]: {
-                ...tabSettings[activeTab],
-                currency
-              }
-            };
-            setTabSettings(newTabSettings);
-            if (user) {
-              setDoc(doc(db, 'settings', user.uid), {
-                tabs: newTabSettings
-              }, { merge: true }).catch(err => console.error('Error saving currency:', err));
-            }
-          }}
           riskProfile={tabSettings[activeTab]?.riskProfile}
           targetReturn={tabSettings[activeTab]?.targetReturn}
         />
@@ -3400,6 +3835,41 @@ export default function App() {
           >
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {widgetOrder.map((widgetId) => {
+                if (widgetId === 'performance') {
+                  return (
+                    <SortableWidget key="performance" id="performance" className={cn("p-8 min-h-[400px] flex flex-col", getWidgetClass('performance'))} onDoubleClick={() => toggleWidgetSize('performance')}>
+                      <div className="flex justify-between items-start mb-6 relative z-20">
+                        <div>
+                          <h2 className="text-xl font-bold text-zinc-900 flex items-center gap-2">
+                            <Activity className="w-6 h-6 text-indigo-500" />
+                            Performance vs Benchmarks
+                          </h2>
+                          <p className="text-sm text-zinc-500 mt-1">Simulated portfolio value vs major indices tracking invested capital</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => toggleWidgetSize('performance')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
+                            {widgetSizes.performance === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button onClick={() => removeWidget('performance')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex-1 w-full h-full relative z-10">
+                        {user ? (
+                          <PerformanceChart 
+                            user={user} 
+                            holdings={holdings} 
+                            activeCurrency={activeCurrency} 
+                          />
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-zinc-400 italic">Please sign in to view performance.</div>
+                        )}
+                      </div>
+                    </SortableWidget>
+                  );
+                }
+
                 if (widgetId === 'allocation' && (chartData.length > 0 || sectorData.length > 0)) {
                   return (
                     <SortableWidget key="allocation" id="allocation" className={cn("p-8", getWidgetClass('allocation'))} onDoubleClick={() => toggleWidgetSize('allocation')}>
@@ -3510,7 +3980,8 @@ export default function App() {
                               animationEasing="ease-out"
                               onClick={(data) => {
                                 if (data && (data as any).name) {
-                                  setFilterGroup(prev => prev === (data as any).name ? null : (data as any).name);
+                                  const name = String((data as any).name);
+                                  setFilterGroup(prev => prev === name ? null : name);
                                 }
                               }}
                               style={{ cursor: 'pointer' }}
@@ -3532,16 +4003,16 @@ export default function App() {
                               <div className="w-2 h-2 rounded-full bg-indigo-500" />
                               <span>Market Value</span>
                             </div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                          <span>Profit</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full bg-rose-500" />
-                          <span>Loss</span>
-                        </div>
-                      </div>
-                      <div className="h-full w-full">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                              <span>Profit</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-rose-500" />
+                              <span>Loss</span>
+                            </div>
+                          </div>
+                          <div className="h-full w-full">
                         {chartType === 'pie' ? (
                           <div className="w-full h-full pb-8">
                             <Chart
@@ -3589,7 +4060,7 @@ export default function App() {
                               barGap={4}
                               onClick={(data) => {
                                 if (data && data.activeLabel) {
-                                  const label = data.activeLabel.toString();
+                                  const label = String(data.activeLabel);
                                   setFilterGroup(prev => prev === label ? null : label);
                                 }
                               }}
@@ -3710,7 +4181,7 @@ export default function App() {
                               barGap={4}
                               onClick={(data) => {
                                 if (data && data.activeLabel) {
-                                  const label = data.activeLabel.toString();
+                                  const label = String(data.activeLabel);
                                   setFilterGroup(prev => prev === label ? null : label);
                                 }
                               }}
@@ -3836,7 +4307,7 @@ export default function App() {
                         onRemove={() => removeWidget('calendar')}
                         size={widgetSizes.calendar}
                         activeCurrency={activeCurrency}
-                        onEarningsClick={handleAnalyzeEarnings}
+                        onEarningsClick={promptEarningsAnalysisStrategy}
                       />
                     </SortableWidget>
                   );
@@ -3946,7 +4417,7 @@ export default function App() {
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleAnalyze(holding.ticker);
+                                      promptAnalysisStrategy(holding.ticker);
                                     }}
                                     className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                                     title="Analyze Stock"
@@ -4145,7 +4616,8 @@ export default function App() {
                     <label htmlFor="shares" className="block text-sm font-medium text-zinc-700 mb-1">{ticker.toUpperCase() === 'CASH' ? 'Amount' : 'Shares'}</label>
                     <input
                       id="shares"
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       required
                       min="0.00001"
                       step="any"
@@ -4179,7 +4651,8 @@ export default function App() {
                       {ticker.toUpperCase() !== 'CASH' && (
                         <input
                           id="avgPrice"
-                          type="number"
+                          type="text"
+                          inputMode="decimal"
                           required
                           min="0.01"
                           step="any"
@@ -4317,11 +4790,17 @@ export default function App() {
                   >
                     Business KPIs
                   </button>
+                  <button
+                    onClick={() => setChartModalTab('history')}
+                    className={cn("px-3 py-1.5 text-sm font-medium rounded-md transition-colors", chartModalTab === 'history' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}
+                  >
+                    Historical Data
+                  </button>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleAnalyze(selectedChartTicker)}
+                  onClick={() => promptAnalysisStrategy(selectedChartTicker)}
                   disabled={isAnalyzing}
                   className="flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                 >
@@ -4364,6 +4843,8 @@ export default function App() {
                     )}
                   </>
                 )
+              ) : chartModalTab === 'history' ? (
+                <HistoricalPriceChart ticker={selectedChartTicker} activeCurrency={activeCurrency} />
               ) : (
                 <div className="h-full w-full p-6 overflow-auto">
                   {isFinancialsLoading || isBusinessKpisLoading ? (
@@ -4449,15 +4930,7 @@ export default function App() {
                             <h4 className="text-base font-semibold mb-4 text-zinc-800">Revenue & Net Income</h4>
                             <div className="h-80">
                               <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={financialsData.kpis.map((kpi: any) => {
-                                  const nativeCurrency = financialsData.financialData?.financialCurrency || 'USD';
-                                  const rate = getExchangeRate(nativeCurrency, activeCurrency, quotes);
-                                  return {
-                                    ...kpi,
-                                    revenue: kpi.revenue * rate,
-                                    netIncome: kpi.netIncome * rate
-                                  };
-                                })} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
+                                <BarChart data={financialsData.kpis} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
                                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
                                   <XAxis dataKey="year" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
                                   <YAxis 
@@ -4485,15 +4958,7 @@ export default function App() {
                             <h4 className="text-base font-semibold mb-4 text-zinc-800">Cash Flow</h4>
                             <div className="h-80">
                               <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={financialsData.kpis.map((kpi: any) => {
-                                  const nativeCurrency = financialsData.financialData?.financialCurrency || 'USD';
-                                  const rate = getExchangeRate(nativeCurrency, activeCurrency, quotes);
-                                  return {
-                                    ...kpi,
-                                    operatingCashflow: (kpi.operatingCashflow || 0) * rate,
-                                    freeCashflow: (kpi.freeCashflow || 0) * rate
-                                  };
-                                })} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
+                                <BarChart data={financialsData.kpis} margin={{ top: 10, right: 10, left: 40, bottom: 0 }}>
                                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
                                   <XAxis dataKey="year" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
                                   <YAxis 
@@ -4600,16 +5065,10 @@ export default function App() {
                             {tx.shares.toLocaleString(undefined, { maximumFractionDigits: 5 })}
                           </td>
                           <td className="px-4 py-3 text-sm text-right font-mono text-zinc-900">
-                            {(() => {
-                              const rate = getExchangeRate(tx.currency || activeCurrency, activeCurrency, quotes);
-                              return formatCurrency(tx.price * rate, activeCurrency);
-                            })()}
+                            {formatCurrency(tx.price, activeCurrency)}
                           </td>
                           <td className="px-4 py-3 text-sm text-right font-mono font-medium text-zinc-900">
-                            {(() => {
-                              const rate = getExchangeRate(tx.currency || activeCurrency, activeCurrency, quotes);
-                              return formatCurrency(tx.shares * tx.price * rate, activeCurrency);
-                            })()}
+                            {formatCurrency(tx.shares * tx.price, activeCurrency)}
                           </td>
                           <td className="px-4 py-3 text-center">
                             {confirmUndoId === tx.id ? (
@@ -4771,7 +5230,8 @@ export default function App() {
                   {quickAddHolding.ticker === 'CASH' ? 'Amount to Add' : 'Quantity to Add'}
                 </label>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="decimal"
                   value={quickAddShares}
                   onChange={(e) => setQuickAddShares(e.target.value)}
                   className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono"
@@ -4782,35 +5242,18 @@ export default function App() {
                 />
               </div>
               {quickAddHolding.ticker !== 'CASH' && (
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="col-span-2">
-                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Price per Share</label>
-                    <input
-                      type="number"
-                      value={quickAddPrice}
-                      onChange={(e) => setQuickAddPrice(e.target.value)}
-                      className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono"
-                      placeholder="0.00"
-                      step="any"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Currency</label>
-                    <select
-                      value={quickAddCurrency}
-                      onChange={(e) => setQuickAddCurrency(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono text-sm"
-                    >
-                      <option value="USD">USD</option>
-                      <option value="EUR">EUR</option>
-                      <option value="GBP">GBP</option>
-                      <option value="AUD">AUD</option>
-                      <option value="CAD">CAD</option>
-                      <option value="INR">INR</option>
-                      <option value="SGD">SGD</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Price per Share ({getCurrencySymbol(activeCurrency)})</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={quickAddPrice}
+                    onChange={(e) => setQuickAddPrice(e.target.value)}
+                    className="w-full px-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 font-mono"
+                    placeholder="0.00"
+                    step="any"
+                    required
+                  />
                 </div>
               )}
               <div>
@@ -4933,12 +5376,30 @@ export default function App() {
               <p className="text-[10px] text-zinc-400 italic">
                 AI-generated insights. Verify with official sources.
               </p>
-              <button
-                onClick={() => setShowAnalysisModal(false)}
-                className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                {!isAnalyzing && analysisResult && !analysisSaved && (
+                  <button
+                    onClick={handleSaveAnalysis}
+                    disabled={isSavingAnalysis}
+                    className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-semibold shadow-sm flex items-center justify-center gap-2"
+                  >
+                    {isSavingAnalysis ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    Save Note
+                  </button>
+                )}
+                {analysisSaved && (
+                  <div className="px-4 py-2 text-emerald-600 bg-emerald-50 rounded-lg text-sm font-semibold flex items-center gap-2">
+                    <Check className="w-4 h-4" />
+                    Saved
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowAnalysisModal(false)}
+                  className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -4994,12 +5455,194 @@ export default function App() {
               <p className="text-[10px] text-zinc-400 italic">
                 AI-generated insights. Verify with official sources.
               </p>
+              <div className="flex items-center gap-2">
+                {!isAnalyzingEarnings && earningsAnalysisResult && !earningsAnalysisSaved && (
+                  <button
+                    onClick={handleSaveEarningsAnalysis}
+                    disabled={isSavingEarningsAnalysis}
+                    className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-semibold shadow-sm flex items-center justify-center gap-2"
+                  >
+                    {isSavingEarningsAnalysis ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    Save Note
+                  </button>
+                )}
+                {earningsAnalysisSaved && (
+                  <div className="px-4 py-2 text-emerald-600 bg-emerald-50 rounded-lg text-sm font-semibold flex items-center gap-2">
+                    <Check className="w-4 h-4" />
+                    Saved
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowEarningsAnalysisModal(false)}
+                  className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAnalysisStrategyModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden p-6 text-center border border-zinc-100">
+            <div className="mx-auto w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center mb-4">
+              <Zap className="w-6 h-6 text-indigo-600" />
+            </div>
+            <h3 className="text-xl font-bold text-zinc-900 mb-2">AI Insights</h3>
+            <p className="text-sm text-zinc-500 mb-6 font-medium">How would you like to proceed with the analysis for {strategyTicker || 'your portfolio'}?</p>
+            <div className="flex flex-col gap-3">
               <button
-                onClick={() => setShowEarningsAnalysisModal(false)}
-                className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
+                onClick={() => {
+                  setShowAnalysisStrategyModal(false);
+                  handleAnalyze(strategyTicker || undefined);
+                }}
+                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
-                Close
+                <Zap className="w-5 h-5" />
+                Generate Fresh Analysis
               </button>
+              <button
+                onClick={() => {
+                  setShowAnalysisStrategyModal(false);
+                  setShowSavedAnalysesModal(true);
+                  fetchSavedAnalyses(strategyTicker || 'portfolio');
+                }}
+                className="w-full py-3 bg-white text-zinc-700 border border-zinc-200 rounded-xl font-semibold hover:bg-zinc-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+              >
+                <FileText className="w-5 h-5" />
+                View Saved Notes
+              </button>
+            </div>
+            <button
+              onClick={() => setShowAnalysisStrategyModal(false)}
+              className="mt-6 text-sm font-semibold text-zinc-400 hover:text-zinc-600 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showEarningsAnalysisStrategyModal && strategyEarningsEvent && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden p-6 text-center border border-zinc-100">
+            <div className="mx-auto w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center mb-4">
+              <CalendarIcon className="w-6 h-6 text-indigo-600" />
+            </div>
+            <h3 className="text-xl font-bold text-zinc-900 mb-2">Earnings Insights</h3>
+            <p className="text-sm text-zinc-500 mb-6 font-medium">How would you like to proceed with the analysis for {strategyEarningsEvent.symbol}?</p>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => {
+                  setShowEarningsAnalysisStrategyModal(false);
+                  handleAnalyzeEarnings(strategyEarningsEvent);
+                }}
+                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
+              >
+                <Zap className="w-5 h-5" />
+                Generate Fresh Analysis
+              </button>
+              <button
+                onClick={() => {
+                  setShowEarningsAnalysisStrategyModal(false);
+                  setShowSavedAnalysesModal(true);
+                  fetchSavedAnalyses(strategyEarningsEvent.symbol);
+                }}
+                className="w-full py-3 bg-white text-zinc-700 border border-zinc-200 rounded-xl font-semibold hover:bg-zinc-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+              >
+                <FileText className="w-5 h-5" />
+                View Saved Notes
+              </button>
+            </div>
+            <button
+              onClick={() => setShowEarningsAnalysisStrategyModal(false)}
+              className="mt-6 text-sm font-semibold text-zinc-400 hover:text-zinc-600 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showSavedAnalysesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between bg-white sticky top-0 z-10">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <h3 className="text-lg font-semibold text-zinc-900">
+                  Saved AI Notes & Analysis
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowSavedAnalysesModal(false)}
+                className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-6 bg-zinc-50 relative">
+              {isFetchingAnalyses ? (
+                <div className="flex flex-col items-center justify-center h-64">
+                  <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mb-4" />
+                  <p className="text-sm font-medium text-zinc-500">Loading saved analyses...</p>
+                </div>
+              ) : savedAnalyses.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64 text-zinc-400">
+                  <FileText className="w-12 h-12 mb-4 opacity-50" />
+                  <p className="text-lg font-medium text-zinc-500 mb-2">No saved analysis notes</p>
+                  <p className="text-sm">When you run AI analysis, you can save the results here.</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {savedAnalyses.map(analysis => (
+                    <div key={analysis.id} className="bg-white border border-zinc-200 rounded-xl p-6 shadow-sm relative group">
+                      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => deleteAnalysis(analysis.id)}
+                          className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                          title="Delete specific note"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3 mb-4 flex-wrap">
+                        {analysis.ticker ? (
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-zinc-900 text-lg">{analysis.ticker}</span>
+                            <span className="text-xs text-zinc-500 px-2 py-1 bg-zinc-100 rounded-full">Stock</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <Briefcase className="w-5 h-5 text-indigo-600" />
+                            <span className="font-bold text-zinc-900 text-lg">Portfolio Analysis</span>
+                          </div>
+                        )}
+                        <span className="text-sm text-zinc-500">
+                          {format(parseISO(analysis.date), 'MMM d, yyyy h:mm a')}
+                        </span>
+                        {analysis.sentiment && (
+                          <span className={cn(
+                            "text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded",
+                            analysis.sentiment === 'bullish' ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
+                            analysis.sentiment === 'bearish' ? "bg-rose-50 text-rose-700 border border-rose-200" :
+                            "bg-zinc-100 text-zinc-700 border border-zinc-200"
+                          )}>
+                            {analysis.sentiment}
+                          </span>
+                        )}
+                      </div>
+                      <div className="prose prose-indigo prose-sm max-w-none">
+                        <Markdown>{analysis.result}</Markdown>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

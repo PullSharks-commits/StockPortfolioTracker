@@ -13,13 +13,13 @@ interface DataItem {
 
 interface ThreeDBarChartProps {
   data: DataItem[];
-  activeCurrency?: string;
+  activeTab?: string;
   title?: string;
 }
 
 const ThreeDBarChart: React.FC<ThreeDBarChartProps> = ({
   data,
-  activeCurrency = 'USD',
+  activeTab = 'global',
   title
 }) => {
   const option = useMemo(() => {
@@ -33,7 +33,7 @@ const ThreeDBarChart: React.FC<ThreeDBarChartProps> = ({
         formatter: (params: any) => {
           const item = data[params.dataIndex];
           if (item) {
-            return `${item.name}<br/>Value: ${formatCurrency(item.value, activeCurrency, false, 0)}`;
+            return `${item.name}<br/>Value: ${formatCurrency(item.value, activeTab, false, 0)}`;
           }
           return '';
         }
@@ -142,7 +142,7 @@ const ThreeDBarChart: React.FC<ThreeDBarChartProps> = ({
         }
       }]
     };
-  }, [data, activeCurrency]);
+  }, [data, activeTab]);
 
   return (
     <div className="w-full h-full min-h-[300px]">

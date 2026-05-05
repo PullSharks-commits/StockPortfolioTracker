@@ -1,5 +1,5 @@
 import React, { memo, useState } from 'react';
-import { TrendingUp, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
+import { TrendingUp, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
 import ThreeDBarChart from './ThreeDBarChart';
 import { clsx, type ClassValue } from 'clsx';
@@ -83,8 +83,9 @@ export const PortfolioSummary = memo(({
   benchmarkDayChangePercent,
   benchmarkYtdReturn,
   onBenchmarkChange,
+  onSyncHistory,
+  isSyncing,
   activeCurrency,
-  onCurrencyChange,
   riskProfile,
   targetReturn
 }: {
@@ -98,8 +99,9 @@ export const PortfolioSummary = memo(({
   benchmarkDayChangePercent: number;
   benchmarkYtdReturn?: number;
   onBenchmarkChange: (ticker: string) => void;
+  onSyncHistory?: () => void;
+  isSyncing?: boolean;
   activeCurrency: string;
-  onCurrencyChange: (currency: string) => void;
   riskProfile?: string;
   targetReturn?: number;
 }) => {
@@ -122,25 +124,11 @@ export const PortfolioSummary = memo(({
       <div className="p-8 md:p-10 lg:p-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-8">
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-zinc-500 mb-2">
-            <Briefcase className="w-5 h-5" />
+          <Briefcase size={20} />
             <span className="text-sm font-semibold uppercase tracking-widest">Total Portfolio Value</span>
           </div>
-          <div className="flex items-center gap-4 text-5xl md:text-6xl lg:text-7xl font-light tracking-tight text-zinc-900 group">
-            <span>{formatCurrency(totalValue, activeCurrency)}</span>
-            <select
-              value={activeCurrency}
-              onChange={(e) => onCurrencyChange(e.target.value)}
-              className="text-xs font-bold bg-zinc-100 border border-zinc-200 rounded-md px-1.5 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200"
-              title="Change display currency"
-            >
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-              <option value="GBP">GBP</option>
-              <option value="AUD">AUD</option>
-              <option value="CAD">CAD</option>
-              <option value="INR">INR</option>
-              <option value="SGD">SGD</option>
-            </select>
+          <div className="text-5xl md:text-6xl lg:text-7xl font-light tracking-tight text-zinc-900">
+            {formatCurrency(totalValue, activeCurrency)}
           </div>
           {(riskProfile || targetReturn) && (
             <div className="flex flex-wrap gap-3 mt-4">
@@ -180,6 +168,18 @@ export const PortfolioSummary = memo(({
             </button>
           </div>
 
+          {onSyncHistory && (
+            <button
+              onClick={onSyncHistory}
+              disabled={isSyncing}
+              className="px-4 py-1.5 text-xs font-semibold rounded-lg transition-all bg-indigo-50 text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 flex items-center gap-2 self-start mb-2 sm:mb-0"
+              title="Fetch and store 5-year historical price data for all portfolio holdings"
+            >
+              {isSyncing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              {isSyncing ? 'Syncing...' : 'Sync 5Y History'}
+            </button>
+          )}
+
           <div className="flex flex-col sm:flex-row gap-6 md:gap-12">
             <div className="space-y-1">
               <div className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
@@ -193,7 +193,7 @@ export const PortfolioSummary = memo(({
                 )}
               </div>
               <div className={cn("text-sm font-medium flex items-center gap-1", isProfit ? "text-emerald-600" : "text-rose-600")}>
-                {isProfit ? <TrendingUp className="w-4 h-4" /> : <TrendingUp className="w-4 h-4 rotate-180" />}
+                {isProfit ? <TrendingUp size={16} /> : <TrendingUp size={16} className="rotate-180" />}
                 {isRelative ? 'vs Benchmark (YTD)' : `${Math.abs(totalProfitLossPercent).toFixed(2)}% All Time`}
               </div>
             </div>
@@ -210,7 +210,7 @@ export const PortfolioSummary = memo(({
                 )}
               </div>
               <div className={cn("text-sm font-medium flex items-center gap-1", isDayProfit ? "text-emerald-600" : "text-rose-600")}>
-                {isDayProfit ? <TrendingUp className="w-4 h-4" /> : <TrendingUp className="w-4 h-4 rotate-180" />}
+                {isDayProfit ? <TrendingUp size={16} /> : <TrendingUp size={16} className="rotate-180" />}
                 {isRelative ? 'vs Benchmark' : `${Math.abs(dayChangePercent).toFixed(2)}% Today`}
               </div>
             </div>
@@ -264,7 +264,15 @@ export const PortfolioSummary = memo(({
 });
 PortfolioSummary.displayName = 'PortfolioSummary';
 
-export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip, activeCurrency }: { data: any[], view: string, onViewChange: (v: any) => void, colors: string[], tooltip: any, activeCurrency: string }) => {
+interface AllocationChartProps {
+  data: any[];
+  view: 'asset' | 'industry' | 'sector';
+  onViewChange: (view: 'asset' | 'industry' | 'sector') => void;
+  colors: string[];
+  tooltip: React.ReactNode;
+}
+
+export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip }: AllocationChartProps) => {
   if (data.length === 0) return null;
 
   return (
@@ -272,7 +280,7 @@ export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <h2 className="text-xl font-bold text-zinc-900 flex items-center gap-2">
-            <Briefcase className="w-6 h-6 text-indigo-500" />
+            <Briefcase size={24} className="text-indigo-500" />
             Portfolio Allocation
           </h2>
           <p className="text-sm text-zinc-500 mt-1">Distribution of your assets by value</p>
@@ -305,7 +313,7 @@ export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip
             value: entry.value,
             color: colors[index % colors.length]
           }))}
-          activeCurrency={activeCurrency}
+          activeTab="USD"
         />
       </div>
 

@@ -9,6 +9,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import YahooFinance from 'yahoo-finance2';
+const yahooFinance = new YahooFinance();
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const finnhub = require('finnhub');
@@ -18,15 +19,13 @@ import session from 'express-session';
 import crypto from 'crypto';
 import dns from 'node:dns/promises';
 
-const yahooFinance = new YahooFinance();
-
-// Disable Yahoo Finance schema validation errors which can happen when Yahoo changes their API format
-// @ts-ignore
-yahooFinance.setGlobalConfig({
-  validation: {
-    logErrors: false,
-    throwErrors: false
-  }
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  // Give it a moment to log before potentially dying
+  setTimeout(() => process.exit(1), 100);
 });
 
 async function yahooWithRetry<T>(fn: () => Promise<T>, retries = 3, backoff = 1000): Promise<T> {
@@ -252,6 +251,19 @@ async function initDb() {
           date VARCHAR(50) NOT NULL,
           FOREIGN KEY(holding_id) REFERENCES portfolio(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS analyses (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          ticker VARCHAR(20),
+          result TEXT NOT NULL,
+          sentiment VARCHAR(20),
+          date VARCHAR(50) NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS historical_prices (
+          ticker VARCHAR(20) NOT NULL,
+          date VARCHAR(20) NOT NULL,
+          close DOUBLE NOT NULL,
+          PRIMARY KEY (ticker, date)
+        );
       `);
       console.log('MySQL database initialized.');
     } catch (err) {
@@ -278,6 +290,19 @@ async function initDb() {
         price REAL NOT NULL,
         date TEXT NOT NULL,
         FOREIGN KEY(holding_id) REFERENCES portfolio(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS analyses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT,
+        result TEXT NOT NULL,
+        sentiment TEXT,
+        date TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS historical_prices (
+        ticker TEXT NOT NULL,
+        date TEXT NOT NULL,
+        close REAL NOT NULL,
+        PRIMARY KEY (ticker, date)
       );
     `);
     console.log('SQLite database initialized.');
@@ -596,6 +621,210 @@ async function startServer() {
     }
   });
 
+  app.get('/api/analyses', async (req, res) => {
+    try {
+      const ticker = req.query.ticker;
+      if (ticker === 'portfolio') {
+        const rows = await db.query("SELECT * FROM analyses WHERE ticker IS NULL OR ticker = '' ORDER BY date DESC");
+        return res.json(rows);
+      } else if (ticker) {
+        const rows = await db.query('SELECT * FROM analyses WHERE ticker = ? ORDER BY date DESC', [ticker]);
+        return res.json(rows);
+      }
+      const rows = await db.query('SELECT * FROM analyses ORDER BY date DESC');
+      res.json(rows);
+    } catch (error) {
+      console.error('Error fetching analyses:', error);
+      res.status(500).json({ error: 'Failed to fetch analyses' });
+    }
+  });
+
+  app.post('/api/analyses', async (req, res) => {
+    const { ticker, result, sentiment } = req.body;
+    if (!result) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    try {
+      const date = new Date().toISOString();
+      const info = await db.run('INSERT INTO analyses (ticker, result, sentiment, date) VALUES (?, ?, ?, ?)', [
+        ticker || null, result, sentiment || null, date
+      ]);
+      return res.json({ id: info.lastInsertRowid, success: true });
+    } catch (error) {
+      console.error('Error saving analysis:', error);
+      res.status(500).json({ error: 'Failed to save analysis' });
+    }
+  });
+
+  app.delete('/api/analyses/:id', async (req, res) => {
+    try {
+      await db.run('DELETE FROM analyses WHERE id = ?', [req.params.id]);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting analysis:', error);
+      res.status(500).json({ error: 'Failed to delete analysis' });
+    }
+  });
+
+  app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  app.get('/api/calendar/economic.ics', async (req, res) => {
+    const from = req.query.from as string || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const to = req.query.to as string || new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    try {
+      // Use existing internal logic to fetch economic events
+      // Since it's a GET request, we can just call the endpoint code or similar
+      // For simplicity, let's just use fetch internally or duplicate logic
+      const response = await fetch(`http://localhost:3000/api/economic-events?from=${from}&to=${to}`);
+      if (!response.ok) throw new Error('Failed to fetch events');
+      const events: any[] = await response.json();
+
+      let ics = 'BEGIN:VCALENDAR\r\n';
+      ics += 'VERSION:2.0\r\n';
+      ics += 'PRODID:-//Stock Portfolio Tracker//Economic Calendar//EN\r\n';
+      ics += 'CALSCALE:GREGORIAN\r\n';
+      ics += 'METHOD:PUBLISH\r\n';
+      ics += 'X-WR-CALNAME:Economic Calendar\r\n';
+      ics += 'X-WR-TIMEZONE:UTC\r\n';
+      
+      events.forEach(event => {
+        if (!event.time) return;
+        const date = new Date(event.time);
+        const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        // Add 30 mins duration
+        const endDate = new Date(date.getTime() + 30 * 60000);
+        const endDateStr = endDate.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        
+        ics += 'BEGIN:VEVENT\r\n';
+        ics += `UID:econ-${event.event.replace(/\s+/g, '-')}-${dateStr}@stocktracker\r\n`;
+        ics += `DTSTAMP:${dtstamp}\r\n`;
+        ics += `DTSTART:${dateStr}\r\n`;
+        ics += `DTEND:${endDateStr}\r\n`;
+        ics += `SUMMARY:Economic: ${event.event}\r\n`;
+        ics += `DESCRIPTION:Country: ${event.country}\\nImpact: ${event.impact}\\nEstimate: ${event.estimate || 'N/A'}${event.unit || ''}\\nPrevious: ${event.previous || 'N/A'}${event.unit || ''}\r\n`;
+        ics += 'END:VEVENT\r\n';
+      });
+      
+      ics += 'END:VCALENDAR\r\n';
+
+      res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="economic_events.ics"');
+      res.send(ics);
+    } catch (error) {
+      console.error('Error generating economic ics:', error);
+      res.status(500).send('Error generating calendar');
+    }
+  });
+
+  app.get(['/api/historical-bulk', '/api/historical-bulk/'], async (req, res) => {
+    const symbols = req.query.symbols as string;
+    const period1Str = req.query.from as string;
+    const period2Str = req.query.to as string;
+    const forceRefresh = req.query.refresh === 'true';
+    
+    console.log(`[API] Historical bulk request for symbols: ${symbols} from ${period1Str} to ${period2Str}`);
+    
+    if (!symbols) return res.status(400).json({ error: 'Symbols required' });
+    if (!period1Str) return res.status(400).json({ error: 'From date (period1) required' });
+
+    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const queryOptions: any = { period1: period1Str };
+    if (period2Str) queryOptions.period2 = period2Str;
+    queryOptions.interval = '1d';
+
+    try {
+      const results: Record<string, any> = {};
+      
+      for (const sym of symbolList) {
+        let cachedData: any[] = [];
+        let needsFetch = forceRefresh;
+
+        if (!forceRefresh) {
+          try {
+            // Check cache for this symbol and range
+            const rows = await db.query(
+              'SELECT date, close FROM historical_prices WHERE ticker = ? AND date >= ? AND date <= ? ORDER BY date ASC',
+              [sym, period1Str, period2Str || new Date().toISOString().split('T')[0]]
+            );
+            
+            if (rows && rows.length > 0) {
+              // Check if the range is fully covered (rough check: if we have any data and it's not force-refresh)
+              // For a more robust cache, we might want to check the max date in cache vs today
+              const maxDateInStack = rows[rows.length - 1].date;
+              const todayStr = new Date().toISOString().split('T')[0];
+              
+              if (maxDateInStack >= todayStr || (new Date().getDay() === 0 || new Date().getDay() === 6)) { // Weekends
+                 cachedData = rows.map(r => ({ date: r.date, close: r.close }));
+              } else {
+                 needsFetch = true;
+              }
+            } else {
+              needsFetch = true;
+            }
+          } catch (err) {
+            console.error(`Cache read error for ${sym}:`, err);
+            needsFetch = true;
+          }
+        }
+
+        if (needsFetch) {
+          try {
+            console.log(`[API] Fetching from Yahoo for ${sym}...`);
+            const data = await yahooWithRetry(() => yahooFinance.historical(sym, queryOptions));
+            const formattedData = Array.isArray(data) ? data : [];
+            results[sym] = formattedData;
+
+            // Update cache asynchronously
+            if (formattedData.length > 0) {
+              (async () => {
+                try {
+                  for (const p of formattedData) {
+                    if (p.date && p.close !== undefined) {
+                      const d = p.date instanceof Date ? p.date.toISOString().split('T')[0] : p.date.split('T')[0];
+                      await db.run(
+                        'INSERT OR REPLACE INTO historical_prices (ticker, date, close) VALUES (?, ?, ?)',
+                        [sym, d, p.close]
+                      ).catch(e => {
+                        // For MySQL it might be INSERT INTO ... ON DUPLICATE KEY UPDATE
+                        if (isMysql) {
+                           db.run(
+                            'INSERT INTO historical_prices (ticker, date, close) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE close = VALUES(close)',
+                            [sym, d, p.close]
+                          ).catch(() => {});
+                        }
+                      });
+                    }
+                  }
+                } catch (cacheErr) {
+                  console.error(`Failed to update cache for ${sym}:`, cacheErr);
+                }
+              })();
+            }
+          } catch (err: any) {
+            console.warn(`Failed getting historical for ${sym}: ${err.message}`);
+            results[sym] = cachedData; // Fallback to whatever we had
+          }
+        } else {
+          results[sym] = cachedData;
+        }
+      }
+      
+      if (!res.headersSent) {
+        res.json(results);
+      }
+    } catch (error: any) {
+      console.error('[API] Historical data fetch error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to fetch historical data', details: error.message });
+      }
+    }
+  });
+
   app.get('/api/quotes', async (req, res) => {
     const symbols = req.query.symbols as string;
     if (!symbols) return res.json({});
@@ -893,35 +1122,93 @@ async function startServer() {
     }
 
     try {
-      // Fetch from Trading Economics
-      const response = await fetch(`https://api.tradingeconomics.com/calendar/country/united%20states/${from}/${to}?c=guest:guest&f=json`);
-      
-      if (!response.ok) {
-        throw new Error(`Trading Economics API error: ${response.status}`);
+      // 1. Try Finnhub if client is available
+      if (finnhubClient) {
+        try {
+          const finnhubData = await new Promise<any>((resolve, reject) => {
+            finnhubClient.economicCalendar({ from, to }, (error: any, data: any) => {
+              if (error) reject(error);
+              else resolve(data);
+            });
+          });
+
+          if (finnhubData && Array.isArray(finnhubData.economicCalendar)) {
+            const events = finnhubData.economicCalendar
+              .filter((e: any) => e.country === 'United States')
+              .map((e: any) => ({
+                actual: e.actual || null,
+                country: e.country,
+                estimate: e.estimate || null,
+                event: e.event,
+                impact: e.impact === 'high' ? 'High' : e.impact === 'medium' ? 'Medium' : 'Low',
+                previous: e.prev || null,
+                time: e.time ? (e.time.includes('Z') ? e.time : `${e.time.replace(' ', 'T')}Z`) : null,
+                unit: e.unit || ''
+              })).filter((e: any) => e.time !== null);
+            
+            if (events.length > 0) {
+              economicCache.set(cacheKey, { data: events, timestamp: now });
+              return res.json(events);
+            }
+          }
+        } catch (fErr) {
+          console.warn('Finnhub economic calendar fetch failed:', fErr);
+        }
       }
 
-      const data = await response.json();
+      // 2. Fallback to Trading Economics (Country specific)
+      try {
+        const response = await fetchWithRetry(`https://api.tradingeconomics.com/calendar/country/united%20states/${from}/${to}?c=guest:guest&f=json`);
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data)) {
+            const usEvents = data.map((event: any) => ({
+              actual: event.Actual || null,
+              country: event.Country,
+              estimate: event.Forecast || event.TEForecast || null,
+              event: event.Event,
+              impact: event.Importance === 3 ? 'High' : event.Importance === 2 ? 'Medium' : 'Low',
+              previous: event.Previous || null,
+              time: event.Date ? `${event.Date}Z` : null,
+              unit: event.Unit || ''
+            })).filter(e => e.time !== null);
 
-      if (!Array.isArray(data)) {
-        console.error('Trading Economics API returned unexpected format:', data);
-        return res.json([]);
+            economicCache.set(cacheKey, { data: usEvents, timestamp: now });
+            return res.json(usEvents);
+          }
+        } else if (response.status === 410 || response.status === 403) {
+           console.warn(`Trading Economics API returned ${response.status}. Trying generic calendar...`);
+           
+           // 3. Last ditch effort: Generic Trading Economics calendar (upcoming)
+           const genericRes = await fetchWithRetry(`https://api.tradingeconomics.com/calendar?c=guest:guest&f=json`);
+           if (genericRes.ok) {
+             const gData = await genericRes.json();
+             if (Array.isArray(gData)) {
+               const gEvents = gData.map((event: any) => ({
+                 actual: event.Actual || null,
+                 country: event.Country,
+                 estimate: event.Forecast || null,
+                 event: event.Event,
+                 impact: event.Importance === 3 ? 'High' : event.Importance === 2 ? 'Medium' : 'Low',
+                 previous: event.Previous || null,
+                 time: event.Date ? `${event.Date}Z` : null,
+                 unit: event.Unit || ''
+               })).filter(e => e.time !== null && e.country === 'United States');
+               
+               economicCache.set(cacheKey, { data: gEvents, timestamp: now });
+               return res.json(gEvents);
+             }
+           }
+        }
+      } catch (teErr) {
+        console.error('Trading Economics fetch failed:', teErr);
       }
 
-      const usEvents = data.map((event: any) => ({
-        actual: event.Actual || null,
-        country: event.Country,
-        estimate: event.Forecast || event.TEForecast || null,
-        event: event.Event,
-        impact: event.Importance === 3 ? 'High' : event.Importance === 2 ? 'Medium' : 'Low',
-        previous: event.Previous || null,
-        time: event.Date ? `${event.Date}Z` : null,
-        unit: event.Unit || ''
-      })).filter(e => e.time !== null);
-
-      economicCache.set(cacheKey, { data: usEvents, timestamp: now });
-      res.json(usEvents);
+      // If all failed, return empty array instead of 500
+      res.json([]);
     } catch (error) {
-      console.error('Error fetching economic events:', error);
+      console.error('General error fetching economic events:', error);
       res.status(500).json({ error: 'Failed to fetch economic events' });
     }
   });
@@ -989,6 +1276,108 @@ async function startServer() {
     }
   });
 
+  app.get('/api/logo/:symbol', async (req, res) => {
+    const symbol = req.params.symbol.toUpperCase();
+    
+    // Check if we have a known domain for this ticker
+    const TICKER_DOMAINS: Record<string, string> = {
+      'AAPL': 'apple.com',
+      'MSFT': 'microsoft.com',
+      'GOOGL': 'google.com',
+      'GOOG': 'google.com',
+      'AMZN': 'amazon.com',
+      'META': 'facebook.com',
+      'TSLA': 'tesla.com',
+      'NVDA': 'nvidia.com',
+      'V': 'visa.com',
+      'PYPL': 'paypal.com',
+      'NFLX': 'netflix.com',
+      'BRK-B': 'berkshirehathaway.com',
+      'AVGO': 'broadcom.com',
+      'AMD': 'amd.com',
+      'DLO': 'dlocal.com',
+      'BMNR': 'beimani.com',
+      'ENPH': 'enphase.com',
+      'FBL': 'fbl.com',
+      'SOFI': 'sofi.com',
+      'DUOL': 'duolingo.com'
+    };
+
+    let domain = TICKER_DOMAINS[symbol];
+    
+    if (!domain) {
+      try {
+        const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }));
+        if (result?.assetProfile?.website) {
+          domain = new URL(result.assetProfile.website).hostname;
+          domain = domain.replace(/^www\./, '');
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    const faviconUrls = [];
+    
+    if (domain) {
+      faviconUrls.push(`https://www.google.com/s2/favicons?domain=${domain}&sz=128`);
+      faviconUrls.push(`https://logo.clearbit.com/${domain}`);
+      faviconUrls.push(`https://icon.horse/icon/${domain}`);
+    }
+    
+    // Add fallback based on ticker if we don't know the domain
+    faviconUrls.push(`https://unavatar.io/yahoo/${symbol}`);
+
+    for (const url of faviconUrls) {
+      try {
+        const logoRes = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(3000) });
+        if (logoRes.ok) {
+          const buffer = await logoRes.arrayBuffer();
+          res.setHeader('Content-Type', logoRes.headers.get('Content-Type') || 'image/png');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.send(Buffer.from(buffer));
+        }
+      } catch (err) {
+        // Try next
+      }
+    }
+
+    if (domain) {
+      try {
+        const websiteUrl = `https://${domain}`;
+        const htmlRes = await fetch(websiteUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(5000) });
+        if (htmlRes.ok) {
+          const html = await htmlRes.text();
+          let iconUrl = '';
+          const linkTags = html.match(/<link[^>]+>/ig) || [];
+          for (const tag of linkTags) {
+            if (/rel=["'][^"']*(icon|apple-touch-icon)[^"']*["']/i.test(tag)) {
+              const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
+              if (hrefMatch) {
+                iconUrl = hrefMatch[1];
+                break;
+              }
+            }
+          }
+          if (!iconUrl) iconUrl = '/favicon.ico';
+
+          const absoluteIconUrl = new URL(iconUrl, websiteUrl).href;
+          const iconRes = await fetch(absoluteIconUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(4000) });
+          if (iconRes.ok) {
+            const buffer = await iconRes.arrayBuffer();
+            res.setHeader('Content-Type', iconRes.headers.get('Content-Type') || 'image/png');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            return res.send(Buffer.from(buffer));
+          }
+        }
+      } catch (err) {
+        // Ignore and let it fall to 404
+      }
+    }
+
+    res.status(404).send('Not found');
+  });
+
   app.get('/api/metadata', async (req, res) => {
     const symbols = req.query.symbols as string;
     if (!symbols) return res.json({});
@@ -1039,7 +1428,7 @@ async function startServer() {
           let logo = '';
 
           if (TICKER_DOMAINS[symbol]) {
-            logo = `https://www.google.com/s2/favicons?domain=${TICKER_DOMAINS[symbol]}&sz=128`;
+            logo = `/api/logo/${symbol}`;
           }
 
           try {
@@ -1049,11 +1438,8 @@ async function startServer() {
               industry = result.assetProfile.industry || 'Unknown';
               website = result.assetProfile.website || '';
               
-              if (!logo && website) {
-                try {
-                  const domain = new URL(website).hostname.replace('www.', '');
-                  logo = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
-                } catch (urlErr) {}
+              if (!logo && (website || symbol)) {
+                logo = `/api/logo/${symbol}`;
               }
             }
           } catch (yErr) {}
