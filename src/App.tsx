@@ -2446,7 +2446,6 @@ export default function App() {
       'transactions',
       'priceAlerts',
       'sectorHeatmap',
-      'upload'
     ];
     let order = [...defaultOrder];
     if (saved) {
@@ -2476,6 +2475,10 @@ export default function App() {
   const [showAddWidget, setShowAddWidget] = useState(false);
   const addWidgetRef = useRef<HTMLDivElement>(null);
   const addWidgetBtnRef = useRef<HTMLButtonElement>(null);
+  // Statement import (AI extraction from a broker PDF/CSV) lives in a toolbar dropdown.
+  const [showImportMenu, setShowImportMenu] = useState(false);
+  const importMenuRef = useRef<HTMLDivElement>(null);
+  const importBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -2486,6 +2489,14 @@ export default function App() {
         !addWidgetBtnRef.current.contains(event.target as Node)
       ) {
         setShowAddWidget(false);
+      }
+      if (
+        importMenuRef.current &&
+        !importMenuRef.current.contains(event.target as Node) &&
+        importBtnRef.current &&
+        !importBtnRef.current.contains(event.target as Node)
+      ) {
+        setShowImportMenu(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -2503,7 +2514,6 @@ export default function App() {
     { id: 'transactions', label: 'Transactions Registry' },
     { id: 'priceAlerts', label: 'Price Alerts' },
     { id: 'sectorHeatmap', label: 'Sector Heatmap' },
-    { id: 'upload', label: 'Import Portfolio' }
   ];
 
   const removeWidget = (id: string) => {
@@ -5204,6 +5214,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     return holdings;
   };
 
+  const wasUploadingRef = useRef(false);
+  useEffect(() => {
+    if (wasUploadingRef.current && !isUploading && !uploadError) setShowImportMenu(false);
+    wasUploadingRef.current = isUploading;
+  }, [isUploading, uploadError]);
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -6965,6 +6981,87 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               <RefreshCw className={cn("w-3.5 h-3.5", isRefreshing && "animate-spin")} />
               <span className="hidden sm:inline">Refresh</span>
             </button>
+            <div className="relative shrink-0">
+              <button
+                ref={importBtnRef}
+                onClick={() => setShowImportMenu(!showImportMenu)}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors shadow-sm"
+                title="Import holdings from a brokerage statement (PDF or CSV)"
+              >
+                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+                <span className="hidden sm:inline">Import</span>
+              </button>
+              {showImportMenu && (
+                <div ref={importMenuRef} className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-zinc-200 p-4 z-[150] animate-in fade-in zoom-in duration-200">
+                  <div className="flex items-center gap-2 mb-3">
+                    <UploadCloud className="w-4 h-4 text-zinc-400" />
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Import Portfolio</span>
+                  </div>
+                  <p className="text-sm text-zinc-500 mb-4">
+                    Upload a brokerage statement (PDF) or CSV (IBKR, CommSec, Stake) to automatically extract your holdings.
+                  </p>
+                  
+                  <div className="flex bg-zinc-100 p-1 rounded-lg mb-4">
+                    <button
+                      onClick={() => setImportMode('replace')}
+                      className={cn(
+                        "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
+                        importMode === 'replace' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                      )}
+                    >
+                      Replace All
+                    </button>
+                    <button
+                      onClick={() => setImportMode('merge')}
+                      className={cn(
+                        "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
+                        importMode === 'merge' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-550 hover:text-zinc-700"
+                      )}
+                    >
+                      Merge
+                    </button>
+                  </div>
+
+                  <div 
+                    className={cn(
+                      "border-2 border-dashed rounded-xl p-6 text-center transition-colors",
+                      isUploading ? "border-zinc-300 bg-zinc-50" : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 cursor-pointer"
+                    )}
+                    onClick={() => !isUploading && fileInputRef.current?.click()}
+                  >
+                    <input
+                      type="file"
+                      accept="application/pdf,text/csv"
+                      className="hidden"
+                      ref={fileInputRef}
+                      onChange={handleFileUpload}
+                      disabled={isUploading}
+                    />
+                    
+                    {isUploading ? (
+                      <div className="flex flex-col items-center">
+                        <Loader2 className="w-8 h-8 text-zinc-400 animate-spin mb-2" />
+                        <p className="text-sm font-medium text-zinc-700">Analyzing with AI...</p>
+                        <p className="text-xs text-zinc-500 mt-1">This may take a few seconds</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center">
+                        <FileText className="w-8 h-8 text-zinc-400 mb-2" />
+                        <p className="text-sm font-medium text-zinc-700">Click to upload PDF or CSV</p>
+                        <p className="text-xs text-zinc-500 mt-1">Supports IBKR, Schwab, etc.</p>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {uploadError && (
+                    <div className="mt-3 text-sm text-rose-600 flex items-start gap-1.5">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <p>{uploadError}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="flex bg-zinc-100 p-0.5 rounded-lg shrink-0">
               <button
                 onClick={handleDownload}
@@ -8613,86 +8710,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                   );
                 }
 
-                if (widgetId === 'upload') {
-                  return (
-                    <SortableWidget key="upload" id="upload" className={cn("p-6", getWidgetClass('upload'))} onDoubleClick={() => toggleWidgetSize('upload')}>
-                      <div className="flex items-center justify-between mb-4 relative z-20">
-                        <h2 className="text-lg font-semibold flex items-center gap-2">
-                          <UploadCloud className="w-5 h-5 text-zinc-400" />
-                          Import Portfolio
-                        </h2>
-                        <button onClick={() => toggleWidgetSize('upload')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
-                          {widgetSizes.upload === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                        </button>
-                        <button onClick={() => removeWidget('upload')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-              <p className="text-sm text-zinc-500 mb-4">
-                Upload a brokerage statement (PDF) or CSV (IBKR, CommSec, Stake) to automatically extract your holdings.
-              </p>
-              
-              <div className="flex bg-zinc-100 p-1 rounded-lg mb-4">
-                <button
-                  onClick={() => setImportMode('replace')}
-                  className={cn(
-                    "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                    importMode === 'replace' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
-                  )}
-                >
-                  Replace All
-                </button>
-                <button
-                  onClick={() => setImportMode('merge')}
-                  className={cn(
-                    "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                    importMode === 'merge' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-550 hover:text-zinc-700"
-                  )}
-                >
-                  Merge
-                </button>
-              </div>
-
-              <div 
-                className={cn(
-                  "border-2 border-dashed rounded-xl p-6 text-center transition-colors",
-                  isUploading ? "border-zinc-300 bg-zinc-50" : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 cursor-pointer"
-                )}
-                onClick={() => !isUploading && fileInputRef.current?.click()}
-              >
-                <input
-                  type="file"
-                  accept="application/pdf,text/csv"
-                  className="hidden"
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
-                  disabled={isUploading}
-                />
-                
-                {isUploading ? (
-                  <div className="flex flex-col items-center">
-                    <Loader2 className="w-8 h-8 text-zinc-400 animate-spin mb-2" />
-                    <p className="text-sm font-medium text-zinc-700">Analyzing with AI...</p>
-                    <p className="text-xs text-zinc-500 mt-1">This may take a few seconds</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center">
-                    <FileText className="w-8 h-8 text-zinc-400 mb-2" />
-                    <p className="text-sm font-medium text-zinc-700">Click to upload PDF or CSV</p>
-                    <p className="text-xs text-zinc-500 mt-1">Supports IBKR, Schwab, etc.</p>
-                  </div>
-                )}
-              </div>
-              
-              {uploadError && (
-                <div className="mt-3 text-sm text-rose-600 flex items-start gap-1.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <p>{uploadError}</p>
-                </div>
-              )}
-                    </SortableWidget>
-                  );
-                }
 
                 if (widgetId === 'sectorHeatmap') {
                   return (
