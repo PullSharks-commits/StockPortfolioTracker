@@ -2211,6 +2211,8 @@ const SettingsModal = ({
   );
 };
 
+const NO_TRANSACTIONS: never[] = [];
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -2218,6 +2220,25 @@ export default function App() {
   const [allHoldings, setAllHoldings] = useState<Holding[]>([]);
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [txLoaded, setTxLoaded] = useState(false);
+
+  // Transactions grouped by holding - once per transaction change, rather than
+  // re-filtering the whole list per holding on every live price tick. Arrays keep
+  // the original order; the sorted variant is ordered by date (stable). Treat both
+  // as read-only: they are shared between the stats calculations.
+  const { transactionsByHolding, sortedTransactionsByHolding } = useMemo(() => {
+    const byHolding = new Map<string, typeof allTransactions>();
+    for (const tx of allTransactions) {
+      const list = byHolding.get(tx.holdingId);
+      if (list) list.push(tx);
+      else byHolding.set(tx.holdingId, [tx]);
+    }
+    const sorted = new Map<string, typeof allTransactions>();
+    for (const [id, list] of byHolding) {
+      const time = new Map(list.map(tx => [tx, new Date(tx.date).getTime()]));
+      sorted.set(id, [...list].sort((a, b) => time.get(a)! - time.get(b)!));
+    }
+    return { transactionsByHolding: byHolding, sortedTransactionsByHolding: sorted };
+  }, [allTransactions]);
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
   const [activeTab, setActiveTab] = useState<'global' | 'australia' | 'bot'>('global');
   
@@ -4080,30 +4101,24 @@ export default function App() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    // Trades arrive several times a second; applying each one re-renders the whole
+    // app. Collect them and apply at most once per second instead. Per symbol, the
+    // latest price wins and previous close / market state keep the latest value any
+    // trade in the batch carried - the same result as applying them one by one.
+    const pendingTrades = new Map<string, { p: number; pc?: number; ms?: string }>();
+
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'trade' && data.data) {
-          // Use functional update to ensure we have the latest state
-          // and avoid closure issues
-          setQuotes(prev => {
-            const newQuotes = { ...prev };
-            let updated = false;
-            data.data.forEach((trade: any) => {
-              if (trade.s && trade.p != null) {
-                // Only update if price actually changed or we don't have it
-                if (!prev[trade.s] || prev[trade.s].price !== trade.p) {
-                  newQuotes[trade.s] = { 
-                    ...prev[trade.s],
-                    price: trade.p, 
-                    previousClose: trade.pc != null ? trade.pc : (prev[trade.s]?.previousClose ?? trade.p),
-                    marketState: trade.ms || prev[trade.s]?.marketState
-                  };
-                  updated = true;
-                }
-              }
+          data.data.forEach((trade: any) => {
+            if (!trade.s || trade.p == null) return;
+            const pending = pendingTrades.get(trade.s);
+            pendingTrades.set(trade.s, {
+              p: trade.p,
+              pc: trade.pc != null ? trade.pc : pending?.pc,
+              ms: trade.ms || pending?.ms,
             });
-            return updated ? newQuotes : prev;
           });
         }
       } catch (e) {
@@ -4111,7 +4126,30 @@ export default function App() {
       }
     };
 
+    const flushTrades = () => {
+      if (pendingTrades.size === 0) return;
+      const trades = [...pendingTrades.entries()];
+      pendingTrades.clear();
+      setQuotes(prev => {
+        let next: typeof prev | null = null;
+        for (const [symbol, trade] of trades) {
+          // Only update if price actually changed or we don't have it
+          if (prev[symbol] && prev[symbol].price === trade.p) continue;
+          next ??= { ...prev };
+          next[symbol] = {
+            ...prev[symbol],
+            price: trade.p,
+            previousClose: trade.pc != null ? trade.pc : (prev[symbol]?.previousClose ?? trade.p),
+            marketState: trade.ms || prev[symbol]?.marketState
+          };
+        }
+        return next ?? prev;
+      });
+    };
+    const flushTimer = setInterval(flushTrades, 1000);
+
     return () => {
+      clearInterval(flushTimer);
       ws.close();
     };
   }, []);
@@ -5569,9 +5607,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       let realizedProfitLoss = 0;
       if (allTransactions.length > 0) {
-        const hTransactions = allTransactions.filter(tx => tx.holdingId === h.id);
+        const hTransactions = transactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
         if (hTransactions.length > 0) {
-          const sortedTxs = [...hTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          const sortedTxs = sortedTransactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
           const buyPool: { id: string; shares: number; priceInTarget: number }[] = [];
           
           let conversionRate = 1;
@@ -5702,7 +5740,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       benchmarkYtdReturn,
       benchmarkTicker
     };
-  }, [holdings, quotes, betas, benchmarkTicker, allTransactions]);
+  }, [holdings, quotes, betas, benchmarkTicker, allTransactions, transactionsByHolding, sortedTransactionsByHolding]);
 
   const combinedStats = useMemo(() => {
     let totalValue = 0;
@@ -5797,7 +5835,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     allHoldings.forEach(h => {
       if (h.ticker === 'CASH') return;
 
-      const hTransactions = allTransactions.filter(tx => tx.holdingId === h.id);
+      const hTransactions = transactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
       if (hTransactions.length === 0) return;
 
       const quote = quotes[h.ticker] as any;
@@ -5818,7 +5856,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         }
       }
 
-      const sortedTxs = [...hTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const sortedTxs = sortedTransactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
 
       const buyPool: { date: Date; shares: number; priceInTarget: number }[] = [];
       const realizedGains: { date: Date; amount: number; cost: number }[] = [];
@@ -5918,7 +5956,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     calculatePeriodTotals(stats.oneYear);
 
     return stats;
-  }, [allHoldings, allTransactions, quotes, userSettings.combinedCurrency, user, combinedStats.totalCost, combinedStats.totalValue]);
+  }, [allHoldings, allTransactions, transactionsByHolding, sortedTransactionsByHolding, quotes, userSettings.combinedCurrency, user, combinedStats.totalCost, combinedStats.totalValue]);
 
   const tabPeriodStats = useMemo(() => {
     const now = new Date();
@@ -5944,7 +5982,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     holdings.forEach(h => {
       if (h.ticker === 'CASH') return;
 
-      const hTransactions = allTransactions.filter(tx => tx.holdingId === h.id);
+      const hTransactions = transactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
       if (hTransactions.length === 0) return;
 
       const quote = quotes[h.ticker] as any;
@@ -5965,7 +6003,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         }
       }
 
-      const sortedTxs = [...hTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const sortedTxs = sortedTransactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
 
       const buyPool: { date: Date; shares: number; priceInTarget: number }[] = [];
       const realizedGains: { date: Date; amount: number }[] = [];
@@ -6027,7 +6065,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     });
 
     return stats;
-  }, [holdings, allTransactions, quotes, activeCurrency, user]);
+  }, [holdings, allTransactions, transactionsByHolding, sortedTransactionsByHolding, quotes, activeCurrency, user]);
 
   const sortedHoldings = useMemo(() => {
     let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0);

@@ -5,6 +5,49 @@ interface WatchlistSparklineProps {
   ticker: string;
 }
 
+// Every visible sparkline wants the same 30-day window. Requests made in the same
+// moment are combined into one /api/historical-bulk call, and results are kept for
+// a while so re-renders, remounts and duplicate rows don't refetch.
+const SPARKLINE_TTL_MS = 15 * 60 * 1000;
+const sparklineCache = new Map<string, { at: number; closes: Promise<number[]> }>();
+let pendingBatch: Map<string, { resolve: (c: number[]) => void; reject: (e: unknown) => void }> | null = null;
+
+function loadSparklineCloses(ticker: string): Promise<number[]> {
+  const cached = sparklineCache.get(ticker);
+  if (cached && Date.now() - cached.at < SPARKLINE_TTL_MS) return cached.closes;
+
+  const closes = new Promise<number[]>((resolve, reject) => {
+    if (!pendingBatch) {
+      pendingBatch = new Map();
+      setTimeout(flushSparklineBatch, 50);
+    }
+    pendingBatch.set(ticker, { resolve, reject });
+  });
+  sparklineCache.set(ticker, { at: Date.now(), closes });
+  // Don't cache failures.
+  closes.catch(() => sparklineCache.delete(ticker));
+  return closes;
+}
+
+async function flushSparklineBatch() {
+  const batch = pendingBatch!;
+  pendingBatch = null;
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const fromStr = thirtyDaysAgo.toISOString().split('T')[0];
+  try {
+    const symbols = [...batch.keys()].map(encodeURIComponent).join(',');
+    const res = await fetch(`/api/historical-bulk?symbols=${symbols}&from=${fromStr}`);
+    if (!res.ok) throw new Error('Failed to fetch sparkline data');
+    const result = await res.json();
+    for (const [ticker, { resolve }] of batch) {
+      resolve((result[ticker] || []).map((d: any) => d.close));
+    }
+  } catch (err) {
+    for (const { reject } of batch.values()) reject(err);
+  }
+}
+
 export const WatchlistSparkline: React.FC<WatchlistSparklineProps> = ({ ticker }) => {
   const [data, setData] = useState<{ price: number }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,24 +64,13 @@ export const WatchlistSparkline: React.FC<WatchlistSparklineProps> = ({ ticker }
     let isMounted = true;
     const fetchData = async () => {
       try {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const fromStr = thirtyDaysAgo.toISOString().split('T')[0];
-
-        const res = await fetch(`/api/historical-bulk?symbols=${encodeURIComponent(ticker)}&from=${fromStr}`);
-        if (!res.ok) throw new Error('Failed to fetch sparkline data');
-        
-        const result = await res.json();
+        const closes = await loadSparklineCloses(ticker);
         if (!isMounted) return;
 
-        const tickerData = result[ticker] || [];
-        if (tickerData.length > 1) {
-          const formatted = tickerData.map((d: any) => ({ price: d.close }));
+        if (closes.length > 1) {
+          const formatted = closes.map(close => ({ price: close }));
           setData(formatted);
-          
-          const first = formatted[0].price;
-          const last = formatted[formatted.length - 1].price;
-          setIsPositive(last >= first);
+          setIsPositive(closes[closes.length - 1] >= closes[0]);
         } else {
           // Fallback if no data
           setData([{ price: 1 }, { price: 1 }]);

@@ -2,7 +2,9 @@ import React, { memo, useState, useEffect, useRef, useMemo } from 'react';
 import { TrendingUp, TrendingDown, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown, RefreshCw, Activity, ShieldAlert, ShieldCheck, Sliders, Info } from 'lucide-react';
 import { motion, useMotionValue, useTransform, animate, AnimatePresence } from 'motion/react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
-import ThreeDBarChart from './ThreeDBarChart';
+// ECharts + echarts-gl are about half of the app's JavaScript; load them only when
+// this chart is rendered, so the rest of the page doesn't wait for them.
+const ThreeDBarChart = React.lazy(() => import('./ThreeDBarChart'));
 import { CompanyLogo } from './CompanyLogo';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -849,14 +851,16 @@ export const AllocationChart = memo(({ data, view, onViewChange, colors, tooltip
       </div>
 
       <div className="h-[400px] w-full">
-        <ThreeDBarChart
-          data={data.map((entry, index) => ({
-            name: entry.name,
-            value: entry.value,
-            color: colors[index % colors.length]
-          }))}
-          activeTab="USD"
-        />
+        <React.Suspense fallback={<div className="h-full w-full rounded-2xl bg-zinc-100 animate-pulse" />}>
+          <ThreeDBarChart
+            data={data.map((entry, index) => ({
+              name: entry.name,
+              value: entry.value,
+              color: colors[index % colors.length]
+            }))}
+            activeTab="USD"
+          />
+        </React.Suspense>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mt-8">
