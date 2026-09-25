@@ -5,9 +5,8 @@ import {
 import { format, addDays, startOfDay, startOfWeek, startOfMonth, startOfYear, subYears } from 'date-fns';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { formatCurrency } from '../lib/currency';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { db } from '../firebase';
-import type { User } from 'firebase/auth';
+import { db, collection, query, where, getDocs } from '../backend';
+import type { User } from '../backend';
 
 interface Holding {
   id: string;

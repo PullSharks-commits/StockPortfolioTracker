@@ -35,12 +35,14 @@ import {
   onSnapshot, 
   deleteDoc, 
   addDoc, 
+  addDocs,
+  withBatchedUpdates,
   updateDoc,
   serverTimestamp,
   User,
   handleFirestoreError,
   OperationType
-} from './firebase';
+} from './backend';
 import { StatCard, AllocationChart, PortfolioSummary, AnimatedCountUp } from './components/DashboardComponents';
 import { PerformanceChart } from './components/PerformanceChart';
 import { HistoricalPriceChart } from './components/HistoricalPriceChart';
@@ -3060,36 +3062,49 @@ export default function App() {
       try {
         const importedHoldings = JSON.parse(event.target?.result as string);
         if (!Array.isArray(importedHoldings)) throw new Error('Invalid format');
+
+        // A transactions export (buy/sell rows with a price, no avg_price) uploaded here
+        // would otherwise become one zero-cost holding per transaction.
+        const looksLikeTransactions = importedHoldings.length > 0 && importedHoldings.every(
+          (r: any) => r && r.avg_price === undefined && r.price !== undefined && typeof r.type === 'string'
+        );
+        if (looksLikeTransactions) {
+          handleImportTransactions(e);
+          return;
+        }
         
         if (!user) return;
 
         setIsSubmitting(true);
-        // Clear existing (optional, or merge)
-        const q = query(collection(db, 'holdings'), where('userId', '==', user.uid));
-        const snapshot = await getDocs(q);
-        const docsToDelete = snapshot.docs.filter(d => (d.data().portfolioType || 'global') === activeTab);
-        await Promise.all(docsToDelete.map(d => deleteDoc(d.ref)));
+        await withBatchedUpdates(async () => {
+          // Clear existing (optional, or merge)
+          const q = query(collection(db, 'holdings'), where('userId', '==', user.uid));
+          const snapshot = await getDocs(q);
+          const docsToDelete = snapshot.docs.filter(d => (d.data().portfolioType || 'global') === activeTab);
+          await Promise.all(docsToDelete.map(d => deleteDoc(d.ref)));
 
-        for (const h of importedHoldings) {
-          const holdingRef = await addDoc(collection(db, 'holdings'), {
-            ticker: (h.ticker || '').toUpperCase(),
-            shares: h.shares,
-            avg_price: h.avg_price,
-            userId: user.uid,
-            portfolioType: activeTab,
-            updatedAt: serverTimestamp()
-          });
+          for (const h of importedHoldings) {
+            const holdingRef = await addDoc(collection(db, 'holdings'), {
+              ticker: (h.ticker || '').toUpperCase(),
+              shares: h.shares,
+              avg_price: h.avg_price,
+              avgPriceCurrency: h.avgPriceCurrency || activeCurrency,
+              userId: user.uid,
+              portfolioType: activeTab,
+              updatedAt: serverTimestamp()
+            });
 
-          // Record an initial purchase transaction for the new holding!
-          await addDoc(collection(db, 'transactions'), {
-            holdingId: holdingRef.id,
-            type: 'buy',
-            shares: h.shares,
-            price: h.avg_price,
-            date: new Date().toISOString(),
-            userId: user.uid
-          });
-        }
+            // Record an initial purchase transaction for the new holding!
+            await addDoc(collection(db, 'transactions'), {
+              holdingId: holdingRef.id,
+              type: 'buy',
+              shares: h.shares,
+              price: h.avg_price,
+              date: new Date().toISOString(),
+              userId: user.uid
+            });
+          }
+        });
         setSaveMessage({ text: 'Portfolio imported successfully', type: 'success' });
       } catch (err) {
         console.error('Import error:', err);
@@ -3297,6 +3312,8 @@ export default function App() {
           normalized.type = (findField(['type', 'side', 'action', 'transaction', 'operation', 'direction', 'transaction type', 'activity']) || 'buy').toString().toLowerCase();
           normalized.date = parseFlexDate(findField(['date', 'time', 'timestamp', 'trade date', 'created', 'transacted at', 'transaction date', 'occurred', 'datetime', 'acquired']));
           normalized.currency = findField(['currency', 'base', 'quote', 'fiat', 'money']) || null;
+          // Whole-history exports tag each row with the portfolio tab it belongs to.
+          normalized.portfolio = (row.portfolio ?? row.portfolioType ?? row.Portfolio ?? '').toString().toLowerCase().trim() || null;
           
           return normalized;
         }).map(tx => {
@@ -3333,9 +3350,19 @@ export default function App() {
           throw new Error(`No valid transactions found. The file headers don't match our recognized names. Found headers: ${sampleKeys}`);
         }
 
-        // Group transactions by ticker
-        const transactionsByTicker: Record<string, any[]> = {};
+        // Group transactions by portfolio tab and ticker. Rows without a portfolio go to
+        // the active tab; rows for tabs this app doesn't have are skipped.
+        const knownTabs = ['global', 'australia'] as const;
+        type Tab = typeof knownTabs[number];
+        const groups = new Map<string, { tab: Tab; ticker: string; txs: any[] }>();
+        const skippedPortfolios: Record<string, number> = {};
         for (const tx of importedTransactions) {
+          const tab = (tx.portfolio || activeTab || 'global') as Tab;
+          if (!knownTabs.includes(tab)) {
+            skippedPortfolios[tx.portfolio] = (skippedPortfolios[tx.portfolio] || 0) + 1;
+            continue;
+          }
+
           let ticker = (tx.ticker || '').toString().toUpperCase().trim();
           if (!ticker) continue;
 
@@ -3343,91 +3370,86 @@ export default function App() {
             ticker = ticker.split(/[\/\-_]/)[0].trim();
           }
 
-          if (!transactionsByTicker[ticker]) transactionsByTicker[ticker] = [];
-          transactionsByTicker[ticker].push(tx);
-        }
-
-        // Clear existing data only for the tickers present in the import
-        const tickersToImport = new Set(Object.keys(transactionsByTicker));
-        
-        const holdingsQ = query(collection(db, 'holdings'), where('userId', '==', user.uid), where('portfolioType', '==', activeTab || 'global'));
-        const holdingsSnapshot = await getDocs(holdingsQ);
-        
-        // Fetch ALL user transactions once to avoid per-holding queries and index requirements
-        const allTxQ = query(collection(db, 'transactions'), where('userId', '==', user.uid));
-        const allTxSnapshot = await getDocs(allTxQ);
-        const allUserTransactions = allTxSnapshot.docs;
-
-        for (const holdingDoc of holdingsSnapshot.docs) {
-          const hData = holdingDoc.data();
-          if (tickersToImport.has(hData.ticker)) {
-            // Filter transactions for THIS holding locally
-            const txToDelete = allUserTransactions.filter(d => d.data().holdingId === holdingDoc.id);
-            await Promise.all(txToDelete.map(d => deleteDoc(d.ref)));
-            await deleteDoc(holdingDoc.ref);
-          }
+          const key = `${tab}|${ticker}`;
+          if (!groups.has(key)) groups.set(key, { tab, ticker, txs: [] });
+          groups.get(key)!.txs.push(tx);
         }
 
         let totalHoldingsCreated = 0;
         let totalTransactionsCreated = 0;
 
-        // Re-create holdings and transactions from history
-        for (const ticker of Object.keys(transactionsByTicker)) {
-          const txs = transactionsByTicker[ticker];
-          // Robust date sorting
-          txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-          
-          let currentShares = 0;
-          let currentAvgPrice = 0;
-          let firstTxCurrency = txs[0].currency || activeCurrency;
-
-          for (const tx of txs) {
-            const numShares = tx.shares;
-            const numPrice = tx.price;
-            const typeStr = tx.type.toLowerCase();
-            const isSell = typeStr.includes('sell') || typeStr.includes('sale') || typeStr.includes('out') || typeStr.includes('short') || typeStr.includes('withdrawal');
-
-            if (isSell) {
-              currentShares -= numShares;
-            } else {
-              const totalCost = (currentShares * currentAvgPrice) + (numShares * numPrice);
-              currentShares += numShares;
-              currentAvgPrice = currentShares > 0 ? totalCost / currentShares : numPrice;
+        await withBatchedUpdates(async () => {
+          // Replace existing holdings (and, via cascade, their transactions) only for
+          // the tab+ticker pairs present in the import.
+          const holdingsSnapshot = await getDocs(query(collection(db, 'holdings'), where('userId', '==', user.uid)));
+          for (const holdingDoc of holdingsSnapshot.docs) {
+            const hData = holdingDoc.data();
+            if (groups.has(`${hData.portfolioType || 'global'}|${hData.ticker}`)) {
+              await deleteDoc(holdingDoc.ref);
             }
           }
 
-          // Create Holding
-          const holdingData: any = {
-            ticker: ticker.substring(0, 20),
-            shares: Math.max(0, currentShares),
-            avg_price: currentAvgPrice,
-            userId: user.uid,
-            portfolioType: activeTab || 'global',
-            updatedAt: serverTimestamp()
+          const isSellTx = (tx: any) => {
+            const typeStr = tx.type.toLowerCase();
+            return typeStr.includes('sell') || typeStr.includes('sale') || typeStr.includes('out') || typeStr.includes('short') || typeStr.includes('withdrawal');
           };
 
-          if (firstTxCurrency) {
-            holdingData.avgPriceCurrency = firstTxCurrency.toString().substring(0, 10);
-          }
+          // Re-create holdings and transactions from history
+          for (const { tab, ticker, txs } of groups.values()) {
+            // Robust date sorting
+            txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          
+            let currentShares = 0;
+            let currentAvgPrice = 0;
+            const tabCurrency = tabSettings[tab]?.currency || (tab === 'australia' ? 'AUD' : 'USD');
+            let firstTxCurrency = txs[0].currency || tabCurrency;
 
-          const holdingRef = await addDoc(collection(db, 'holdings'), holdingData);
-          totalHoldingsCreated++;
+            for (const tx of txs) {
+              const numShares = tx.shares;
+              const numPrice = tx.price;
 
-          // Create Transactions History
-          for (const tx of txs) {
-            const typeStr = tx.type.toLowerCase();
-            const isSell = typeStr.includes('sell') || typeStr.includes('sale') || typeStr.includes('out') || typeStr.includes('short') || typeStr.includes('withdrawal');
+              if (isSellTx(tx)) {
+                currentShares -= numShares;
+              } else {
+                const totalCost = (currentShares * currentAvgPrice) + (numShares * numPrice);
+                currentShares += numShares;
+                currentAvgPrice = currentShares > 0 ? totalCost / currentShares : numPrice;
+              }
+            }
 
-             await addDoc(collection(db, 'transactions'), {
+            // Create Holding
+            const holdingData: any = {
+              ticker: ticker.substring(0, 20),
+              shares: Math.max(0, currentShares),
+              avg_price: currentAvgPrice,
+              userId: user.uid,
+              portfolioType: tab,
+              updatedAt: serverTimestamp()
+            };
+
+            if (firstTxCurrency) {
+              holdingData.avgPriceCurrency = firstTxCurrency.toString().substring(0, 10);
+            }
+
+            const holdingRef = await addDoc(collection(db, 'holdings'), holdingData);
+            totalHoldingsCreated++;
+
+            // Create Transactions History in one request per holding
+            await addDocs(collection(db, 'transactions'), txs.map(tx => ({
               holdingId: holdingRef.id,
-              type: isSell ? 'sell' : 'buy',
+              type: isSellTx(tx) ? 'sell' : 'buy',
               shares: tx.shares,
               price: tx.price,
               date: tx.date,
               userId: user.uid
-            });
-            totalTransactionsCreated++;
+            })));
+            totalTransactionsCreated += txs.length;
           }
+        });
+
+        const skipped = Object.entries(skippedPortfolios);
+        if (skipped.length > 0) {
+          toast.warning(`Skipped ${skipped.map(([p, n]) => `${n} transaction(s) for portfolio "${p}"`).join(', ')}: this app only has Global and Australia tabs.`);
         }
 
         setSaveMessage({ 
@@ -3436,7 +3458,7 @@ export default function App() {
         });
       } catch (err) {
         console.error('Import transactions error:', err);
-        toast.error('Failed to import transactions. Please check the file format.');
+        toast.error(`Failed to import transactions: ${err instanceof Error ? err.message : err}`);
       } finally {
         setIsSubmitting(false);
         setTimeout(() => setSaveMessage(null), 3000);
@@ -3762,20 +3784,35 @@ export default function App() {
   }, [user]);
 
   // Automatic background transaction self-healing for imported portfolios
+  const healingHoldingIds = useRef(new Set<string>());
   useEffect(() => {
     if (!user || !txLoaded || allHoldings.length === 0) return;
 
     const selfHeal = async () => {
-      // Find holdings with positive shares that have 0 transactions (excluding CASH)
+      // Find holdings with positive shares that have 0 transactions (excluding CASH).
+      // Skip holdings touched in the last minute: whatever created them (an import,
+      // add-stock, a sale's cash leg...) may still be writing their transactions, and
+      // the holdings list can refresh before the transactions list does.
+      const HEAL_GRACE_MS = 60_000;
+      const now = Date.now();
       const txHoldingIds = new Set(allTransactions.map(tx => tx.holdingId));
-      const holdingsToHeal = allHoldings.filter(h => h.shares > 0 && h.ticker !== 'CASH' && !txHoldingIds.has(h.id));
+      const holdingsToHeal = allHoldings.filter(h =>
+        h.shares > 0 && h.ticker !== 'CASH' && !txHoldingIds.has(h.id) &&
+        !healingHoldingIds.current.has(h.id) &&
+        !(h.updatedAt?.toMillis && Math.abs(now - h.updatedAt.toMillis()) < HEAL_GRACE_MS)
+      );
 
       if (holdingsToHeal.length === 0) return;
 
       console.log(`[Self-Heal] Found ${holdingsToHeal.length} holdings without transaction history. Healing...`);
 
       for (const holding of holdingsToHeal) {
+        healingHoldingIds.current.add(holding.id);
         try {
+          // Re-check the database: the local transactions list may be stale.
+          const existing = await getDocs(query(collection(db, 'transactions'), where('holdingId', '==', holding.id), where('userId', '==', user.uid)));
+          if (!existing.empty) continue;
+
           const initialTx = {
             holdingId: holding.id,
             type: 'buy' as const,
@@ -3789,6 +3826,7 @@ export default function App() {
           await addDoc(collection(db, 'transactions'), initialTx);
           console.log(`[Self-Heal] Successfully created transaction for ${holding.ticker}`);
         } catch (err) {
+          healingHoldingIds.current.delete(holding.id);
           console.error(`[Self-Heal] Failed to create transaction for ${holding.ticker}:`, err);
         }
       }

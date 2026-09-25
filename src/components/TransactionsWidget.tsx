@@ -31,7 +31,7 @@ import {
   updateDoc, 
   deleteDoc, 
   serverTimestamp 
-} from '../firebase';
+} from '../backend';
 import { formatCurrency, getCurrencySymbol } from '../lib/currency';
 
 interface Transaction {

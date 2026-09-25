@@ -34,7 +34,7 @@ import {
   Cell 
 } from 'recharts';
 import { formatCurrency } from '../lib/currency';
-import type { User } from 'firebase/auth';
+import type { User } from '../backend';
 
 export interface CashFlowPeriod {
   id: string;

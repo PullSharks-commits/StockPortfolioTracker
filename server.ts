@@ -18,6 +18,7 @@ import path from 'path';
 import session from 'express-session';
 import crypto from 'crypto';
 import dns from 'node:dns/promises';
+import { registerDataRoutes } from './server-data';
 import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -177,7 +178,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 let sqliteDb: Database.Database | null = null;
 let mysqlPool: mysql.Pool | null = null;
 
-const mysqlUrl = (process.env.MYSQL_URL || process.env.DATABASE_URL || '').trim();
+const mysqlUrl = (process.env.MYSQL_URL || '').trim();
 const isMysql = mysqlUrl.length > 0 && !mysqlUrl.includes('localhost') && !mysqlUrl.includes('127.0.0.1') && !mysqlUrl.startsWith('TODO');
 
 // Database abstraction layer
@@ -247,7 +248,7 @@ async function initDb() {
   if (isMysql) {
     console.log('Initializing MySQL database...');
     try {
-      mysqlPool = mysql.createPool(process.env.MYSQL_URL || process.env.DATABASE_URL || '');
+      mysqlPool = mysql.createPool(process.env.MYSQL_URL || '');
       await db.exec(`
         CREATE TABLE IF NOT EXISTS portfolio (
           id INT AUTO_INCREMENT PRIMARY KEY,
@@ -384,6 +385,7 @@ async function startServer() {
   });
 
   app.use(express.json({ limit: '50mb' }));
+  registerDataRoutes(app);
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.set('trust proxy', true);

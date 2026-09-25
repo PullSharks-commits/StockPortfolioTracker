@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { Bell, Plus, Trash2, TrendingUp, TrendingDown, Target } from 'lucide-react';
 import { formatCurrency } from '../lib/currency';
-import { doc, deleteDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, doc, deleteDoc, addDoc, collection, serverTimestamp } from '../backend';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
