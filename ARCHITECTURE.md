@@ -82,7 +82,7 @@ flowchart LR
 | `src/App.tsx` | Almost the entire UI and client logic (~10k lines): state, portfolio math, widgets, modals |
 | `src/backend.ts` | Client data layer: Neon Auth client + Firestore-compatible data helpers |
 | `src/botPortfolio.ts` | Loads the bot's data, maps it to read-only holdings, bot actions |
-| `src/components/` | Extracted widgets: charts, transactions, alerts, TWR calculator, bot view, etc. |
+| `src/components/` | Extracted widgets: charts, transactions, alerts, bot view, etc. |
 | `src/utils/portfolioCalculations.ts`, `src/lib/` | Portfolio math, currency formatting, Fear & Greed index |
 | `test*.ts`, `workspace/`, `app/applet/` | Ad-hoc scripts left from AI Studio; not part of the app |
 
@@ -159,7 +159,7 @@ holding is always written a moment before its transactions.
 ## Market data
 
 All server-side, in `server.ts`, with in-memory caches (quotes 1 min, metadata
-and betas 24 h, earnings 12 h) and a SQLite cache for historical prices:
+24 h, earnings 12 h) and a SQLite cache for historical prices:
 
 | Route | Source | Used for |
 |---|---|---|
@@ -167,7 +167,7 @@ and betas 24 h, earnings 12 h) and a SQLite cache for historical prices:
 | `/api/historical-bulk` | Yahoo Finance + SQLite cache | performance charts, period returns |
 | `/api/metadata`, `/api/logo/:symbol` | Yahoo / Finnhub / favicons | sector, industry, logos |
 | `/api/earnings`, `/api/dividends`, `/api/calendar/earnings.ics` | Yahoo / Finnhub | calendar widgets and export |
-| `/api/financials`, `/api/beta`, `/api/fear-greed`, `/api/search` | various | stock detail, risk, sentiment, search |
+| `/api/financials`, `/api/fear-greed`, `/api/search` | various | stock detail, sentiment, search |
 
 **Live prices:** the server holds one Finnhub WebSocket (only when
 `FINNHUB_API_KEY` is set) and relays trades to browsers over `/api/ws`.

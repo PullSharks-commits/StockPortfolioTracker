@@ -2246,7 +2246,6 @@ export default function App() {
   }, [allHoldings, activeTab]);
 
   const [quotes, setQuotes] = useState<Quotes>({});
-  const [betas, setBetas] = useState<Record<string, number | null>>({});
   const [metadata, setMetadata] = useState<Record<string, { sector: string, industry: string, logo?: string, website?: string }>>({});
   const [earningsEvents, setEarningsEvents] = useState<EarningsEvent[]>([]);
   const [hiddenCalendarEvents, setHiddenCalendarEvents] = useState<string[]>([]);
@@ -2439,7 +2438,6 @@ export default function App() {
     const defaultOrder = [
       'performance',
       'allocation',
-      'beta',
       'calendar',
       'holdings',
       'watchlist',
@@ -2500,7 +2498,6 @@ export default function App() {
     { id: 'calendar', label: 'Financial Calendar' },
     { id: 'holdings', label: 'Current Holdings' },
     { id: 'watchlist', label: 'Watchlist' },
-    { id: 'beta', label: 'Portfolio Beta vs Benchmark' },
     { id: 'dividends', label: 'Dividends' },
     { id: 'addPosition', label: 'Add Position' },
     { id: 'transactions', label: 'Transactions Registry' },
@@ -3516,7 +3513,6 @@ export default function App() {
       await Promise.all([
         user ? refreshBotPortfolio(user.uid) : Promise.resolve(),
         fetchQuotes(allHoldings),
-        fetchBetas(holdings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
         fetchDividends(holdings)
@@ -3650,21 +3646,6 @@ export default function App() {
     }
   };
 
-  const fetchBetas = async (currentHoldings: Holding[]) => {
-    if (currentHoldings.length === 0) return;
-    
-    const symbols = Array.from(new Set(currentHoldings.map(h => h.ticker))).join(',');
-    try {
-      const res = await fetch(`/api/beta?symbols=${symbols}`);
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json();
-        setBetas(prev => ({ ...prev, ...data }));
-      }
-    } catch (error) {
-      console.error('Error fetching betas:', error);
-    }
-  };
-
   const fetchMetadata = async (currentHoldings: Holding[]) => {
     if (currentHoldings.length === 0) return;
     
@@ -3720,7 +3701,6 @@ export default function App() {
       // We fetch quotes for ALL holdings to keep the Combined Value accurate across tabs
       Promise.all([
         fetchQuotes(allHoldings),
-        fetchBetas(holdings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
         fetchDividends(holdings)
@@ -5496,9 +5476,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     let totalValue = 0;
     let totalCost = 0;
     let totalDayChange = 0;
-    
-    let totalBetaWeight = 0;
-    let validBetaValue = 0;
 
     const enrichedHoldings = holdings.map(h => {
       // Handle Cash
@@ -5526,11 +5503,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
         totalValue += currentValue;
         totalCost += costBasis;
-        
-        if (currentValue > 0) {
-          totalBetaWeight += currentValue;
-          validBetaValue += 0;
-        }
 
         return {
           ...h,
@@ -5544,7 +5516,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           dayChangePercent,
           marketState: 'REGULAR',
           marketCap: undefined,
-          beta: 0,
           realizedProfitLoss: 0
         };
       }
@@ -5678,12 +5649,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       totalValue += currentValue;
       totalCost += costBasis;
       totalDayChange += dayChange;
-      
-      const beta = betas[h.ticker];
-      if (beta != null && currentValue > 0) {
-        totalBetaWeight += currentValue;
-        validBetaValue += beta * currentValue;
-      }
 
       const growthMultiple = costBasis > 0 ? (currentValue / costBasis) : (currentValue > 0 ? 1 : 0);
 
@@ -5700,7 +5665,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         dayChangePercent,
         marketState,
         marketCap,
-        beta,
         realizedProfitLoss
       };
     });
@@ -5711,8 +5675,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     // Calculate total previous close value for the portfolio to get the total day change percentage
     const totalPreviousValue = totalValue - totalDayChange;
     const totalDayChangePercent = totalPreviousValue > 0 ? (totalDayChange / totalPreviousValue) * 100 : 0;
-    
-    const portfolioBeta = totalBetaWeight > 0 ? (validBetaValue / totalBetaWeight) : null;
+
 
     // Benchmark stats
     const benchmarkQuote = quotes[benchmarkTicker] as any;
@@ -5732,12 +5695,11 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       totalProfitLossPercent,
       totalDayChange,
       totalDayChangePercent,
-      portfolioBeta,
       benchmarkDayChangePercent,
       benchmarkYtdReturn,
       benchmarkTicker
     };
-  }, [holdings, quotes, betas, benchmarkTicker, allTransactions, transactionsByHolding, sortedTransactionsByHolding]);
+  }, [holdings, quotes, benchmarkTicker, allTransactions, transactionsByHolding, sortedTransactionsByHolding]);
 
   const combinedStats = useMemo(() => {
     let totalValue = 0;
@@ -8356,54 +8318,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           </table>
                         </div>
                       )}
-                    </SortableWidget>
-                  );
-                }
-
-                if (widgetId === 'beta') {
-                  const betaValue = portfolioStats.portfolioBeta;
-                  return (
-                    <SortableWidget key="beta" id="beta" className={cn("p-6 flex flex-col", getWidgetClass('beta'))} onDoubleClick={() => toggleWidgetSize('beta')}>
-                      <div className="flex items-center justify-between mb-4 relative z-20">
-                        <h2 className="text-lg font-semibold flex items-center gap-2">
-                          <Activity className="w-5 h-5 text-zinc-400 dark:text-zinc-500" />
-                          Portfolio Beta
-                        </h2>
-                        <div className="flex items-center gap-1">
-                          <button onClick={() => toggleWidgetSize('beta')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-all" title="Resize Widget">
-                            {(widgetSizes.beta || 1) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                          </button>
-                          <button onClick={() => removeWidget('beta')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg transition-all" title="Remove Widget">
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex-1 flex flex-col justify-center relative z-20 min-h-[160px]">
-                        {betaValue != null ? (
-                          <div className="text-center">
-                            <div className="text-5xl font-bold text-zinc-900 dark:text-zinc-50 mb-3 font-mono tracking-tight">
-                              {betaValue.toFixed(2)}
-                            </div>
-                            <div className="text-sm font-medium mb-4">
-                              {betaValue > 1.2 ? (
-                                <span className="text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> High Volatility</span>
-                              ) : betaValue < 0.8 ? (
-                                <span className="text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"><TrendingDown className="w-3.5 h-3.5" /> Low Volatility</span>
-                              ) : (
-                                <span className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"><Activity className="w-3.5 h-3.5" /> Market Volatility</span>
-                              )}
-                            </div>
-                            <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-[200px] mx-auto leading-relaxed">
-                              Measures risk relative to <strong className="text-zinc-700 dark:text-zinc-300">{portfolioStats.benchmarkTicker || 'Benchmark'}</strong>.
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="flex flex-col items-center justify-center h-full text-zinc-400 dark:text-zinc-500 space-y-3">
-                            <Activity className="w-8 h-8 opacity-20" />
-                            <p className="text-sm">Not enough data</p>
-                          </div>
-                        )}
-                      </div>
                     </SortableWidget>
                   );
                 }

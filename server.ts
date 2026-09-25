@@ -1673,48 +1673,6 @@ async function startServer() {
     return res.json(quotes);
   });
 
-  const betaCache = new Map<string, { data: number | null, timestamp: number }>();
-  const BETA_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
-
-  app.get('/api/beta', async (req, res) => {
-    const symbols = req.query.symbols as string;
-    if (!symbols) return res.json({});
-
-    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(s => s && s !== 'CASH');
-    const now = Date.now();
-    const betas: Record<string, number | null> = {};
-    const symbolsToFetch: string[] = [];
-
-    symbolList.forEach(symbol => {
-      const cached = betaCache.get(symbol);
-      if (cached && (now - cached.timestamp < BETA_CACHE_TTL)) {
-        betas[symbol] = cached.data;
-      } else {
-        symbolsToFetch.push(symbol);
-      }
-    });
-
-    if (symbolsToFetch.length > 0) {
-      await Promise.allSettled(symbolsToFetch.map(async (symbol) => {
-        try {
-          const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['summaryDetail'] }, { validateResult: false }));
-          const beta = result?.summaryDetail?.beta ?? null;
-          betas[symbol] = beta;
-          betaCache.set(symbol, { data: beta, timestamp: now });
-        } catch (err: any) {
-          const msg = err?.message || String(err);
-          if (!msg.includes('No fundamentals data found') && !msg.includes('Quote not found')) {
-             console.log(`[API] Failed fetching beta for "${symbol}": ${msg}`);
-          }
-          betas[symbol] = null;
-          betaCache.set(symbol, { data: null, timestamp: now });
-        }
-      }));
-    }
-
-    return res.json(betas);
-  });
-
   app.get('/api/earnings', async (req, res) => {
     const symbols = req.query.symbols as string;
     if (!symbols) return res.json([]);
