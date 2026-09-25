@@ -19,6 +19,7 @@ import session from 'express-session';
 import crypto from 'crypto';
 import dns from 'node:dns/promises';
 import { registerDataRoutes } from './server-data';
+import { registerBotRoutes } from './server-bot';
 import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -386,6 +387,7 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
   registerDataRoutes(app);
+  registerBotRoutes(app);
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.set('trust proxy', true);

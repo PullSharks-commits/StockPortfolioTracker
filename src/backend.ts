@@ -63,6 +63,7 @@ export async function signInWithPopup(_auth: typeof auth, _provider: typeof goog
 export async function signOut(_auth: typeof auth) {
   await authClient.signOut();
   setCurrentUser(null);
+  virtualDocs.clear();
   authListeners.forEach((l) => l(null));
 }
 
@@ -151,10 +152,11 @@ export function serverTimestamp() {
   return undefined;
 }
 
-async function api(method: string, path: string, body?: unknown) {
+// JSON request to this app's server with the signed-in user's token attached.
+export async function authedFetch(method: string, url: string, body?: unknown) {
   const session = await currentSession();
   if (!session) throw new Error('Not signed in');
-  const res = await fetch(`/api/data/${path}`, {
+  const res = await fetch(url, {
     method,
     headers: {
       Authorization: `Bearer ${session.session.token}`,
@@ -164,9 +166,31 @@ async function api(method: string, path: string, body?: unknown) {
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(`${method} /api/data/${path} failed (${res.status}): ${detail.error || res.statusText}`);
+    throw new Error(detail.error || `${method} ${url} failed (${res.status} ${res.statusText})`);
   }
   return res.status === 204 ? null : res.json();
+}
+
+const api = (method: string, path: string, body?: unknown) => authedFetch(method, `/api/data/${path}`, body);
+
+// --- Virtual (read-only) documents --------------------------------------------
+// Documents supplied by another source rather than the database - the Trading Bot
+// tab's positions and trades. They show up in getDocs/getDoc/onSnapshot results like
+// stored documents (filters apply), but any write to them is refused.
+
+export const VIRTUAL_ID_PREFIX = 'bot:';
+const isVirtualId = (id: unknown) => typeof id === 'string' && id.startsWith(VIRTUAL_ID_PREFIX);
+const virtualDocs = new Map<string, { id: string; data: any }[]>();
+
+export function setVirtualDocs(name: string, docs: { id: string; data: any }[]) {
+  virtualDocs.set(name, docs);
+  notifyChanged(name);
+}
+
+function assertWritable(ref: DocRef | CollectionRef, data?: any) {
+  if ((ref.kind === 'doc' && isVirtualId(ref.id)) || isVirtualId(data?.holdingId) || data?.portfolioType === 'bot') {
+    throw new Error('Trading Bot positions are managed by the bot and are read-only here. Use Close Position to sell.');
+  }
 }
 
 function snapshotOf(name: string, id: string, data: any): DocSnapshot {
@@ -175,18 +199,26 @@ function snapshotOf(name: string, id: string, data: any): DocSnapshot {
 }
 
 export async function getDocs(ref: QueryRef | CollectionRef): Promise<QuerySnapshot> {
-  const params = new URLSearchParams();
   // Every query is already scoped to the signed-in user server-side.
-  for (const f of ref.kind === 'query' ? ref.filters : []) {
-    if (f.field !== 'userId') params.set(f.field, String(f.value));
+  const filters = (ref.kind === 'query' ? ref.filters : []).filter((f) => f.field !== 'userId');
+  let rows: { id: string; data: any }[] = [];
+  // A filter on a virtual id can only match virtual documents.
+  if (!filters.some((f) => isVirtualId(f.value))) {
+    const params = new URLSearchParams();
+    for (const f of filters) params.set(f.field, String(f.value));
+    const qs = params.toString();
+    rows = await api('GET', `${ref.name}${qs ? `?${qs}` : ''}`);
   }
-  const qs = params.toString();
-  const rows: { id: string; data: any }[] = await api('GET', `${ref.name}${qs ? `?${qs}` : ''}`);
-  const docs = rows.map((r) => snapshotOf(ref.name, r.id, r.data));
+  const virtual = (virtualDocs.get(ref.name) ?? []).filter((d) => filters.every((f) => d.data[f.field] === f.value));
+  const docs = [...rows, ...virtual].map((r) => snapshotOf(ref.name, r.id, { ...r.data }));
   return { docs, empty: docs.length === 0, size: docs.length };
 }
 
 export async function getDoc(ref: DocRef): Promise<DocSnapshot> {
+  if (isVirtualId(ref.id)) {
+    const hit = virtualDocs.get(ref.name)?.find((d) => d.id === ref.id);
+    return snapshotOf(ref.name, ref.id, hit ? { ...hit.data } : null);
+  }
   const row = await api('GET', `${ref.name}/${encodeURIComponent(ref.id)}`);
   return snapshotOf(ref.name, ref.id, row?.data ?? null);
 }
@@ -222,6 +254,7 @@ export async function withBatchedUpdates<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export async function addDoc(ref: CollectionRef, data: object): Promise<DocRef> {
+  assertWritable(ref, data);
   const row = await api('POST', ref.name, data);
   notifyChanged(ref.name);
   return doc(null, ref.name, row.id);
@@ -230,22 +263,26 @@ export async function addDoc(ref: CollectionRef, data: object): Promise<DocRef> 
 // Inserts many documents in one request and one database transaction.
 export async function addDocs(ref: CollectionRef, items: object[]): Promise<DocRef[]> {
   if (items.length === 0) return [];
+  items.forEach((item) => assertWritable(ref, item));
   const rows: { id: string }[] = await api('POST', ref.name, items);
   notifyChanged(ref.name);
   return rows.map((r) => doc(null, ref.name, r.id));
 }
 
 export async function setDoc(ref: DocRef, data: object, options?: { merge?: boolean }) {
+  assertWritable(ref, data);
   await api('PUT', `${ref.name}/${encodeURIComponent(ref.id)}${options?.merge ? '?merge=1' : ''}`, data);
   notifyChanged(ref.name);
 }
 
 export async function updateDoc(ref: DocRef, data: object) {
+  assertWritable(ref, data);
   await api('PATCH', `${ref.name}/${encodeURIComponent(ref.id)}`, data);
   notifyChanged(ref.name);
 }
 
 export async function deleteDoc(ref: DocRef) {
+  assertWritable(ref);
   await api('DELETE', `${ref.name}/${encodeURIComponent(ref.id)}`);
   notifyChanged(ref.name);
 }

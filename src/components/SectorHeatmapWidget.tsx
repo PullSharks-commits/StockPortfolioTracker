@@ -104,7 +104,7 @@ export default function SectorHeatmapWidget({
   quotes: any;
   metadata: Record<string, { sector: string, industry: string }>;
   activeCurrency: string;
-  activeTab: 'global' | 'australia';
+  activeTab: 'global' | 'australia' | 'bot';
   fearGreedData?: any;
 }) {
   const [viewMode, setViewMode] = useState<'my-portfolio' | 'market-indices'>('my-portfolio');

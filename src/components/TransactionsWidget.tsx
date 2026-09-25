@@ -51,7 +51,7 @@ interface Holding {
   avg_price: number;
   avgPriceCurrency?: string;
   userId: string;
-  portfolioType?: 'global' | 'australia';
+  portfolioType?: 'global' | 'australia' | 'bot';
 }
 
 interface TransactionsWidgetProps {

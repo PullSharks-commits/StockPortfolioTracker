@@ -58,6 +58,8 @@ import { TradingViewChartWithSkeleton } from './components/TradingViewChartWithS
 import { EditHoldingModal } from './components/EditHoldingModal';
 import { computeHoldingFromTransactions } from './utils/portfolioCalculations';
 import { Toaster, toast } from 'sonner';
+import { BotStatus, clearBotPortfolio, closeBotPosition, onBotStatus, refreshBotPortfolio, runBotHousekeeping } from './botPortfolio';
+import { BotPortfolioView } from './components/BotPortfolioView';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
 import { calculateGroupFearGreed } from './lib/fearGreed';
@@ -371,7 +373,7 @@ interface Holding {
   avg_price: number;
   avgPriceCurrency?: string;
   userId: string;
-  portfolioType?: 'global' | 'australia';
+  portfolioType?: 'global' | 'australia' | 'bot';
   updatedAt?: any;
   order?: number;
   // Enriched properties
@@ -2077,7 +2079,7 @@ const SettingsModal = ({
           {activeModalTab === 'portfolios' && (
             <section className="space-y-8">
               <div className="space-y-6">
-                {['global', 'australia'].map((tab) => (
+                {['global', 'australia', 'bot'].map((tab) => (
                   <div key={tab} className={cn(
                     "p-6 rounded-2xl border transition-all",
                     activeTab === tab 
@@ -2217,7 +2219,7 @@ export default function App() {
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [txLoaded, setTxLoaded] = useState(false);
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
-  const [activeTab, setActiveTab] = useState<'global' | 'australia'>('global');
+  const [activeTab, setActiveTab] = useState<'global' | 'australia' | 'bot'>('global');
   
   const holdings = useMemo(() => {
     return allHoldings.filter(h => (h.portfolioType || 'global') === activeTab);
@@ -2573,6 +2575,7 @@ export default function App() {
   const [tabSettings, setTabSettings] = useState<Record<string, { benchmark: string, riskProfile: string, targetReturn: number, currency: string }>>({
     global: { benchmark: 'SPY', riskProfile: 'moderate', targetReturn: 8, currency: 'USD' },
     australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' },
+    bot: { benchmark: 'SPY', riskProfile: 'aggressive', targetReturn: 10, currency: 'USD' },
   });
   const [userSettings, setUserSettings] = useState<{ 
     displayName: string; 
@@ -2720,7 +2723,8 @@ export default function App() {
         setDoc(doc(db, 'settings', user.uid), {
           tabs: {
             global: { benchmark: 'SPY', riskProfile: 'moderate', targetReturn: 8, currency: 'USD' },
-            australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' }
+            australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' },
+            bot: { benchmark: 'SPY', riskProfile: 'aggressive', targetReturn: 10, currency: 'USD' }
           },
           hiddenCalendarEvents: [],
           user: {
@@ -3492,6 +3496,7 @@ export default function App() {
     setIsRefreshing(true);
     try {
       await Promise.all([
+        user ? refreshBotPortfolio(user.uid) : Promise.resolve(),
         fetchQuotes(allHoldings),
         fetchBetas(holdings),
         fetchMetadata(holdings),
@@ -3604,7 +3609,8 @@ export default function App() {
   const fetchQuotes = async (currentHoldings: Holding[]) => {
     const allBenchmarks = [
       tabSettings['global']?.benchmark || 'SPY',
-      tabSettings['australia']?.benchmark || '^AXJO'
+      tabSettings['australia']?.benchmark || '^AXJO',
+      tabSettings['bot']?.benchmark || 'SPY'
     ];
     const sectorEtfs = [
       'XLK', 'XLV', 'XLF', 'XLY', 'XLI', 'XLC', 'XLP', 'XLE', 'XLRE', 'XLU', 'XLB'
@@ -3783,6 +3789,76 @@ export default function App() {
     };
   }, [user]);
 
+  // Trading Bot tab: the bot's positions/trades load on sign-in (so combined totals
+  // include them), when the tab is opened, and every 5 minutes while it is open and
+  // visible. Each load can cost the bot a Webull price call, so don't poll faster;
+  // live prices between loads come from the quote stream like any other holding.
+  const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
+  useEffect(() => onBotStatus(setBotStatus), []);
+  useEffect(() => {
+    if (!user) { clearBotPortfolio(); return; }
+    refreshBotPortfolio(user.uid);
+  }, [user]);
+  useEffect(() => {
+    if (!user || activeTab !== 'bot') return;
+    refreshBotPortfolio(user.uid);
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') refreshBotPortfolio(user.uid);
+    }, 5 * 60_000);
+    return () => clearInterval(timer);
+  }, [user, activeTab]);
+
+  // Close Position places a real market sell through the bot, so it is confirmed by
+  // typing the symbol (same as the bot's own dashboard).
+  const [botCloseSymbol, setBotCloseSymbol] = useState<string | null>(null);
+  const [botCloseConfirm, setBotCloseConfirm] = useState('');
+  const [isClosingBotPosition, setIsClosingBotPosition] = useState(false);
+  const [isRunningHousekeeping, setIsRunningHousekeeping] = useState(false);
+  const [isRefreshingBot, setIsRefreshingBot] = useState(false);
+  const handleRefreshBot = async () => {
+    if (!user) return;
+    setIsRefreshingBot(true);
+    try {
+      await Promise.all([refreshBotPortfolio(user.uid), fetchQuotes(allHoldings)]);
+    } finally {
+      setIsRefreshingBot(false);
+    }
+  };
+
+  const handleConfirmBotClose = async () => {
+    if (!botCloseSymbol || botCloseConfirm.trim().toUpperCase() !== botCloseSymbol || !user) return;
+    setIsClosingBotPosition(true);
+    try {
+      const result = await closeBotPosition(botCloseSymbol);
+      if (result.ok) toast.success(result.message);
+      else toast.error(result.message);
+      setBotCloseSymbol(null);
+      await refreshBotPortfolio(user.uid);
+    } catch (err) {
+      toast.error(`Close failed: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setIsClosingBotPosition(false);
+    }
+  };
+
+  const handleRunBotHousekeeping = async () => {
+    if (!user || isRunningHousekeeping) return;
+    if (!window.confirm('Run the trading bot\'s housekeeping job now? It can place or adjust real orders.')) return;
+    setIsRunningHousekeeping(true);
+    try {
+      await runBotHousekeeping((result) => {
+        setIsRunningHousekeeping(false);
+        if (result.ok) toast.success(result.message);
+        else toast.error(result.message);
+        refreshBotPortfolio(user.uid);
+      });
+      toast.info('Housekeeping started…');
+    } catch (err) {
+      setIsRunningHousekeeping(false);
+      toast.error(`Housekeeping failed to start: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+
   // Automatic background transaction self-healing for imported portfolios
   const healingHoldingIds = useRef(new Set<string>());
   useEffect(() => {
@@ -3797,7 +3873,7 @@ export default function App() {
       const now = Date.now();
       const txHoldingIds = new Set(allTransactions.map(tx => tx.holdingId));
       const holdingsToHeal = allHoldings.filter(h =>
-        h.shares > 0 && h.ticker !== 'CASH' && !txHoldingIds.has(h.id) &&
+        h.shares > 0 && h.ticker !== 'CASH' && h.portfolioType !== 'bot' && !txHoldingIds.has(h.id) &&
         !healingHoldingIds.current.has(h.id) &&
         !(h.updatedAt?.toMillis && Math.abs(now - h.updatedAt.toMillis()) < HEAL_GRACE_MS)
       );
@@ -4043,7 +4119,8 @@ export default function App() {
   useEffect(() => {
     const allBenchmarks = [
       tabSettings['global']?.benchmark || 'SPY',
-      tabSettings['australia']?.benchmark || '^AXJO'
+      tabSettings['australia']?.benchmark || '^AXJO',
+      tabSettings['bot']?.benchmark || 'SPY'
     ];
     if (holdings.length > 0 || allBenchmarks.length > 0) {
       const symbols = Array.from(new Set([...holdings.map(h => h.ticker), ...allBenchmarks]))
@@ -6856,9 +6933,16 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               Australia Investment
               {getMarketStatus('australia')}
             </button>
+            <button
+              onClick={() => setActiveTab('bot')}
+              className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'bot' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+            >
+              Trading Bot
+              {getMarketStatus('bot')}
+            </button>
           </div>
           
-          <div className="flex flex-wrap items-center gap-2 pb-2 md:pb-0 w-full md:w-auto mt-2 md:mt-0 justify-start md:justify-end">
+          <div className={cn("flex flex-wrap items-center gap-2 pb-2 md:pb-0 w-full md:w-auto mt-2 md:mt-0 justify-start md:justify-end", activeTab === 'bot' && "hidden")}>
             {saveMessage && (
               <span className={cn(
                 "text-sm font-medium whitespace-nowrap",
@@ -6989,6 +7073,17 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        {activeTab === 'bot' ? (
+          <BotPortfolioView
+            status={botStatus}
+            livePrices={quotes}
+            onRefresh={handleRefreshBot}
+            isRefreshing={isRefreshingBot}
+            onRunHousekeeping={handleRunBotHousekeeping}
+            isRunningHousekeeping={isRunningHousekeeping}
+            onClosePosition={(symbol) => { setBotCloseSymbol(symbol); setBotCloseConfirm(''); }}
+          />
+        ) : (<>
         {/* Dashboard Stats */}
         <PortfolioSummary
           totalValue={portfolioStats.totalValue}
@@ -8710,9 +8805,42 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             </div>
           </SortableContext>
         </DndContext>
+        </>)}
       </main>
 
       <Toaster position="top-right" richColors />
+      {botCloseSymbol && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => !isClosingBotPosition && setBotCloseSymbol(null)}>
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Close {botCloseSymbol} position</h3>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+              The trading bot will cancel this position's resting stop and <strong>market-sell all of it now</strong>. This places a real order and can't be undone.
+            </p>
+            <label className="mt-4 block text-sm text-zinc-700 dark:text-zinc-300">
+              Type <span className="font-mono font-bold">{botCloseSymbol}</span> to confirm
+              <input
+                autoFocus
+                value={botCloseConfirm}
+                onChange={(e) => setBotCloseConfirm(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmBotClose(); }}
+                className="mt-1 w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 font-mono uppercase"
+                disabled={isClosingBotPosition}
+              />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setBotCloseSymbol(null)} disabled={isClosingBotPosition} className="px-4 py-2 rounded-lg text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800">Cancel</button>
+              <button
+                onClick={handleConfirmBotClose}
+                disabled={isClosingBotPosition || botCloseConfirm.trim().toUpperCase() !== botCloseSymbol}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isClosingBotPosition && <Loader2 className="w-4 h-4 animate-spin" />}
+                Sell {botCloseSymbol} now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TradingView Chart Modal */}
       {selectedChartTicker && (

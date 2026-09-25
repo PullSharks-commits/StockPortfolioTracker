@@ -10,9 +10,9 @@
 // - document collections (settings, backups): one JSON document per user, keyed by
 //   the user id, stored whole in a `data` jsonb column.
 
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express, Request, Response } from 'express';
 import pg from 'pg';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { authedUser, createRequireUser } from './server-auth';
 
 type FieldKind = 'text' | 'number' | 'boolean' | 'timestamp' | 'uuid';
 
@@ -164,27 +164,12 @@ export function registerDataRoutes(app: Express) {
   const pool = new pg.Pool({ connectionString, max: 5 });
   pool.on('error', (err) => console.error('Postgres pool error:', err));
 
-  const jwks = createRemoteJWKSet(new URL(`${authBase}/.well-known/jwks.json`));
-  const issuer = new URL(authBase).origin;
-
-  const requireUser = async (req: Request, res: Response, next: NextFunction) => {
-    const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-    if (!token) return res.status(401).json({ error: 'Not signed in' });
-    try {
-      const { payload } = await jwtVerify(token, jwks, { issuer });
-      if (!payload.sub) throw new Error('Token has no subject');
-      (req as any).userId = payload.sub;
-      next();
-    } catch {
-      res.status(401).json({ error: 'Invalid or expired session' });
-    }
-  };
+  const requireUser = createRequireUser(authBase);
 
   const route = (handler: (req: Request, res: Response, userId: string) => Promise<void>) =>
     async (req: Request, res: Response) => {
       try {
-        await handler(req, res, (req as any).userId);
+        await handler(req, res, authedUser(req).id);
       } catch (err: any) {
         if (err instanceof HttpError) {
           res.status(err.status).json({ error: err.message });
