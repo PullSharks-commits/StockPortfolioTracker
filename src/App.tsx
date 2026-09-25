@@ -53,7 +53,6 @@ import { CorporateLogoScatterPoint } from './components/CorporateLogoScatterPoin
 import PriceAlertsWidget, { PriceAlert } from './components/PriceAlertsWidget';
 import SectorHeatmapWidget from './components/SectorHeatmapWidget';
 import TransactionsWidget from './components/TransactionsWidget';
-import { TwrCalculatorWidget } from './components/TwrCalculatorWidget';
 import { TradingViewChartWithSkeleton } from './components/TradingViewChartWithSkeleton';
 import { EditHoldingModal } from './components/EditHoldingModal';
 import { computeHoldingFromTransactions } from './utils/portfolioCalculations';
@@ -2439,7 +2438,6 @@ export default function App() {
     const saved = localStorage.getItem('widgetOrder');
     const defaultOrder = [
       'performance',
-      'twrCalculator',
       'allocation',
       'beta',
       'calendar',
@@ -2498,7 +2496,6 @@ export default function App() {
 
   const ALL_WIDGETS = [
     { id: 'performance', label: 'Performance vs Benchmarks' },
-    { id: 'twrCalculator', label: 'TWR Return Calculator' },
     { id: 'allocation', label: 'Portfolio Allocation' },
     { id: 'calendar', label: 'Financial Calendar' },
     { id: 'holdings', label: 'Current Holdings' },
@@ -8812,29 +8809,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         activeTab={activeTab}
                         fearGreedData={fearGreedData}
                       />
-                    </SortableWidget>
-                  );
-                }
-                if (widgetId === 'twrCalculator') {
-                  return (
-                    <SortableWidget key="twrCalculator" id="twrCalculator" className={cn("p-0 overflow-hidden border-none shadow-none bg-transparent", getWidgetClass('twrCalculator'))} onDoubleClick={() => toggleWidgetSize('twrCalculator')}>
-                      <div className="relative">
-                        <div className="absolute top-4 right-4 flex items-center gap-2 z-30">
-                          <button onClick={() => toggleWidgetSize('twrCalculator')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all" title="Resize Widget">
-                            {(widgetSizes.twrCalculator || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                          </button>
-                          <button onClick={() => removeWidget('twrCalculator')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all" title="Remove Widget">
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                        <TwrCalculatorWidget
-                          user={user}
-                          allHoldings={allHoldings}
-                          allTransactions={allTransactions}
-                          quotes={quotes}
-                          activeCurrency={activeCurrency}
-                        />
-                      </div>
                     </SortableWidget>
                   );
                 }

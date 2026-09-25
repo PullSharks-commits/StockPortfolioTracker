@@ -1,6 +1,6 @@
 import React, { memo, useState, useEffect, useRef, useMemo } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown, RefreshCw, Activity, ShieldAlert, ShieldCheck, Sliders, Info } from 'lucide-react';
-import { motion, useMotionValue, useTransform, animate, AnimatePresence } from 'motion/react';
+import { TrendingUp, TrendingDown, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown, RefreshCw, Activity } from 'lucide-react';
+import { motion, useMotionValue, useTransform, animate } from 'motion/react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
 // ECharts + echarts-gl are about half of the app's JavaScript; load them only when
 // this chart is rendered, so the rest of the page doesn't wait for them.
@@ -194,10 +194,6 @@ export const PortfolioSummary = memo(({
     }).filter(item => item.fg !== null).sort((a, b) => (b.fg?.score || 0) - (a.fg?.score || 0));
   }, [holdings, metadata, fearGreed]);
 
-  // Stress Test State
-  const [showStressTest, setShowStressTest] = useState(false);
-  const [crashPercent, setCrashPercent] = useState(10); // Default 10%
-
   // Calculate cash vs equities
   const cashHoldings = (holdings || []).filter((h: any) => h.ticker === 'CASH');
   const equityHoldings = (holdings || []).filter((h: any) => h.ticker !== 'CASH');
@@ -207,12 +203,6 @@ export const PortfolioSummary = memo(({
 
   // A safe computed total value that matches the sum of cash & equity (or totalValue fallback if no holdings)
   const safeTotalValue = (holdings || []).length > 0 ? (cashValue + equityValue) : totalValue;
-  const effectiveEquityValue = (holdings || []).length > 0 ? equityValue : totalValue;
-
-  const projectedLoss = effectiveEquityValue * (crashPercent / 100);
-  const projectedValue = safeTotalValue - projectedLoss;
-  const actualPortfolioCrashPercent = safeTotalValue > 0 ? (projectedLoss / safeTotalValue) * 100 : 0;
-  const cashCushionPercent = safeTotalValue > 0 ? (cashValue / safeTotalValue) * 100 : 0;
 
   // Top Gainer & Top Loser calculation for the day (Relative to Portfolio Weightage)
   const { topGainer, topLoser } = useMemo(() => {
@@ -417,19 +407,6 @@ export const PortfolioSummary = memo(({
                   {isSyncing ? 'Syncing...' : 'Sync 5Y History'}
                 </button>
               )}
-              <button
-                onClick={() => setShowStressTest(!showStressTest)}
-                className={cn(
-                  "px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest rounded transition-all flex items-center gap-1.5 border leading-none h-[18px]",
-                  showStressTest 
-                    ? "bg-rose-50 text-rose-600 border-rose-200 shadow-sm" 
-                    : "bg-zinc-50 text-zinc-650 hover:bg-zinc-100 border-zinc-200 hover:text-zinc-900"
-                )}
-                title="Simulate market correction scenarios on current holdings and check defense strength"
-              >
-                <ShieldAlert size={10} />
-                {showStressTest ? "Close Stress Test" : "Stress Test"}
-              </button>
             </div>
           )}
 
@@ -540,212 +517,6 @@ export const PortfolioSummary = memo(({
           </div>
         </div>
       </div>
-
-      {/* Real-time Stress Test Simulation Panel */}
-      <AnimatePresence>
-        {showStressTest && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-            className="border-t border-rose-100 bg-rose-50/15 overflow-hidden"
-          >
-            <div className="p-4 md:p-5 space-y-6">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <h3 className="text-xs font-black text-rose-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <ShieldAlert size={14} className="text-rose-600 animate-pulse" />
-                    Portfolio Crash Stress Tester
-                  </h3>
-                  <p className="text-[10px] text-zinc-500">
-                    Simulate how systemic market downturns affect your current portfolio. Non-equity CASH assets act as stable safety shields.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[9px] font-bold text-rose-600 bg-rose-100/60 border border-rose-200/50 px-2 py-0.5 rounded uppercase tracking-wider">
-                    Tab: {activeCurrency} Active
-                  </span>
-                </div>
-              </div>
-
-              {safeTotalValue <= 0 ? (
-                <div className="py-4 text-center rounded-xl border border-dashed border-rose-200 bg-rose-50/30">
-                  <p className="text-xs font-bold text-rose-700">No Portfolio Value Found</p>
-                  <p className="text-[10px] text-zinc-500 mt-1">Add stock or cash holdings transactions to this tab first to simulate crash scenarios.</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-                  {/* Controls Column */}
-                  <div className="lg:col-span-5 space-y-4 bg-white border border-rose-100/80 rounded-2xl p-4 shadow-sm">
-                    <div>
-                      <div className="flex justify-between items-center mb-1 bg-rose-50/40 p-2 rounded-lg">
-                        <span className="text-xs font-bold text-zinc-800 uppercase tracking-wider flex items-center gap-1">
-                          <Sliders size={12} className="text-rose-600" />
-                          Simulate stock crashed by:
-                        </span>
-                        <span className="text-sm font-black text-rose-600 font-mono">
-                          -{crashPercent}%
-                        </span>
-                      </div>
-                      <input
-                        id="stress-test-slider"
-                        type="range"
-                        min="0"
-                        max="80"
-                        step="1"
-                        value={crashPercent}
-                        onChange={(e) => setCrashPercent(Number(e.target.value))}
-                        className="w-full mt-3 h-1.5 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-rose-600 focus:outline-none"
-                      />
-                      <div className="flex justify-between text-[9px] font-extrabold text-zinc-400 mt-1.5 uppercase font-mono">
-                        <span>0% (Steady)</span>
-                        <span>25% (Correction)</span>
-                        <span>50% (Crash)</span>
-                        <span>80% (Extreme)</span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5 pt-2 border-t border-zinc-100">
-                      <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-1">Preset Scenarios</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {[
-                          { percent: 10, label: 'Correction (-10%)', desc: 'Standard pull-back' },
-                          { percent: 20, label: 'Bear Market (-20%)', desc: 'Sustained stock decline' },
-                          { percent: 35, label: 'Gravely Deep (-35%)', desc: 'Economic recession scale' },
-                          { percent: 50, label: 'Systemic GFC (-50%)', desc: 'Great Financial Crisis level' },
-                        ].map((scenario) => (
-                          <button
-                            key={scenario.percent}
-                            style={{ contentVisibility: 'auto' }}
-                            onClick={() => setCrashPercent(scenario.percent)}
-                            className={cn(
-                              "text-left p-2 rounded-xl border text-xs transition-all flex flex-col justify-between hover:shadow-xs",
-                              crashPercent === scenario.percent
-                                ? "border-rose-300 bg-rose-50/50 text-rose-700 font-bold ring-1 ring-rose-200"
-                                : "border-zinc-200 bg-zinc-50/50 hover:bg-zinc-100/60 text-zinc-700"
-                            )}
-                          >
-                            <span className="font-bold text-[10px] uppercase block tracking-tight">{scenario.label}</span>
-                            <span className="text-[8px] font-medium text-zinc-400 block mt-0.5">{scenario.desc}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Impact Column */}
-                  <div className="lg:col-span-7 space-y-4 flex flex-col justify-between">
-                    {/* Visual bar container */}
-                    <div className="bg-white border border-rose-150 rounded-2xl p-4 shadow-sm space-y-4 font-sans">
-                      <div>
-                        <div className="flex justify-between items-center text-[10px] font-black text-zinc-400 uppercase tracking-wide mb-2">
-                          <span>Portfolio Allocation Under Stress</span>
-                          <span className="text-zinc-650 font-bold">
-                            {(holdings || []).length > 0 ? `${cashHoldings.length} Cash | ${equityHoldings.length} Equity Items` : 'Simulated Equity'}
-                          </span>
-                        </div>
-                        
-                        <div className="h-3 w-full rounded-full bg-zinc-100 overflow-hidden flex mb-3 border border-zinc-200">
-                          {cashCushionPercent > 0 && (
-                            <div 
-                              className="bg-emerald-500 h-full transition-all duration-300"
-                              style={{ width: `${cashCushionPercent}%` }}
-                              title={`Safe Cash Cushion: ${cashCushionPercent.toFixed(1)}%`}
-                            />
-                          )}
-                          <div 
-                            className="bg-indigo-500 h-full transition-all duration-300"
-                            style={{ width: `${(100 - cashCushionPercent) * (1 - crashPercent / 100)}%` }}
-                            title={`Remaining Equities: ${((100 - cashCushionPercent) * (1 - crashPercent / 100)).toFixed(1)}%`}
-                          />
-                          {crashPercent > 0 && (
-                            <div 
-                              className="bg-rose-500 h-full transition-all duration-300"
-                              style={{ width: `${(100 - cashCushionPercent) * (crashPercent / 100)}%` }}
-                              title={`Projected Simulated Loss: ${((100 - cashCushionPercent) * (crashPercent / 100)).toFixed(1)}%`}
-                            />
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap gap-4 text-[9px] font-extrabold uppercase font-mono text-zinc-500">
-                          {cashValue > 0 && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded bg-emerald-500 block" />
-                              <span>Safe Cash: {cashCushionPercent.toFixed(1)}%</span>
-                            </div>
-                          )}
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2.5 h-2.5 rounded bg-indigo-500 block" />
-                            <span>Equities after stress: {((100 - cashCushionPercent) * (1 - crashPercent / 100)).toFixed(1)}%</span>
-                          </div>
-                          {crashPercent > 0 && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded bg-rose-500 block" />
-                              <span>Projected Drop: {((100 - cashCushionPercent) * (crashPercent / 100)).toFixed(1)}%</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Numeric breakdown grids */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-zinc-100">
-                        <div className="space-y-1 bg-zinc-50/60 p-3 rounded-xl border border-zinc-100">
-                          <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block font-mono">Current Status</span>
-                          <div className="text-sm font-semibold text-zinc-800 font-mono">
-                            {formatCurrency(safeTotalValue, activeCurrency)}
-                          </div>
-                          <div className="text-[8px] text-zinc-500 font-medium leading-normal">
-                            Equities: {formatCurrency(effectiveEquityValue, activeCurrency)} <br/>
-                            Cash cushion: {formatCurrency(cashValue, activeCurrency)}
-                          </div>
-                        </div>
-
-                        <div className="space-y-1 bg-rose-50/30 p-3 rounded-xl border border-rose-100">
-                          <span className="text-[9px] font-black text-rose-500 uppercase tracking-widest block font-mono">Stress Simulated Status</span>
-                          <div className="text-sm font-black text-rose-700 font-mono">
-                            {formatCurrency(projectedValue, activeCurrency)}
-                          </div>
-                          <div className="text-[8px] text-rose-600 font-semibold leading-normal">
-                            Simulated Loss: -{formatCurrency(projectedLoss, activeCurrency)} <br/>
-                            Overall Drop: <span className="underline">-{(actualPortfolioCrashPercent).toFixed(1)}%</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Advice Card */}
-                    <div className="bg-gradient-to-r from-rose-50/50 to-amber-50/30 border border-rose-100 rounded-2xl p-4 flex gap-3 items-start shadow-inner">
-                      <div className="mt-0.5 text-rose-600">
-                        {cashCushionPercent >= 30 ? (
-                          <ShieldCheck size={18} className="text-emerald-500" />
-                        ) : (
-                          <Info size={18} className="text-rose-600" />
-                        )}
-                      </div>
-                      <div className="space-y-1">
-                        <h4 className="text-[10px] font-black uppercase text-rose-800 tracking-wider">
-                          Portfolio Defense analysis
-                        </h4>
-                        <p className="text-[10px] text-zinc-650 leading-normal font-semibold">
-                          {cashCushionPercent >= 30 ? (
-                            `Excellent Defense Position. You currently hold a fortress-like cash cushion of ${cashCushionPercent.toFixed(1)}%. In a -${crashPercent}% equity crisis, your overall portfolio decline is cushioned down to only -${actualPortfolioCrashPercent.toFixed(1)}%, leaving substantial dry powder to go bargain hunting!`
-                          ) : cashCushionPercent >= 10 ? (
-                            `Reasonable Defense Position. With ${cashCushionPercent.toFixed(1)}% cash reserves, a -${crashPercent}% market crash will experience an effective -${actualPortfolioCrashPercent.toFixed(1)}% overall value drop. Your dry powder offers moderate shield protection.`
-                          ) : (
-                            `High Volatility Risk. You hold only ${cashCushionPercent.toFixed(1)}% cash cushion, exposing your assets directly to downturns (${actualPortfolioCrashPercent.toFixed(1)}% estimated total decline). Consider taking partial profits or banking CASH to form defensive reserves if you anticipate a bearish phase.`
-                          )}
-                        </p>
-                      </div>
-                    </div>
-
-                  </div>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Realized & Unrealized P&L Breakdown Panel */}
       <div className="border-t border-zinc-200 bg-zinc-50/50 p-4 md:p-5">
