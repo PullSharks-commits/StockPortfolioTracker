@@ -4,20 +4,21 @@ import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
 import multer from 'multer';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import YahooFinance from 'yahoo-finance2';
 const yahooFinance = new YahooFinance();
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const finnhub = require('finnhub');
+import finnhubModule from 'finnhub';
+const finnhub: any = (finnhubModule as any)?.default || finnhubModule;
 import fs from 'fs';
 import path from 'path';
 import session from 'express-session';
 import crypto from 'crypto';
 import dns from 'node:dns/promises';
+import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -38,7 +39,16 @@ async function yahooWithRetry<T>(fn: () => Promise<T>, retries = 3, backoff = 10
     'EPIPE',
     'fetch failed',
     'socket hang up',
-    'UND_ERR_CONNECT_TIMEOUT'
+    'UND_ERR_CONNECT_TIMEOUT',
+    '429',
+    'Too Many Requests',
+    '503',
+    'Service Unavailable',
+    '502',
+    'Bad Gateway',
+    '500',
+    'Internal Server Error',
+    'HTTPError'
   ];
 
   for (let i = 0; i < retries; i++) {
@@ -71,12 +81,10 @@ const authTokens = new Map<string, any>();
 const quoteCache = new Map<string, { data: any, timestamp: number }>();
 const metadataCache = new Map<string, { data: any, timestamp: number }>();
 const earningsCache = new Map<string, { data: any, timestamp: number }>();
-const economicCache = new Map<string, { data: any, timestamp: number }>();
 
 const CACHE_TTL = 60 * 1000; // 1 minute
 const METADATA_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const EARNINGS_TTL = 12 * 60 * 60 * 1000; // 12 hours
-const ECONOMIC_TTL = 6 * 60 * 60 * 1000; // 6 hours
 
 // Helper for fetching with retry (useful for DNS and network issues)
 async function fetchWithRetry(url: string, options: any = {}, retries = 5, backoff = 2000): Promise<Response> {
@@ -104,7 +112,8 @@ async function fetchWithRetry(url: string, options: any = {}, retries = 5, backo
       }
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+      const timeoutMs = options.timeout || 20000;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       
       const response = await fetch(url, {
         ...options,
@@ -125,19 +134,23 @@ async function fetchWithRetry(url: string, options: any = {}, retries = 5, backo
       ) || err.name === 'AbortError';
       
       if (isRetryable && i < retries - 1) {
-        console.warn(`Fetch attempt ${i + 1} failed for ${url}. Error: ${errorCode || err.name}. Cause: ${causeMessage}. Retrying in ${backoff}ms...`);
+        if (!options.silent) {
+          console.warn(`Fetch attempt ${i + 1} failed for ${url}. Error: ${errorCode || err.name}. Cause: ${causeMessage}. Retrying in ${backoff}ms...`);
+        }
         await new Promise(resolve => setTimeout(resolve, backoff));
         backoff *= 2;
         continue;
       }
       
-      console.error(`Fetch failed for ${url} after ${i + 1} attempts. Final Error:`, {
-        message: err.message,
-        code: errorCode,
-        name: err.name,
-        cause: err.cause,
-        stack: err.stack
-      });
+      if (!options.silent) {
+        console.error(`Fetch failed for ${url} after ${i + 1} attempts. Final Error:`, {
+          message: err.message,
+          code: errorCode,
+          name: err.name,
+          cause: err.cause,
+          stack: err.stack
+        });
+      }
       throw err;
     }
   }
@@ -274,7 +287,39 @@ async function initDb() {
 
   if (!mysqlPool) {
     console.log('Initializing SQLite database (ephemeral)...');
-    sqliteDb = new Database('portfolio.db');
+    try {
+      sqliteDb = new Database('portfolio.db');
+      // Set pragmas for performance and reliability
+      sqliteDb.exec('PRAGMA journal_mode = WAL');
+      sqliteDb.exec('PRAGMA synchronous = NORMAL');
+      sqliteDb.exec('PRAGMA foreign_keys = ON');
+      
+      // Test integrity
+      const check = sqliteDb.prepare('PRAGMA integrity_check').get() as any;
+      if (check.integrity_check !== 'ok') {
+        throw new Error(`Database integrity check failed: ${check.integrity_check}`);
+      }
+    } catch (dbErr: any) {
+      console.error('SQLite database is corrupted or failed to open, recreating...', dbErr.message);
+      if (sqliteDb) {
+        try { sqliteDb.close(); } catch {}
+        sqliteDb = null;
+      }
+      try {
+        if (fs.existsSync('portfolio.db')) {
+          fs.unlinkSync('portfolio.db');
+          console.log('Deleted corrupted portfolio.db');
+        }
+        if (fs.existsSync('portfolio.db-wal')) fs.unlinkSync('portfolio.db-wal');
+        if (fs.existsSync('portfolio.db-shm')) fs.unlinkSync('portfolio.db-shm');
+      } catch (unlinkErr) {
+        console.error('Failed to delete corrupted database files:', unlinkErr);
+      }
+      sqliteDb = new Database('portfolio.db');
+      sqliteDb.exec('PRAGMA journal_mode = WAL');
+      sqliteDb.exec('PRAGMA synchronous = NORMAL');
+    }
+
     sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS portfolio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,7 +355,7 @@ async function initDb() {
 
   // Seed data if empty
   const row = await db.get('SELECT COUNT(*) as count FROM portfolio');
-  if (row.count === 0) {
+  if (row && row.count === 0) {
     try {
       const seedData = JSON.parse(fs.readFileSync(path.resolve('portfolio.json'), 'utf-8'));
       for (const item of seedData) {
@@ -333,7 +378,13 @@ async function startServer() {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/api/ws' });
 
-  app.use(express.json());
+  // Quick health check endpoint before any body-parsing or session middleware
+  app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.set('trust proxy', true);
   app.use(session({
@@ -361,7 +412,7 @@ async function startServer() {
       return res.status(400).json({ error: 'Query parameter "q" is required' });
     }
     try {
-      const results = await yahooWithRetry(() => yahooFinance.search(q));
+      const results = await yahooWithRetry(() => yahooFinance.search(q, {}, { validateResult: false }));
       res.json(results);
     } catch (error: any) {
       const errorCode = error.code || error.cause?.code;
@@ -500,6 +551,36 @@ async function startServer() {
     });
   });
 
+  // Email route using Resend
+  app.post('/api/send-email', async (req, res) => {
+    const { to, subject, text } = req.body;
+    
+    if (!to || !subject || !text) {
+      return res.status(400).json({ error: 'Missing to, subject, or text fields' });
+    }
+
+    if (!process.env.RESEND_API_KEY) {
+      console.warn('Cannot send email: RESEND_API_KEY is missing from environment variables');
+      return res.status(500).json({ error: 'Email configuration is missing on the server' });
+    }
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
+
+    try {
+      const data = await resend.emails.send({
+        from: 'Stock Tracker <onboarding@resend.dev>',
+        to: [to],
+        subject: subject,
+        text: text,
+      });
+
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('Failed to send email via Resend:', error);
+      res.status(500).json({ error: 'Failed to send email' });
+    }
+  });
+
 
   // API Routes
   async function syncToFile() {
@@ -511,7 +592,71 @@ async function startServer() {
     }
   }
 
+  app.get(['/api/bot/portfolio', '/api/portfolio/bot'], async (req, res) => {
+    try {
+      const asOf = new Date().toISOString();
+      if (req.query.download === 'true') {
+        res.setHeader('Content-Disposition', 'attachment; filename="bot_portfolio_export.json"');
+      }
+      res.json({
+        as_of: asOf,
+        market_open: true,
+        cash_usd: 4085.63,
+        position_value_usd: 6136.29,
+        total_value_usd: 10221.92,
+        positions: [
+          {
+            symbol: 'AMD',
+            qty: 3,
+            avg_cost: 617.85,
+            price: 629.26,
+            market_value: 1887.78,
+            unrealized_pnl: 34.23,
+            entry_date: '2026-09-22',
+            stale_price: false
+          }
+        ]
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch bot portfolio' });
+    }
+  });
+
+  app.get('/api/bot/openapi.json', (req, res) => {
+    const specPath = path.resolve('tradingbot-portfolio-openapi.json');
+    if (fs.existsSync(specPath)) {
+      res.sendFile(specPath);
+    } else {
+      res.status(404).json({ error: 'OpenAPI specification not found' });
+    }
+  });
+
   app.get('/api/portfolio', async (req, res) => {
+    if (req.query.format === 'bot') {
+      const asOf = new Date().toISOString();
+      if (req.query.download === 'true') {
+        res.setHeader('Content-Disposition', 'attachment; filename="portfolio.json"');
+      }
+      return res.json({
+        as_of: asOf,
+        market_open: true,
+        cash_usd: 4085.63,
+        position_value_usd: 6136.29,
+        total_value_usd: 10221.92,
+        positions: [
+          {
+            symbol: 'AMD',
+            qty: 3,
+            avg_cost: 617.85,
+            price: 629.26,
+            market_value: 1887.78,
+            unrealized_pnl: 34.23,
+            entry_date: '2026-09-22',
+            stale_price: false
+          }
+        ]
+      });
+    }
     try {
       const rows = await db.query('SELECT * FROM portfolio');
       res.json(rows);
@@ -667,57 +812,572 @@ async function startServer() {
     }
   });
 
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
+  // Helper for multi-provider AI analysis
+  async function performAiAnalysis(params: {
+    provider?: string;
+    model?: string;
+    prompt?: string;
+    contents?: any;
+    apiKey?: string;
+    customEndpoint?: string;
+    config?: any;
+    tools?: any;
+    systemPrompt?: string;
+    allowFallback?: boolean;
+  }) {
+    let {
+      provider,
+      model = 'gemini-3.1-pro-preview',
+      prompt,
+      contents,
+      apiKey,
+      customEndpoint,
+      config = {},
+      tools,
+      systemPrompt = 'You are a professional investment strategist and equity analyst.',
+      allowFallback = true
+    } = params;
 
-  app.get('/api/calendar/economic.ics', async (req, res) => {
-    const from = req.query.from as string || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    const to = req.query.to as string || new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    // Normalize prompt text if passed via contents
+    let extractedText = prompt || '';
+    let pdfBase64: string | null = null;
+    let pdfMimeType: string = 'application/pdf';
+
+    if (!extractedText && contents) {
+      if (typeof contents === 'string') {
+        extractedText = contents;
+      } else if (Array.isArray(contents)) {
+        for (const item of contents) {
+          if (typeof item === 'string') {
+            extractedText += (extractedText ? '\n\n' : '') + item;
+          } else if (item?.text) {
+            extractedText += (extractedText ? '\n\n' : '') + item.text;
+          } else if (item?.inlineData?.data) {
+            pdfBase64 = item.inlineData.data;
+            pdfMimeType = item.inlineData.mimeType || 'application/pdf';
+          }
+        }
+      } else if (contents.text) {
+        extractedText = contents.text;
+      }
+    }
+
+    // Auto-detect provider from model name if not explicitly set
+    const lowerModel = (model || '').toLowerCase();
+    if (!provider) {
+      if (lowerModel.includes('claude')) {
+        provider = 'anthropic';
+      } else if (lowerModel.startsWith('gpt-') || lowerModel.startsWith('o1') || lowerModel.startsWith('o3') || lowerModel.includes('openai')) {
+        provider = 'openai';
+      } else if (lowerModel.includes('deepseek')) {
+        provider = 'deepseek';
+      } else {
+        provider = 'gemini';
+      }
+    }
+
+    // Inner helper for executing with Gemini with internal resilience
+    const executeWithGemini = async (preferredGeminiModel: string = 'gemini-3.1-pro-preview', geminiApiKeyOverride?: string) => {
+      const geminiKey = geminiApiKeyOverride || process.env.GEMINI_API_KEY;
+      if (!geminiKey || geminiKey === "MY_GEMINI_API_KEY") {
+        throw {
+          status: 500,
+          code: 'MISSING_API_KEY',
+          error: 'Gemini API Key Required',
+          details: 'GEMINI_API_KEY is not configured on the server. Please add a valid API key in Settings > AI Configuration or the AI Studio Secrets panel.',
+          provider: 'gemini'
+        };
+      }
+
+      const ai = new GoogleGenAI({ apiKey: geminiKey.trim() });
+      const generationConfig: any = {
+        responseMimeType: config.responseMimeType || "text/plain"
+      };
+      
+      if (config.responseSchema) {
+        generationConfig.responseSchema = config.responseSchema;
+      }
+
+      if (tools) {
+        generationConfig.tools = tools;
+      }
+
+      const actualContents = contents || prompt || extractedText;
+      const candidateModels = [
+        preferredGeminiModel && preferredGeminiModel.includes('gemini') ? preferredGeminiModel : 'gemini-3.1-pro-preview',
+        'gemini-2.5-flash',
+        'gemini-2.5-pro'
+      ];
+
+      let lastGeminiErr: any = null;
+      for (const geminiModel of candidateModels) {
+        try {
+          const response = await ai.models.generateContent({
+            model: geminiModel,
+            contents: actualContents,
+            config: generationConfig
+          });
+
+          // Extract grounding sources if available
+          let sources: any[] = [];
+          const groundingMetadata = (response.candidates?.[0] as any)?.groundingMetadata;
+          if (groundingMetadata?.groundingChunks) {
+            sources = groundingMetadata.groundingChunks
+              .filter((c: any) => c.web?.uri)
+              .map((c: any) => ({
+                title: c.web.title || c.web.uri,
+                uri: c.web.uri
+              }));
+          }
+
+          return {
+            text: response.text || '',
+            model: geminiModel,
+            provider: 'gemini' as const,
+            candidates: response.candidates,
+            usageMetadata: response.usageMetadata,
+            sources
+          };
+        } catch (gErr: any) {
+          lastGeminiErr = gErr;
+          console.warn(`Gemini generation with ${geminiModel} failed, trying next fallback:`, gErr?.message || gErr);
+        }
+      }
+
+      throw {
+        status: 500,
+        code: 'PROVIDER_ERROR',
+        error: 'Gemini API Error',
+        details: lastGeminiErr?.message || String(lastGeminiErr),
+        provider: 'gemini'
+      };
+    };
+
+    // 1. Anthropic (Claude) Provider
+    if (provider === 'anthropic' || provider === 'claude') {
+      const anthropicKey = apiKey || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+      if (!anthropicKey || anthropicKey.trim() === '') {
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          console.warn('Anthropic API key missing, falling back to Gemini 3.1 Pro');
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: 'Anthropic Claude requires an API Key in Settings. Ran analysis with Gemini 3.1 Pro.',
+            originalProvider: 'anthropic',
+            originalModel: model
+          };
+        }
+        throw {
+          status: 400,
+          code: 'MISSING_API_KEY',
+          error: 'Anthropic API Key Required',
+          details: 'Please provide an Anthropic API Key in Settings > AI Configuration or configure ANTHROPIC_API_KEY in the AI Studio Secrets panel.',
+          provider: 'anthropic'
+        };
+      }
+
+      const claudeModel = model && model.includes('claude') ? model : 'claude-3-7-sonnet-20250219';
+      
+      const messageContent: any[] = [];
+      if (pdfBase64) {
+        messageContent.push({
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: pdfMimeType,
+            data: pdfBase64
+          }
+        });
+      }
+      messageContent.push({
+        type: 'text',
+        text: extractedText
+      });
+
+      try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'x-api-key': anthropicKey.trim(),
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: claudeModel,
+            max_tokens: 4096,
+            system: systemPrompt,
+            messages: [
+              {
+                role: 'user',
+                content: messageContent
+              }
+            ]
+          })
+        });
+
+        const data: any = await response.json();
+        if (!response.ok) {
+          const errorMsg = data.error?.message || data.message || `Anthropic request failed (${response.status})`;
+          const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('credit') || errorMsg.toLowerCase().includes('rate limit');
+          
+          if (allowFallback && process.env.GEMINI_API_KEY) {
+            console.warn(`Anthropic error (${errorMsg}), falling back to Gemini 3.1 Pro`);
+            const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+            return {
+              ...geminiRes,
+              fallbackNotice: `Claude API reported "${errorMsg}". Ran analysis with Gemini 3.1 Pro.`,
+              originalProvider: 'anthropic',
+              originalModel: claudeModel
+            };
+          }
+
+          throw {
+            status: response.status,
+            code: isQuota ? 'QUOTA_EXCEEDED' : 'PROVIDER_ERROR',
+            error: isQuota ? 'Anthropic Quota / Rate Limit' : 'Anthropic API Error',
+            details: errorMsg,
+            provider: 'anthropic'
+          };
+        }
+
+        const text = data.content?.[0]?.text || '';
+        return {
+          text,
+          model: claudeModel,
+          provider: 'anthropic',
+          candidates: [{ content: { parts: [{ text }] } }],
+          usageMetadata: data.usage
+        };
+      } catch (err: any) {
+        if (err.status && err.code) throw err;
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: `Claude API connection error. Ran analysis with Gemini 3.1 Pro.`,
+            originalProvider: 'anthropic',
+            originalModel: claudeModel
+          };
+        }
+        throw {
+          status: 500,
+          code: 'PROVIDER_ERROR',
+          error: 'Anthropic Request Failed',
+          details: err?.message || String(err),
+          provider: 'anthropic'
+        };
+      }
+    }
+
+    // 2. OpenAI Provider
+    if (provider === 'openai') {
+      const openAiKey = apiKey || process.env.OPENAI_API_KEY;
+      if (!openAiKey || openAiKey.trim() === '') {
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          console.warn('OpenAI API key missing, falling back to Gemini 3.1 Pro');
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: 'OpenAI requires an API Key in Settings. Ran analysis with Gemini 3.1 Pro.',
+            originalProvider: 'openai',
+            originalModel: model
+          };
+        }
+        throw {
+          status: 400,
+          code: 'MISSING_API_KEY',
+          error: 'OpenAI API Key Required',
+          details: 'Please provide an OpenAI API Key in Settings > AI Configuration or configure OPENAI_API_KEY in the AI Studio Secrets panel.',
+          provider: 'openai'
+        };
+      }
+
+      const openAiModel = model && (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3')) ? model : 'gpt-4o';
+
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openAiKey.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: openAiModel,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: extractedText }
+            ],
+            ...(config.responseMimeType === 'application/json' ? { response_format: { type: 'json_object' } } : {})
+          })
+        });
+
+        const data: any = await response.json();
+        if (!response.ok) {
+          const errorMsg = data.error?.message || data.message || `OpenAI request failed (${response.status})`;
+          const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('plan and billing') || errorMsg.toLowerCase().includes('rate limit');
+          
+          if (allowFallback && process.env.GEMINI_API_KEY) {
+            console.warn(`OpenAI error (${errorMsg}), falling back to Gemini 3.1 Pro`);
+            const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+            return {
+              ...geminiRes,
+              fallbackNotice: `OpenAI reported: "${errorMsg}". Automatically ran with Gemini 3.1 Pro.`,
+              originalProvider: 'openai',
+              originalModel: openAiModel
+            };
+          }
+
+          throw {
+            status: response.status,
+            code: isQuota ? 'QUOTA_EXCEEDED' : 'PROVIDER_ERROR',
+            error: isQuota ? 'OpenAI Quota Exceeded' : 'OpenAI API Error',
+            details: errorMsg,
+            provider: 'openai'
+          };
+        }
+
+        const text = data.choices?.[0]?.message?.content || '';
+        return {
+          text,
+          model: openAiModel,
+          provider: 'openai',
+          candidates: [{ content: { parts: [{ text }] } }],
+          usageMetadata: data.usage
+        };
+      } catch (err: any) {
+        if (err.status && err.code) throw err;
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: `OpenAI request error. Ran analysis with Gemini 3.1 Pro.`,
+            originalProvider: 'openai',
+            originalModel: openAiModel
+          };
+        }
+        throw {
+          status: 500,
+          code: 'PROVIDER_ERROR',
+          error: 'OpenAI Request Failed',
+          details: err?.message || String(err),
+          provider: 'openai'
+        };
+      }
+    }
+
+    // 3. DeepSeek Provider
+    if (provider === 'deepseek') {
+      const deepseekKey = apiKey || process.env.DEEPSEEK_API_KEY;
+      if (!deepseekKey || deepseekKey.trim() === '') {
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          console.warn('DeepSeek API key missing, falling back to Gemini 3.1 Pro');
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: 'DeepSeek requires an API Key in Settings. Ran analysis with Gemini 3.1 Pro.',
+            originalProvider: 'deepseek',
+            originalModel: model
+          };
+        }
+        throw {
+          status: 400,
+          code: 'MISSING_API_KEY',
+          error: 'DeepSeek API Key Required',
+          details: 'Please provide a DeepSeek API Key in Settings > AI Configuration or configure DEEPSEEK_API_KEY in the AI Studio Secrets panel.',
+          provider: 'deepseek'
+        };
+      }
+
+      const deepseekModel = model && model.includes('deepseek') ? model : 'deepseek-chat';
+
+      try {
+        const response = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${deepseekKey.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: deepseekModel,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: extractedText }
+            ]
+          })
+        });
+
+        const data: any = await response.json();
+        if (!response.ok) {
+          const errorMsg = data.error?.message || data.message || `DeepSeek request failed (${response.status})`;
+          const isBalance = response.status === 402 || errorMsg.toLowerCase().includes('insufficient balance') || errorMsg.toLowerCase().includes('balance');
+          const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('rate limit') || errorMsg.toLowerCase().includes('quota');
+
+          if (allowFallback && process.env.GEMINI_API_KEY) {
+            console.warn(`DeepSeek error (${errorMsg}), falling back to Gemini 3.1 Pro`);
+            const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+            return {
+              ...geminiRes,
+              fallbackNotice: `DeepSeek reported: "${errorMsg}". Automatically ran with Gemini 3.1 Pro.`,
+              originalProvider: 'deepseek',
+              originalModel: deepseekModel
+            };
+          }
+
+          throw {
+            status: response.status,
+            code: isBalance ? 'INSUFFICIENT_BALANCE' : isQuota ? 'QUOTA_EXCEEDED' : 'PROVIDER_ERROR',
+            error: isBalance ? 'DeepSeek Insufficient Balance' : isQuota ? 'DeepSeek Rate Limit' : 'DeepSeek API Error',
+            details: errorMsg,
+            provider: 'deepseek'
+          };
+        }
+
+        const text = data.choices?.[0]?.message?.content || '';
+        return {
+          text,
+          model: deepseekModel,
+          provider: 'deepseek',
+          candidates: [{ content: { parts: [{ text }] } }],
+          usageMetadata: data.usage
+        };
+      } catch (err: any) {
+        if (err.status && err.code) throw err;
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: `DeepSeek request error. Ran analysis with Gemini 3.1 Pro.`,
+            originalProvider: 'deepseek',
+            originalModel: deepseekModel
+          };
+        }
+        throw {
+          status: 500,
+          code: 'PROVIDER_ERROR',
+          error: 'DeepSeek Request Failed',
+          details: err?.message || String(err),
+          provider: 'deepseek'
+        };
+      }
+    }
+
+    // 4. Custom OpenAI-compatible Provider (e.g. Ollama, OpenRouter, Groq)
+    if (provider === 'custom') {
+      const endpoint = customEndpoint || 'https://api.openai.com/v1/chat/completions';
+      const customKey = apiKey || '';
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (customKey.trim()) {
+        headers['Authorization'] = `Bearer ${customKey.trim()}`;
+      }
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: model || 'default',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: extractedText }
+            ]
+          })
+        });
+
+        const data: any = await response.json();
+        if (!response.ok) {
+          const errorMsg = data.error?.message || data.message || `Custom AI endpoint failed (${response.status})`;
+          if (allowFallback && process.env.GEMINI_API_KEY) {
+            const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+            return {
+              ...geminiRes,
+              fallbackNotice: `Custom endpoint reported: "${errorMsg}". Ran with Gemini 3.1 Pro.`,
+              originalProvider: 'custom',
+              originalModel: model
+            };
+          }
+          throw {
+            status: response.status,
+            code: 'PROVIDER_ERROR',
+            error: 'Custom AI Endpoint Error',
+            details: errorMsg,
+            provider: 'custom'
+          };
+        }
+
+        const text = data.choices?.[0]?.message?.content || data.response || data.text || '';
+        return {
+          text,
+          model: model || 'custom',
+          provider: 'custom',
+          candidates: [{ content: { parts: [{ text }] } }],
+          usageMetadata: data.usage
+        };
+      } catch (err: any) {
+        if (err.status && err.code) throw err;
+        if (allowFallback && process.env.GEMINI_API_KEY) {
+          const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
+          return {
+            ...geminiRes,
+            fallbackNotice: `Custom AI endpoint unreachable. Ran with Gemini 3.1 Pro.`,
+            originalProvider: 'custom',
+            originalModel: model
+          };
+        }
+        throw {
+          status: 500,
+          code: 'PROVIDER_ERROR',
+          error: 'Custom AI Request Failed',
+          details: err?.message || String(err),
+          provider: 'custom'
+        };
+      }
+    }
+
+    // 5. Default: Google Gemini Provider
+    return executeWithGemini(model, apiKey);
+  }
+
+  // Unified Multi-Model AI Analysis Endpoint
+  app.post(['/api/ai-analyze', '/api/gemini-analyze'], async (req, res) => {
+    const { contents, prompt, model, provider, apiKey, customEndpoint, config = {}, tools, systemPrompt, allowFallback } = req.body;
+    
+    if (!contents && !prompt) {
+      return res.status(400).json({ error: 'Contents or prompt is required' });
+    }
 
     try {
-      // Use existing internal logic to fetch economic events
-      // Since it's a GET request, we can just call the endpoint code or similar
-      // For simplicity, let's just use fetch internally or duplicate logic
-      const response = await fetch(`http://localhost:3000/api/economic-events?from=${from}&to=${to}`);
-      if (!response.ok) throw new Error('Failed to fetch events');
-      const events: any[] = await response.json();
-
-      let ics = 'BEGIN:VCALENDAR\r\n';
-      ics += 'VERSION:2.0\r\n';
-      ics += 'PRODID:-//Stock Portfolio Tracker//Economic Calendar//EN\r\n';
-      ics += 'CALSCALE:GREGORIAN\r\n';
-      ics += 'METHOD:PUBLISH\r\n';
-      ics += 'X-WR-CALNAME:Economic Calendar\r\n';
-      ics += 'X-WR-TIMEZONE:UTC\r\n';
-      
-      events.forEach(event => {
-        if (!event.time) return;
-        const date = new Date(event.time);
-        const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        // Add 30 mins duration
-        const endDate = new Date(date.getTime() + 30 * 60000);
-        const endDateStr = endDate.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        
-        ics += 'BEGIN:VEVENT\r\n';
-        ics += `UID:econ-${event.event.replace(/\s+/g, '-')}-${dateStr}@stocktracker\r\n`;
-        ics += `DTSTAMP:${dtstamp}\r\n`;
-        ics += `DTSTART:${dateStr}\r\n`;
-        ics += `DTEND:${endDateStr}\r\n`;
-        ics += `SUMMARY:Economic: ${event.event}\r\n`;
-        ics += `DESCRIPTION:Country: ${event.country}\\nImpact: ${event.impact}\\nEstimate: ${event.estimate || 'N/A'}${event.unit || ''}\\nPrevious: ${event.previous || 'N/A'}${event.unit || ''}\r\n`;
-        ics += 'END:VEVENT\r\n';
+      const result = await performAiAnalysis({
+        provider,
+        model,
+        prompt,
+        contents,
+        apiKey,
+        customEndpoint,
+        config,
+        tools,
+        systemPrompt,
+        allowFallback: allowFallback !== undefined ? allowFallback : true
       });
-      
-      ics += 'END:VCALENDAR\r\n';
 
-      res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
-      res.setHeader('Content-Disposition', 'attachment; filename="economic_events.ics"');
-      res.send(ics);
-    } catch (error) {
-      console.error('Error generating economic ics:', error);
-      res.status(500).send('Error generating calendar');
+      res.json(result);
+    } catch (error: any) {
+      console.error('AI Analysis API error:', error);
+      const statusCode = error.status || 500;
+      const errorTitle = error.error || 'AI analysis failed';
+      const errorDetails = error.details || error.message || String(error);
+      const errorCode = error.code || 'UNKNOWN_ERROR';
+      const errorProvider = error.provider || provider || 'unknown';
+
+      res.status(statusCode).json({
+        error: errorTitle,
+        details: errorDetails,
+        code: errorCode,
+        provider: errorProvider,
+        status: statusCode
+      });
     }
   });
 
@@ -732,86 +1392,143 @@ async function startServer() {
     if (!symbols) return res.status(400).json({ error: 'Symbols required' });
     if (!period1Str) return res.status(400).json({ error: 'From date (period1) required' });
 
-    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-    const queryOptions: any = { period1: period1Str };
-    if (period2Str) queryOptions.period2 = period2Str;
-    queryOptions.interval = '1d';
+    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(s => s && s !== 'CASH');
+    
+    // Ensure period1 and period2 are valid Date objects for yahooFinance
+    const fromDate = new Date(period1Str);
+    const toDate = period2Str ? new Date(period2Str) : new Date();
+    
+    if (isNaN(fromDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid start date (period1)' });
+    }
+
+    // Cap future dates as Yahoo Finance API will error on period2 > now
+    const now = new Date();
+    let finalToDate = isNaN(toDate.getTime()) ? now : toDate;
+    if (finalToDate > now) finalToDate = now;
+
+    // Ensure period1 is not after period2
+    if (fromDate > finalToDate) {
+      console.warn(`[API] Historical request: period1 (${fromDate.toISOString()}) is after period2 (${finalToDate.toISOString()}). Returning empty.`);
+      const emptyResults: Record<string, any> = {};
+      symbolList.forEach(s => emptyResults[s] = []);
+      if (symbols.toUpperCase().includes('CASH')) emptyResults['CASH'] = [];
+      return res.json(emptyResults);
+    }
+
+    const queryOptions: any = { 
+      period1: fromDate,
+      period2: finalToDate,
+      interval: '1d'
+    };
 
     try {
       const results: Record<string, any> = {};
       
-      for (const sym of symbolList) {
-        let cachedData: any[] = [];
-        let needsFetch = forceRefresh;
+      // Initialize CASH results if requested to avoid frontend hanging
+      if (symbols.toUpperCase().includes('CASH')) {
+        results['CASH'] = [];
+      }
+      
+      // Batch processing to speed up requests while avoiding rate limits
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < symbolList.length; i += BATCH_SIZE) {
+        const batch = symbolList.slice(i, i + BATCH_SIZE);
+        
+        await Promise.all(batch.map(async (sym) => {
+          let cachedData: any[] = [];
+          let needsFetch = forceRefresh;
 
-        if (!forceRefresh) {
-          try {
-            // Check cache for this symbol and range
-            const rows = await db.query(
-              'SELECT date, close FROM historical_prices WHERE ticker = ? AND date >= ? AND date <= ? ORDER BY date ASC',
-              [sym, period1Str, period2Str || new Date().toISOString().split('T')[0]]
-            );
-            
-            if (rows && rows.length > 0) {
-              // Check if the range is fully covered (rough check: if we have any data and it's not force-refresh)
-              // For a more robust cache, we might want to check the max date in cache vs today
-              const maxDateInStack = rows[rows.length - 1].date;
-              const todayStr = new Date().toISOString().split('T')[0];
+          if (!forceRefresh) {
+            try {
+              // Check cache for this symbol and range
+              const rows = await db.query(
+                'SELECT date, close FROM historical_prices WHERE ticker = ? AND date >= ? AND date <= ? ORDER BY date ASC',
+                [sym, period1Str, period2Str || new Date().toISOString().split('T')[0]]
+              );
               
-              if (maxDateInStack >= todayStr || (new Date().getDay() === 0 || new Date().getDay() === 6)) { // Weekends
-                 cachedData = rows.map(r => ({ date: r.date, close: r.close }));
+              if (rows && rows.length > 0) {
+                const maxDateInStack = rows[rows.length - 1].date;
+                const todayStr = new Date().toISOString().split('T')[0];
+                
+                if (maxDateInStack >= todayStr || (new Date().getDay() === 0 || new Date().getDay() === 6)) { 
+                   cachedData = rows.map(r => ({ date: r.date, close: r.close }));
+                } else {
+                   needsFetch = true;
+                }
               } else {
-                 needsFetch = true;
+                needsFetch = true;
               }
-            } else {
+            } catch (err) {
+              console.error(`Cache read error for ${sym}:`, err);
               needsFetch = true;
             }
-          } catch (err) {
-            console.error(`Cache read error for ${sym}:`, err);
-            needsFetch = true;
           }
-        }
 
-        if (needsFetch) {
-          try {
-            console.log(`[API] Fetching from Yahoo for ${sym}...`);
-            const data = await yahooWithRetry(() => yahooFinance.historical(sym, queryOptions));
-            const formattedData = Array.isArray(data) ? data : [];
-            results[sym] = formattedData;
+          if (needsFetch) {
+            try {
+              console.log(`[API] Fetching from Yahoo for ${sym}...`);
+              const chartData: any = await yahooWithRetry(() => yahooFinance.chart(sym, queryOptions, { validateResult: false }));
+              const data = chartData?.quotes ? chartData.quotes.filter((q: any) => q.close !== null && q.close !== undefined) : [];
+              const formattedData = Array.isArray(data) ? data : [];
+              results[sym] = formattedData;
 
-            // Update cache asynchronously
-            if (formattedData.length > 0) {
-              (async () => {
-                try {
-                  for (const p of formattedData) {
-                    if (p.date && p.close !== undefined) {
-                      const d = p.date instanceof Date ? p.date.toISOString().split('T')[0] : p.date.split('T')[0];
-                      await db.run(
-                        'INSERT OR REPLACE INTO historical_prices (ticker, date, close) VALUES (?, ?, ?)',
-                        [sym, d, p.close]
-                      ).catch(e => {
-                        // For MySQL it might be INSERT INTO ... ON DUPLICATE KEY UPDATE
-                        if (isMysql) {
-                           db.run(
+              // Update cache asynchronously in a single transaction for efficiency
+              if (formattedData.length > 0) {
+                (async () => {
+                  try {
+                    if (sqliteDb) {
+                      const insertStmt = sqliteDb.prepare('INSERT OR REPLACE INTO historical_prices (ticker, date, close) VALUES (?, ?, ?)');
+                      sqliteDb.transaction((data: any[]) => {
+                        for (const p of data) {
+                          if (p.date && p.close !== undefined) {
+                            let d = '';
+                            if (p.date instanceof Date) {
+                              if (!isNaN(p.date.getTime())) {
+                                d = p.date.toISOString().split('T')[0];
+                              } else {
+                                continue;
+                              }
+                            } else {
+                              d = String(p.date).split('T')[0];
+                            }
+                            insertStmt.run(sym, d, p.close);
+                          }
+                        }
+                      })(formattedData);
+                    } else if (isMysql && mysqlPool) {
+                      for (const p of formattedData) {
+                        if (p.date && p.close !== undefined) {
+                          let d = '';
+                          if (p.date instanceof Date) {
+                            if (!isNaN(p.date.getTime())) {
+                              d = p.date.toISOString().split('T')[0];
+                            } else {
+                              continue;
+                            }
+                          } else {
+                            d = String(p.date).split('T')[0];
+                          }
+                          await db.run(
                             'INSERT INTO historical_prices (ticker, date, close) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE close = VALUES(close)',
                             [sym, d, p.close]
                           ).catch(() => {});
                         }
-                      });
+                      }
                     }
+                  } catch (cacheErr) {
+                    console.error(`Failed to update cache for ${sym}:`, cacheErr);
                   }
-                } catch (cacheErr) {
-                  console.error(`Failed to update cache for ${sym}:`, cacheErr);
-                }
-              })();
+                })();
+              }
+            } catch (err: any) {
+              console.warn(`Failed getting historical for ${sym}: ${err.message}`);
+              results[sym] = cachedData;
             }
-          } catch (err: any) {
-            console.warn(`Failed getting historical for ${sym}: ${err.message}`);
-            results[sym] = cachedData; // Fallback to whatever we had
+          } else {
+            results[sym] = cachedData;
           }
-        } else {
-          results[sym] = cachedData;
-        }
+        }));
       }
       
       if (!res.headersSent) {
@@ -829,7 +1546,7 @@ async function startServer() {
     const symbols = req.query.symbols as string;
     if (!symbols) return res.json({});
 
-    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase());
+    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(s => s && s !== 'CASH');
     const now = Date.now();
     const quotes: Record<string, any> = {};
     const symbolsToFetch: string[] = [];
@@ -850,8 +1567,23 @@ async function startServer() {
 
     // Try Yahoo Finance first for bulk quotes (more reliable for multiple symbols)
     try {
-      const results = await yahooWithRetry(() => yahooFinance.quote(symbolsToFetch));
-      const quotesArray = Array.isArray(results) ? results : [results];
+      let quotesArray: any[] = [];
+      try {
+        const results = await yahooWithRetry(() => yahooFinance.quote(symbolsToFetch, {}, { validateResult: false }));
+        quotesArray = Array.isArray(results) ? results : [results];
+      } catch (bulkErr: any) {
+        console.warn(`[API] Bulk Yahoo Finance quotes failed. Falling back to fetching individually. Error: ${bulkErr.message || bulkErr}`);
+        for (const sym of symbolsToFetch) {
+          try {
+            const result = await yahooWithRetry(() => yahooFinance.quote(sym, {}, { validateResult: false }));
+            if (result) {
+              quotesArray.push(result);
+            }
+          } catch (individualErr: any) {
+            console.log(`[API] Failed fetching individual ticker "${sym}": ${individualErr.message || individualErr}`);
+          }
+        }
+      }
       
       const getCurrencyFromSymbol = (symbol: string) => {
         if (symbol.endsWith('.AX')) return 'AUD';
@@ -864,6 +1596,7 @@ async function startServer() {
       };
 
       quotesArray.forEach((quote: any) => {
+        if (!quote || !quote.symbol) return;
         let price = quote.regularMarketPrice;
         let previousClose = quote.regularMarketPreviousClose;
         let marketState = quote.marketState || 'REGULAR';
@@ -894,7 +1627,7 @@ async function startServer() {
       if (errorCode === 'ECONNRESET' || errorCode === 'UND_ERR_CONNECT_TIMEOUT' || errorMessage.includes('fetch failed') || errorMessage.includes('socket hang up')) {
         console.warn(`Yahoo Finance bulk quote warning: ${errorCode || errorMessage}.`);
       } else {
-        console.error('Yahoo Finance bulk quote error:', error);
+        console.warn('Yahoo Finance quote fetching warning (gracefully handled):', error.message || error);
       }
     }
 
@@ -929,11 +1662,53 @@ async function startServer() {
           });
         }));
       } catch (err) {
-        console.error('Finnhub fallback quote error:', err);
+        console.warn('Finnhub fallback quote error (transient/rate-limited):', err);
       }
     }
 
     return res.json(quotes);
+  });
+
+  const betaCache = new Map<string, { data: number | null, timestamp: number }>();
+  const BETA_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+  app.get('/api/beta', async (req, res) => {
+    const symbols = req.query.symbols as string;
+    if (!symbols) return res.json({});
+
+    const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(s => s && s !== 'CASH');
+    const now = Date.now();
+    const betas: Record<string, number | null> = {};
+    const symbolsToFetch: string[] = [];
+
+    symbolList.forEach(symbol => {
+      const cached = betaCache.get(symbol);
+      if (cached && (now - cached.timestamp < BETA_CACHE_TTL)) {
+        betas[symbol] = cached.data;
+      } else {
+        symbolsToFetch.push(symbol);
+      }
+    });
+
+    if (symbolsToFetch.length > 0) {
+      await Promise.allSettled(symbolsToFetch.map(async (symbol) => {
+        try {
+          const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['summaryDetail'] }, { validateResult: false }));
+          const beta = result?.summaryDetail?.beta ?? null;
+          betas[symbol] = beta;
+          betaCache.set(symbol, { data: beta, timestamp: now });
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          if (!msg.includes('No fundamentals data found') && !msg.includes('Quote not found')) {
+             console.log(`[API] Failed fetching beta for "${symbol}": ${msg}`);
+          }
+          betas[symbol] = null;
+          betaCache.set(symbol, { data: null, timestamp: now });
+        }
+      }));
+    }
+
+    return res.json(betas);
   });
 
   app.get('/api/earnings', async (req, res) => {
@@ -953,18 +1728,19 @@ async function startServer() {
 
     try {
       for (const symbol of symbolList) {
+        let symbolEarnings: any = null;
         try {
-          const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] }));
+          const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] }, { validateResult: false }));
           if (result && result.calendarEvents && result.calendarEvents.earnings) {
             const earningsData = result.calendarEvents.earnings;
             if (earningsData.earningsDate && earningsData.earningsDate.length > 0) {
-              earnings.push({
+              symbolEarnings = {
                 symbol,
                 date: earningsData.earningsDate[0],
                 estimate: earningsData.earningsAverage,
                 high: earningsData.earningsHigh,
                 low: earningsData.earningsLow
-              });
+              };
             }
           }
         } catch (err: any) {
@@ -976,6 +1752,37 @@ async function startServer() {
           } else {
             console.log(`Error fetching earnings for ${symbol}: ${msg}`);
           }
+        }
+
+        // Fallback to Finnhub if no Yahoo earnings
+        if (!symbolEarnings && finnhubClient) {
+          try {
+            await new Promise<void>((resolve) => {
+              const fromDate = new Date(now - 30 * 86400000).toISOString().split('T')[0];
+              const toDate = new Date(now + 90 * 86400000).toISOString().split('T')[0];
+              finnhubClient.earningsCalendar({ from: fromDate, to: toDate, symbol }, (err: any, data: any) => {
+                if (data && data.earningsCalendar && data.earningsCalendar.length > 0) {
+                  const ev = data.earningsCalendar[0];
+                  if (ev.date) {
+                    symbolEarnings = {
+                      symbol,
+                      date: `${ev.date}T20:00:00.000Z`,
+                      estimate: ev.epsEstimate,
+                      high: null,
+                      low: null
+                    };
+                  }
+                }
+                resolve();
+              });
+            });
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        if (symbolEarnings) {
+          earnings.push(symbolEarnings);
         }
       }
       
@@ -1005,7 +1812,7 @@ async function startServer() {
       try {
         for (const symbol of symbolList) {
           try {
-            const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] }));
+            const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['calendarEvents'] }, { validateResult: false }));
             if (result && result.calendarEvents && result.calendarEvents.earnings) {
               const earningsData = result.calendarEvents.earnings;
               if (earningsData.earningsDate && earningsData.earningsDate.length > 0) {
@@ -1070,7 +1877,7 @@ async function startServer() {
     try {
       for (const symbol of symbolList) {
         try {
-          const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['summaryDetail', 'calendarEvents'] }));
+          const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['summaryDetail', 'calendarEvents'] }, { validateResult: false }));
           if (result) {
             const summary = result.summaryDetail;
             const calendar = result.calendarEvents;
@@ -1106,121 +1913,14 @@ async function startServer() {
     }
   });
 
-  app.get('/api/economic-events', async (req, res) => {
-    const from = req.query.from as string;
-    const to = req.query.to as string;
-
-    if (!from || !to) {
-      return res.status(400).json({ error: 'Missing from or to date' });
-    }
-
-    const now = Date.now();
-    const cacheKey = `economic-${from}-${to}`;
-    const cached = economicCache.get(cacheKey);
-    if (cached && (now - cached.timestamp < ECONOMIC_TTL)) {
-      return res.json(cached.data);
-    }
-
-    try {
-      // 1. Try Finnhub if client is available
-      if (finnhubClient) {
-        try {
-          const finnhubData = await new Promise<any>((resolve, reject) => {
-            finnhubClient.economicCalendar({ from, to }, (error: any, data: any) => {
-              if (error) reject(error);
-              else resolve(data);
-            });
-          });
-
-          if (finnhubData && Array.isArray(finnhubData.economicCalendar)) {
-            const events = finnhubData.economicCalendar
-              .filter((e: any) => e.country === 'United States')
-              .map((e: any) => ({
-                actual: e.actual || null,
-                country: e.country,
-                estimate: e.estimate || null,
-                event: e.event,
-                impact: e.impact === 'high' ? 'High' : e.impact === 'medium' ? 'Medium' : 'Low',
-                previous: e.prev || null,
-                time: e.time ? (e.time.includes('Z') ? e.time : `${e.time.replace(' ', 'T')}Z`) : null,
-                unit: e.unit || ''
-              })).filter((e: any) => e.time !== null);
-            
-            if (events.length > 0) {
-              economicCache.set(cacheKey, { data: events, timestamp: now });
-              return res.json(events);
-            }
-          }
-        } catch (fErr) {
-          console.warn('Finnhub economic calendar fetch failed:', fErr);
-        }
-      }
-
-      // 2. Fallback to Trading Economics (Country specific)
-      try {
-        const response = await fetchWithRetry(`https://api.tradingeconomics.com/calendar/country/united%20states/${from}/${to}?c=guest:guest&f=json`);
-        
-        if (response.ok) {
-          const data = await response.json();
-          if (Array.isArray(data)) {
-            const usEvents = data.map((event: any) => ({
-              actual: event.Actual || null,
-              country: event.Country,
-              estimate: event.Forecast || event.TEForecast || null,
-              event: event.Event,
-              impact: event.Importance === 3 ? 'High' : event.Importance === 2 ? 'Medium' : 'Low',
-              previous: event.Previous || null,
-              time: event.Date ? `${event.Date}Z` : null,
-              unit: event.Unit || ''
-            })).filter(e => e.time !== null);
-
-            economicCache.set(cacheKey, { data: usEvents, timestamp: now });
-            return res.json(usEvents);
-          }
-        } else if (response.status === 410 || response.status === 403) {
-           console.warn(`Trading Economics API returned ${response.status}. Trying generic calendar...`);
-           
-           // 3. Last ditch effort: Generic Trading Economics calendar (upcoming)
-           const genericRes = await fetchWithRetry(`https://api.tradingeconomics.com/calendar?c=guest:guest&f=json`);
-           if (genericRes.ok) {
-             const gData = await genericRes.json();
-             if (Array.isArray(gData)) {
-               const gEvents = gData.map((event: any) => ({
-                 actual: event.Actual || null,
-                 country: event.Country,
-                 estimate: event.Forecast || null,
-                 event: event.Event,
-                 impact: event.Importance === 3 ? 'High' : event.Importance === 2 ? 'Medium' : 'Low',
-                 previous: event.Previous || null,
-                 time: event.Date ? `${event.Date}Z` : null,
-                 unit: event.Unit || ''
-               })).filter(e => e.time !== null && e.country === 'United States');
-               
-               economicCache.set(cacheKey, { data: gEvents, timestamp: now });
-               return res.json(gEvents);
-             }
-           }
-        }
-      } catch (teErr) {
-        console.error('Trading Economics fetch failed:', teErr);
-      }
-
-      // If all failed, return empty array instead of 500
-      res.json([]);
-    } catch (error) {
-      console.error('General error fetching economic events:', error);
-      res.status(500).json({ error: 'Failed to fetch economic events' });
-    }
-  });
-
   app.get('/api/financials', async (req, res) => {
     const symbol = req.query.symbol as string;
     if (!symbol) return res.status(400).json({ error: 'Symbol is required' });
 
     try {
-      const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { 
+      const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { 
         modules: ['incomeStatementHistory', 'balanceSheetHistory', 'cashflowStatementHistory', 'financialData'] 
-      }));
+      }, { validateResult: false }));
       
       const incomeStatement = result.incomeStatementHistory?.incomeStatementHistory || [];
       const balanceSheet = result.balanceSheetHistory?.balanceSheetStatements || [];
@@ -1296,7 +1996,7 @@ async function startServer() {
       'AVGO': 'broadcom.com',
       'AMD': 'amd.com',
       'DLO': 'dlocal.com',
-      'BMNR': 'beimani.com',
+      'BMNR': 'bitminetech.io',
       'ENPH': 'enphase.com',
       'FBL': 'fbl.com',
       'SOFI': 'sofi.com',
@@ -1307,7 +2007,7 @@ async function startServer() {
     
     if (!domain) {
       try {
-        const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }));
+        const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }, { validateResult: false }));
         if (result?.assetProfile?.website) {
           domain = new URL(result.assetProfile.website).hostname;
           domain = domain.replace(/^www\./, '');
@@ -1378,6 +2078,102 @@ async function startServer() {
     res.status(404).send('Not found');
   });
 
+  app.get('/api/fear-greed', async (req, res) => {
+    const symbolsRaw = req.query.symbols as string;
+    if (!symbolsRaw) return res.status(400).json({ error: 'Symbols are required' });
+
+    const symbolList = symbolsRaw.split(',').map(s => s.trim().toUpperCase()).filter(s => s !== 'CASH');
+    if (symbolList.length === 0) {
+      return res.json({ score: 50, rating: 'Neutral', details: 'No equity holdings' });
+    }
+
+    try {
+      const now = new Date();
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 45); // Get extra for RSI calculation
+
+      const results: Record<string, any> = {};
+      
+      // Fetch in parallel in batches of 10 to avoid rate limits
+      for (let i = 0; i < symbolList.length; i += 10) {
+        const batch = symbolList.slice(i, i + 10);
+        await Promise.all(batch.map(async (symbol) => {
+          try {
+            // Use Date objects for period1 and period2 to avoid format issues
+            const chartData: any = await yahooWithRetry(() => yahooFinance.chart(symbol, {
+              period1: thirtyDaysAgo,
+              period2: now,
+              interval: '1d'
+            }, { validateResult: false }));
+            const prices = chartData?.quotes ? chartData.quotes.filter((q: any) => q.close !== null && q.close !== undefined) : [];
+            if (Array.isArray(prices) && prices.length > 5) {
+              results[symbol] = prices;
+            }
+          } catch (err) {
+            console.warn(`Fear/Greed fetch failed for ${symbol}:`, err);
+          }
+        }));
+      }
+
+      const scores: number[] = [];
+      const details: any[] = [];
+
+      Object.entries(results).forEach(([symbol, prices]) => {
+        const closes = prices.map((p: any) => p.close).filter((c: any) => c !== undefined);
+        if (closes.length < 15) return;
+
+        // RSI Calculation (14-day)
+        let gains = 0;
+        let losses = 0;
+        for (let i = closes.length - 14; i < closes.length; i++) {
+          const diff = closes[i] - closes[i - 1];
+          if (diff >= 0) gains += diff;
+          else losses -= diff;
+        }
+        const avgGain = gains / 14;
+        const avgLoss = losses / 14;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        const rsi = 100 - (100 / (1 + rs));
+
+        // Momentum (1 month approx)
+        const currentPrice = closes[closes.length - 1];
+        const monthAgoPrice = closes[0];
+        const momentum = ((currentPrice - monthAgoPrice) / monthAgoPrice) * 100;
+        
+        // Normalize Momentum (-10% to +10% -> 0 to 100)
+        const momentumScore = Math.min(Math.max((momentum + 10) * 5, 0), 100);
+        
+        // Combined Score for this symbol
+        const symbolScore = (rsi + momentumScore) / 2;
+        scores.push(symbolScore);
+        details.push({ symbol, rsi, momentum, score: symbolScore });
+      });
+
+      if (scores.length === 0) {
+        return res.json({ score: 50, rating: 'Neutral', details: 'Insufficient historical data' });
+      }
+
+      const averageScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+      
+      let rating = 'Neutral';
+      if (averageScore <= 25) rating = 'Extreme Fear';
+      else if (averageScore <= 45) rating = 'Fear';
+      else if (averageScore <= 55) rating = 'Neutral';
+      else if (averageScore <= 75) rating = 'Greed';
+      else rating = 'Extreme Greed';
+
+      res.json({
+        score: Math.round(averageScore),
+        rating,
+        details: details.sort((a, b) => b.score - a.score)
+      });
+
+    } catch (error: any) {
+      console.error('Fear & Greed calculate error:', error);
+      res.status(500).json({ error: 'Failed to calculate Fear & Greed index' });
+    }
+  });
+
   app.get('/api/metadata', async (req, res) => {
     const symbols = req.query.symbols as string;
     if (!symbols) return res.json({});
@@ -1432,7 +2228,7 @@ async function startServer() {
           }
 
           try {
-            const result = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }));
+            const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }, { validateResult: false }));
             if (result && result.assetProfile) {
               sector = result.assetProfile.sector || 'Unknown';
               industry = result.assetProfile.industry || 'Unknown';
@@ -1481,68 +2277,81 @@ async function startServer() {
   let finnhubReconnectTimeout: NodeJS.Timeout | null = null;
 
   function setupFinnhubWs() {
-    if (!finnhubApiKey || finnhubWs) return;
+    try {
+      if (!finnhubApiKey || finnhubWs) return;
 
-    if (finnhubReconnectTimeout) {
-      clearTimeout(finnhubReconnectTimeout);
-      finnhubReconnectTimeout = null;
-    }
+      if (finnhubReconnectTimeout) {
+        clearTimeout(finnhubReconnectTimeout);
+        finnhubReconnectTimeout = null;
+      }
 
-    console.log(`Connecting to Finnhub WebSocket (Attempt ${finnhubReconnectAttempts + 1})...`);
-    finnhubWs = new WebSocket(`wss://ws.finnhub.io?token=${finnhubApiKey}`);
+      console.log(`Connecting to Finnhub WebSocket (Attempt ${finnhubReconnectAttempts + 1})...`);
+      finnhubWs = new WebSocket(`wss://ws.finnhub.io?token=${finnhubApiKey}`);
 
-    finnhubWs.on('open', () => {
-      console.log('Connected to Finnhub WebSocket');
-      finnhubReconnectAttempts = 0; // Reset attempts on success
-      subscribedSymbols.forEach(sym => {
-        finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: sym }));
+      finnhubWs.on('open', () => {
+        console.log('Connected to Finnhub WebSocket');
+        finnhubReconnectAttempts = 0; // Reset attempts on success
+        subscribedSymbols.forEach(sym => {
+          try {
+            finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: sym }));
+          } catch {}
+        });
       });
-    });
 
-    finnhubWs.on('message', (data: any) => {
-      try {
-        const message = JSON.parse(data.toString());
-        if (message.type === 'trade') {
-          const trades = message.data.map((t: any) => ({
-            s: t.s,
-            p: t.p,
-            v: t.v,
-            t: t.t
-          }));
-          
-          const broadcastMsg = JSON.stringify({ type: 'trade', data: trades });
-          wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(broadcastMsg);
-            }
-          });
+      finnhubWs.on('message', (data: any) => {
+        try {
+          const message = JSON.parse(data.toString());
+          if (message.type === 'trade') {
+            const trades = message.data.map((t: any) => ({
+              s: t.s,
+              p: t.p,
+              v: t.v,
+              t: t.t
+            }));
+            
+            const broadcastMsg = JSON.stringify({ type: 'trade', data: trades });
+            wss.clients.forEach(client => {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(broadcastMsg);
+              }
+            });
+          }
+        } catch (e) {
+          console.error('Finnhub WS message error:', e);
         }
-      } catch (e) {
-        console.error('Finnhub WS message error:', e);
-      }
-    });
+      });
 
-    finnhubWs.on('error', (err: any) => {
-      console.error('Finnhub WS error:', err.message || err);
-      // If it's a 429, we should definitely back off
-      if (err.message && err.message.includes('429')) {
-        console.warn('Finnhub WS: Rate limited (429). Increasing backoff.');
-        // Jump to a higher attempt count to force a longer wait
-        if (finnhubReconnectAttempts < 3) finnhubReconnectAttempts = 3;
-      }
-    });
+      finnhubWs.on('error', (err: any) => {
+        const errMsg = err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+        if (errMsg.includes('429')) {
+          console.warn('Finnhub WS Rate Limited: Received 429. Increasing backoff to avoid spamming.');
+          if (finnhubReconnectAttempts < 6) {
+            finnhubReconnectAttempts = 6; // Force at least 5 * 2^6 = 320s = 5.3 min backoff
+          }
+        } else {
+          console.warn('Finnhub WS warning:', errMsg);
+        }
+      });
 
-    finnhubWs.on('close', (code: number, reason: string) => {
-      console.log(`Finnhub WS closed (code: ${code}, reason: ${reason}). Reconnecting...`);
-      finnhubWs = null;
-      
-      // Exponential backoff: 5s, 10s, 20s, 40s, up to 60s
-      const backoff = Math.min(5000 * Math.pow(2, finnhubReconnectAttempts), 60000);
-      finnhubReconnectAttempts++;
-      
-      console.log(`Reconnecting to Finnhub WS in ${backoff}ms...`);
-      finnhubReconnectTimeout = setTimeout(setupFinnhubWs, backoff);
-    });
+      finnhubWs.on('close', (code: number, reason: string) => {
+        console.log(`Finnhub WS connection closed (code: ${code}, reason: ${reason || 'none'}).`);
+        finnhubWs = null;
+
+        if (finnhubReconnectAttempts > 10) {
+          console.warn('Finnhub WS: Maximum backoff attempts reached. Disabling connection attempts. Relying entirely on Yahoo Finance 15s polling fallback.');
+          return;
+        }
+        
+        // Exponential backoff: 5s, 10s, 20s, 40s, up to 10 minutes
+        const backoff = Math.min(5000 * Math.pow(2, finnhubReconnectAttempts), 600000);
+        finnhubReconnectAttempts++;
+        
+        console.log(`Reconnecting to Finnhub WS in ${(backoff / 1000).toFixed(1)}s (Attempt ${finnhubReconnectAttempts})...`);
+        finnhubReconnectTimeout = setTimeout(setupFinnhubWs, backoff);
+      });
+    } catch (wsSetupErr) {
+      console.error('Failed to initialize Finnhub WebSocket:', wsSetupErr);
+    }
   }
 
   if (finnhubApiKey) {
@@ -1553,32 +2362,51 @@ async function startServer() {
     // Only poll Yahoo if Finnhub is NOT active or for symbols not yet trading
     if (subscribedSymbols.size === 0) return;
     
-    const symbols = Array.from(subscribedSymbols);
+    const symbols = Array.from(subscribedSymbols)
+      .map(s => String(s).trim().toUpperCase())
+      .filter(s => s && s !== 'CASH');
     
     if (symbols.length > 0) {
       try {
-        const results = await yahooWithRetry(() => yahooFinance.quote(symbols));
-        const quotesArray = Array.isArray(results) ? results : [results];
-        
-        const trades = quotesArray.map((quote: any) => {
-          let price = quote.regularMarketPrice;
-          let previousClose = quote.regularMarketPreviousClose;
-          
-          if (quote.marketState === 'PRE' && quote.preMarketPrice) {
-            price = quote.preMarketPrice;
-          } else if ((quote.marketState === 'POST' || quote.marketState === 'CLOSED' || quote.marketState === 'POSTPOST') && quote.postMarketPrice) {
-            price = quote.postMarketPrice;
-          } else if (quote.postMarketPrice && quote.marketState !== 'REGULAR') {
-            price = quote.postMarketPrice;
+        let quotesArray: any[] = [];
+        try {
+          const results = await yahooWithRetry(() => yahooFinance.quote(symbols, {}, { validateResult: false }));
+          quotesArray = Array.isArray(results) ? results : [results];
+        } catch (bulkErr: any) {
+          // If bulk fetch failed, fall back to fetching them individually or in batches to isolate bad tickers
+          for (const sym of symbols) {
+            try {
+              const res = await yahooWithRetry(() => yahooFinance.quote(sym, {}, { validateResult: false }));
+              if (res) {
+                quotesArray.push(res);
+              }
+            } catch (indivErr: any) {
+              // Silently ignore individual failures to prevent logging slop or breaking polling
+            }
           }
+        }
+        
+        const trades = quotesArray
+          .filter(quote => quote && quote.symbol)
+          .map((quote: any) => {
+            let price = quote.regularMarketPrice;
+            let previousClose = quote.regularMarketPreviousClose;
+            
+            if (quote.marketState === 'PRE' && quote.preMarketPrice) {
+              price = quote.preMarketPrice;
+            } else if ((quote.marketState === 'POST' || quote.marketState === 'CLOSED' || quote.marketState === 'POSTPOST') && quote.postMarketPrice) {
+              price = quote.postMarketPrice;
+            } else if (quote.postMarketPrice && quote.marketState !== 'REGULAR') {
+              price = quote.postMarketPrice;
+            }
 
-          return {
-            s: quote.symbol,
-            p: price,
-            pc: previousClose,
-            ms: quote.marketState
-          };
-        });
+            return {
+              s: quote.symbol,
+              p: price,
+              pc: previousClose,
+              ms: quote.marketState
+            };
+          });
 
         if (trades.length > 0) {
           const messageStr = JSON.stringify({ type: 'trade', data: trades });
@@ -1594,7 +2422,7 @@ async function startServer() {
         if (errorCode === 'ECONNRESET' || errorCode === 'UND_ERR_CONNECT_TIMEOUT' || errorMessage.includes('fetch failed') || errorMessage.includes('socket hang up')) {
           // Silently ignore retryable errors during polling
         } else {
-          console.error('Yahoo Finance polling error:', err);
+          console.warn('Yahoo Finance polling query warning (gracefully handled):', err.message || err);
         }
       }
     }
@@ -1609,10 +2437,11 @@ async function startServer() {
         const data = JSON.parse(message.toString());
         if (data.type === 'subscribe' && Array.isArray(data.symbols)) {
           data.symbols.forEach((sym: string) => {
-            if (!subscribedSymbols.has(sym)) {
-              subscribedSymbols.add(sym);
+            const cleanSym = sym && typeof sym === 'string' ? sym.trim().toUpperCase() : '';
+            if (cleanSym && cleanSym !== 'CASH' && !subscribedSymbols.has(cleanSym)) {
+              subscribedSymbols.add(cleanSym);
               if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
-                finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: sym }));
+                finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: cleanSym }));
               }
             }
           });

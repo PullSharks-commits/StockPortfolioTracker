@@ -25,10 +25,31 @@ export const HistoricalPriceChart: React.FC<HistoricalPriceChartProps> = ({ tick
         const fiveYearsAgo = subYears(new Date(), 5);
         const fromStr = format(fiveYearsAgo, 'yyyy-MM-dd');
         
-        const res = await fetch(`/api/historical-bulk?symbols=${ticker}&from=${fromStr}`);
-        if (!res.ok) throw new Error('Failed to fetch historical data');
-        
-        const result = await res.json();
+        let res: Response | undefined;
+        let retries = 3;
+        let lastError = null;
+        let result: any = null;
+
+        while (retries > 0 && isMounted) {
+          try {
+            res = await fetch(`/api/historical-bulk?symbols=${encodeURIComponent(ticker)}&from=${fromStr}`);
+            if (!res.ok) throw new Error(`Failed to fetch: ${res.status} ${res.statusText}`);
+            
+            result = await res.json();
+            break;
+          } catch (err: any) {
+            if (!isMounted) return;
+            lastError = err;
+            console.warn(`Fetch ticker historical failed, ${retries - 1} retries left:`, err);
+            retries--;
+            if (retries === 0) throw err;
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+
+        if (!isMounted) return;
+        if (!result) throw lastError || new Error('No data received');
+
         const tickerData = result[ticker] || [];
         
         if (isMounted) {
@@ -81,6 +102,10 @@ export const HistoricalPriceChart: React.FC<HistoricalPriceChartProps> = ({ tick
   const totalChange = ((lastPrice - firstPrice) / firstPrice) * 100;
   const isPositive = totalChange >= 0;
 
+  const isDark = document.documentElement.classList.contains('dark');
+  const chartStroke = isDark ? '#27272a' : '#f4f4f5';
+  const chartText = isDark ? '#71717a' : '#a1a1aa';
+
   return (
     <div className="h-full flex flex-col p-6 overflow-hidden">
       <div className="mb-6 flex items-baseline justify-between">
@@ -108,19 +133,19 @@ export const HistoricalPriceChart: React.FC<HistoricalPriceChartProps> = ({ tick
                 <stop offset="95%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0}/>
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartStroke} />
             <XAxis 
               dataKey="date" 
               axisLine={false} 
               tickLine={false} 
-              tick={{ fontSize: 11, fill: '#a1a1aa' }} 
+              tick={{ fontSize: 11, fill: chartText }} 
               minTickGap={60}
               tickFormatter={(val) => format(new Date(val), 'MMM yyyy')}
             />
             <YAxis 
               axisLine={false} 
               tickLine={false} 
-              tick={{ fontSize: 11, fill: '#a1a1aa' }}
+              tick={{ fontSize: 11, fill: chartText }}
               domain={['auto', 'auto']}
               orientation="right"
               tickFormatter={(val) => formatCurrency(val, activeCurrency, true)}
@@ -129,9 +154,9 @@ export const HistoricalPriceChart: React.FC<HistoricalPriceChartProps> = ({ tick
               content={({ active, payload }) => {
                 if (active && payload && payload.length) {
                   return (
-                    <div className="bg-white p-3 rounded-xl shadow-xl border border-zinc-100">
+                    <div className="bg-white dark:bg-zinc-900 p-3 rounded-xl shadow-xl border border-zinc-100 dark:border-zinc-850">
                       <p className="text-xs font-bold text-zinc-400 uppercase mb-1">{payload[0].payload.displayDate}</p>
-                      <p className="text-lg font-bold text-zinc-900">{formatCurrency(payload[0].value as number, activeCurrency)}</p>
+                      <p className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{formatCurrency(payload[0].value as number, activeCurrency)}</p>
                     </div>
                   );
                 }

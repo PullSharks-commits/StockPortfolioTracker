@@ -1,96 +1,139 @@
-58:  activeTab
-98:            <span>{getCurrencySymbol(activeTab)}</span>
-109:          formatCurrency(holding.displayAvgPrice, activeTab)
-113:        {formatCurrency(holding.costBasis, activeTab)}
-117:          {formatCurrency(holding.currentPrice, activeTab)}
-133:          {formatCurrency(holding.dayChange, activeTab, true)}
-137:        {formatCurrency(holding.currentValue, activeTab)}
-151:          {formatCurrency(holding.profitLoss, activeTab, true)}
-269:const CustomTooltip = ({ active, payload, label, activeTab }: any) => {
-286:              {formatCurrency(value, activeTab)}
-295:              {formatCurrency(profitLoss, activeTab, true)}
-348:const FinancialCalendar = ({ earningsEvents, metadata, className, onResize, onRemove, size, activeTab }: { earningsEvents: EarningsEvent[], metadata: any, className?: string, onResize?: () => void, onRemove?: () => void, size?: number, activeTab: string }) => {
-476:                            <div className="text-[8px] text-zinc-500 font-mono">EST: {getCurrencySymbol(activeTab)}{event.estimate.toFixed(2)}</div>
-489:                              <span className="font-mono">{event.estimate ? `${getCurrencySymbol(activeTab)}${event.estimate.toFixed(2)}` : 'N/A'}</span>
-493:                              <span className="font-mono">{event.high ? `${getCurrencySymbol(activeTab)}${event.high.toFixed(2)}` : 'N/A'} / {event.low ? `${getCurrencySymbol(activeTab)}${event.low.toFixed(2)}` : 'N/A'}</span>
-562:  activeTab, 
-570:  activeTab: string, 
-678:                  activeTab === tab ? "bg-indigo-50/30 border-indigo-100 ring-1 ring-indigo-100" : "bg-white border-zinc-100"
-682:                    {activeTab === tab && <span className="text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded-full uppercase tracking-tighter">Active</span>}
-764:  const [activeTab, setActiveTab] = useState<'global' | 'india' | 'australia'>('global');
-767:    return allHoldings.filter(h => (h.portfolioType || 'global') === activeTab);
-768:  }, [allHoldings, activeTab]);
-993:  const benchmarkTicker = tabSettings[activeTab]?.benchmark || 'SPY';
-994:  const activeCurrency = tabSettings[activeTab]?.currency || (activeTab === 'india' ? 'INR' : activeTab === 'australia' ? 'AUD' : 'USD');
-1101:        const docsToDelete = snapshot.docs.filter(d => (d.data().portfolioType || 'global') === activeTab);
-1110:            portfolioType: activeTab,
-1438:          avgPriceCurrency: activeTab === 'india' ? 'INR' : (activeTab === 'australia' ? 'AUD' : 'USD'),
-1440:          portfolioType: activeTab,
-1561:          Average Price: ${getCurrencySymbol(activeTab)}${holding.displayAvgPrice}
-1562:          Current Price: ${getCurrencySymbol(activeTab)}${holding.currentPrice}
-1563:          Current Value: ${getCurrencySymbol(activeTab)}${holding.currentValue}
-1564:          Profit/Loss: ${getCurrencySymbol(activeTab)}${holding.profitLoss} (${holding.profitLossPercent.toFixed(2)}%)
-1608:        - Total Value: ${formatCurrency(totalValue, activeTab)}
-1609:        - Total Profit/Loss: ${formatCurrency(totalProfit, activeTab, true)} (${totalProfitPercent.toFixed(2)}%)
-1708:                activeTab === 'india'
-1710:                  : activeTab === 'australia'
-1751:                activeTab === 'india'
-1757:                  : activeTab === 'australia'
-1827:      const docsToDelete = snapshot.docs.filter(d => (d.data().portfolioType || 'global') === activeTab);
-1854:          where('portfolioType', '==', activeTab)
-1888:        avgPriceCurrency: holding.currency || (activeTab === 'india' ? 'INR' : (activeTab === 'australia' ? 'AUD' : 'USD')),
-1890:        portfolioType: activeTab,
-1907:      const targetCurrency = activeTab === 'australia' ? 'AUD' : (activeTab === 'india' ? 'INR' : 'USD');
-1932:        if (activeTab === 'australia' && storedCurrency !== 'AUD') {
-2020:    const targetCurrency = activeTab === 'australia' ? 'AUD' : (activeTab === 'india' ? 'INR' : 'USD');
-2087:  }, [allHoldings, quotes, activeTab]);
-2289:        activeTab={activeTab}
-2338:                <span className="text-2xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, activeTab)}</span>
-2344:                    {formatCurrency(combinedStats.totalProfitLoss, activeTab, true)}
-2355:                    {formatCurrency(combinedStats.totalDayChange, activeTab, true)}
-2368:            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
-2374:            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'india' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
-2380:            className={`py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
-2484:              [activeTab]: {
-2485:                ...tabSettings[activeTab],
-2496:          activeTab={activeTab}
-2497:          riskProfile={tabSettings[activeTab]?.riskProfile}
-2498:          targetReturn={tabSettings[activeTab]?.targetReturn}
-2607:                            <XAxis type="number" dataKey="cost" name="Investment Cost" tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
-2608:                            <YAxis type="number" dataKey="value" name="Market Value" tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
-2617:                                      Cost: {formatCurrency(data.cost, activeTab)}
-2620:                                      Value: {formatCurrency(data.value, activeTab)}
-2624:                                        {formatCurrency(data.profitLoss, activeTab, true)}
-2680:                              content={chartView === 'asset' ? <CustomTooltip activeTab={activeTab} /> : ({ active, payload }) => {
-2686:                                        Value: {formatCurrency(payload[0].value as number, activeTab)}
-2710:                              tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
-2713:                              content={chartView === 'asset' ? <CustomTooltip activeTab={activeTab} /> : ({ active, payload }) => {
-2719:                                        Value: {formatCurrency(payload[0].value as number, activeTab)}
-2753:                            {formatCurrency(portfolioStats.totalValue, activeTab, false, 0)}
-2795:                                        Cost: {formatCurrency(payload[0].value as number, activeTab)}
-2819:                              tickFormatter={(value) => `${getCurrencySymbol(activeTab)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
-2828:                                        Cost: {formatCurrency(payload[0].value as number, activeTab)}
-2855:                            {formatCurrency(portfolioStats.totalCost, activeTab, false, 0)}
-2888:                                  {formatCurrency(entry.value, activeTab, false, 0)}
-2899:                                  {formatCurrency(costValue, activeTab, false, 0)}
-2937:                        activeTab={activeTab}
-2973:                        {renderSortableHeader(`Avg Cost (${getCurrencySymbol(activeTab).trim()})`, 'displayAvgPrice')}
-2974:                        {renderSortableHeader(`Investment Cost (${getCurrencySymbol(activeTab).trim()})`, 'costBasis')}
-2975:                        {renderSortableHeader(`Price (${getCurrencySymbol(activeTab).trim()})`, 'currentPrice')}
-2976:                        {renderSortableHeader(`Day Change (${getCurrencySymbol(activeTab).trim()})`, 'dayChange')}
-2977:                        {renderSortableHeader(`Total Value (${getCurrencySymbol(activeTab).trim()})`, 'currentValue')}
-2978:                        {renderSortableHeader(`Total Return (${getCurrencySymbol(activeTab).trim()})`, 'profitLoss')}
-3029:                                <span>{getCurrencySymbol(activeTab)}</span>
-3040:                              formatCurrency(holding.displayAvgPrice, activeTab)
-3044:                            {formatCurrency(holding.costBasis, activeTab)}
-3048:                              {formatCurrency(holding.currentPrice, activeTab)}
-3064:                              {formatCurrency(holding.dayChange, activeTab, true)}
-3068:                            {formatCurrency(holding.currentValue, activeTab)}
-3082:                              {formatCurrency(holding.profitLoss, activeTab, true)}
-3235:                    <label htmlFor="avgPrice" className="block text-sm font-medium text-zinc-700 mb-1">{transactionType === 'buy' ? 'Avg Cost' : 'Sell Price'} ({getCurrencySymbol(activeTab)})</label>
-3504:                                    tickFormatter={(val) => `${getCurrencySymbol(activeTab)}${(val / 1e9).toFixed(1)}B`}
-3507:                                    formatter={(value: number, name: string) => [`${getCurrencySymbol(activeTab)}${(value / 1e9).toFixed(2)}B`, name]}
-3529:                                    tickFormatter={(val) => `${getCurrencySymbol(activeTab)}${(val / 1e9).toFixed(1)}B`}
-3532:                                    formatter={(value: number, name: string) => [`${getCurrencySymbol(activeTab)}${(value / 1e9).toFixed(2)}B`, name]}
-3616:                            {formatCurrency(tx.price, activeTab)}
-3619:                            {formatCurrency(tx.shares * tx.price, activeTab)}
+37:import { HistoricalPriceChart } from './components/HistoricalPriceChart';
+77:  editAvgPrice,
+78:  editAvgPriceCurrency,
+81:  setEditAvgPrice,
+82:  setEditAvgPriceCurrency,
+128:          holding.ticker === 'CASH' ? formatCurrency(holding.shares, holding.avgPriceCurrency || activeCurrency) : holding.shares.toLocaleString()
+135:              value={editAvgPriceCurrency}
+136:              onChange={(e) => setEditAvgPriceCurrency(e.target.value)}
+151:                value={editAvgPrice}
+152:                onChange={(e) => setEditAvgPrice(e.target.value)}
+160:          holding.ticker === 'CASH' ? '-' : formatCurrency(holding.displayAvgPrice, activeCurrency)
+168:          {holding.ticker === 'CASH' ? '-' : formatCurrency(holding.currentPrice, activeCurrency)}
+302:type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'marketCap';
+309:  avgPriceCurrency?: string;
+314:  displayAvgPrice?: number;
+315:  currentPrice?: number;
+1100:  const [avgPrice, setAvgPrice] = useState('');
+1124:  const [editAvgPrice, setEditAvgPrice] = useState('');
+1125:  const [editAvgPriceCurrency, setEditAvgPriceCurrency] = useState('');
+1151:  const [quickAddPrice, setQuickAddPrice] = useState('');
+1379:    'ticker', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'profitLoss', 'marketCap'
+1692:          let numPrice = parseFloat((tx.price || 0).toString().replace(/,/g, '.'));
+1695:          if (isNaN(numPrice)) numPrice = 0;
+1698:          tx.price = Math.abs(numPrice); // Handle platforms where price/subtotal might be negative for sells
+1756:          let currentAvgPrice = 0;
+1761:            const numPrice = tx.price;
+1768:              const totalCost = (currentShares * currentAvgPrice) + (numShares * numPrice);
+1770:              currentAvgPrice = currentShares > 0 ? totalCost / currentShares : numPrice;
+1778:            avg_price: currentAvgPrice,
+1785:            holdingData.avgPriceCurrency = firstTxCurrency.toString().substring(0, 10);
+2228:    if (!ticker || !shares || (!isCash && !avgPrice) || !user) return;
+2233:      const numPrice = isCash ? 1 : parseFloat(avgPrice.toString().replace(/,/g, '.'));
+2244:        let newAvgPrice = existingHolding.avg_price;
+2246:          const totalCost = (existingHolding.shares * existingHolding.avg_price) + (numShares * numPrice);
+2247:          newAvgPrice = totalCost / newShares;
+2252:          avg_price: newAvgPrice,
+2261:          price: numPrice,
+2270:          avg_price: numPrice,
+2271:          avgPriceCurrency: formCurrency || activeCurrency,
+2284:          price: numPrice,
+2292:      setAvgPrice('');
+2317:    setQuickAddPrice((holding.currentPrice || holding.avg_price).toString());
+2327:    if (!quickAddShares || (!isCash && !quickAddPrice)) return;
+2332:      const numPrice = isCash ? 1 : parseFloat(quickAddPrice.toString().replace(/,/g, '.'));
+2335:      const totalCost = (quickAddHolding.shares * quickAddHolding.avg_price) + (numShares * numPrice);
+2336:      const newAvgPrice = totalCost / newShares;
+2340:        avg_price: newAvgPrice,
+2348:        price: numPrice,
+2356:      setQuickAddPrice('');
+2368:    setEditAvgPrice(holding.avg_price.toString());
+2369:    setEditAvgPriceCurrency(holding.avgPriceCurrency || activeCurrency);
+2377:    setEditAvgPrice('');
+2378:    setEditAvgPriceCurrency('');
+2385:    if (!editTicker || !editShares || (!isCash && !editAvgPrice) || !user) return;
+2390:        avg_price: isCash ? 1 : parseFloat(editAvgPrice.toString().replace(/,/g, '.')),
+2391:        avgPriceCurrency: editAvgPriceCurrency,
+2398:      setEditAvgPrice('');
+2399:      setEditAvgPriceCurrency('');
+2432:      const numPrice = tx.price;
+2448:      let newAvgPrice = latestHolding.avg_price;
+2452:          const txTotalCost = numShares * numPrice;
+2453:          newAvgPrice = (currentTotalCost - txTotalCost) / newShares;
+2455:          newAvgPrice = 0;
+2462:        avg_price: newAvgPrice,
+2622:          Average Price: ${getCurrencySymbol(activeCurrency)}${holding.displayAvgPrice}
+2623:          Current Price: ${getCurrencySymbol(activeCurrency)}${holding.currentPrice}
+2655:          avgPrice: h.displayAvgPrice,
+2656:          currentPrice: h.currentPrice,
+2772:                  ? "Extract the stock portfolio from this document. This is likely an Australian brokerage statement (e.g., CommSec, Spaceship, SelfWealth, Stake). Return a list of holdings with ticker symbol, number of shares, and average price/cost basis. IMPORTANT: For Australian stocks, you MUST append '.AX' to the ticker symbol. Many Australian statements for international stocks provide costs in AUD. If you see columns like 'Unit Price (A$)', 'Total Cost (A$)', or 'FX Fee (A$)', you MUST calculate the average price by dividing the 'Total Cost (A$)' (which includes the FX fee) by the number of 'Units' or 'Shares'. Set the currency to 'AUD'. If the statement only provides the native price (e.g., USD), use that and set the currency to 'USD'."
+2822:                IMPORTANT: For Australian stocks, you MUST append '.AX' to the ticker symbol. Many Australian statements for international stocks provide costs in AUD. If you see columns like 'Unit Price (A$)', 'Total Cost (A$)', or 'FX Fee (A$)', you MUST calculate the average price by dividing the 'Total Cost (A$)' (which includes the FX fee) by the number of 'Units' or 'Shares'. Set the currency to 'AUD'. If the CSV only provides the native price (e.g., USD), use that and set the currency to 'USD'.
+2903:      const holdingAvgPrice = Number(holding.avg_price);
+2905:      if (isNaN(holdingShares) || isNaN(holdingAvgPrice)) {
+2927:          let normalizedHoldingAvgPrice = holdingAvgPrice;
+2928:          if (holding.currency && existingData.avgPriceCurrency && holding.currency !== existingData.avgPriceCurrency) {
+2934:          const newAvgPrice = ((existingData.shares * existingData.avg_price) + (holdingShares * normalizedHoldingAvgPrice)) / newShares;
+2938:            avg_price: newAvgPrice,
+2939:            avgPriceCurrency: existingData.avgPriceCurrency || holding.currency,
+2949:        avg_price: holdingAvgPrice,
+2950:        avgPriceCurrency: holding.currency || activeCurrency,
+2967:        const sourceCurrency = h.avgPriceCurrency || targetCurrency;
+2969:        let currentPriceVal = 1;
+2971:        let convertedAvgPrice = 1;
+2975:          currentPriceVal = rate;
+2977:          convertedAvgPrice = rate;
+2980:        const currentValue = currentPriceVal * h.shares;
+2981:        const costBasis = convertedAvgPrice * h.shares;
+2992:          displayAvgPrice: convertedAvgPrice,
+2993:          currentPrice: currentPriceVal,
+3006:      let currentPrice = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
+3007:      let previousClose = quote?.previousClose != null ? quote.previousClose : currentPrice;
+3013:      let convertedAvgPrice = h.avg_price;
+3017:      const storedCurrency = h.avgPriceCurrency || sourceCurrency;
+3021:        convertedAvgPrice = h.avg_price * rate;
+3027:          convertedAvgPrice = convertedAvgPrice * (1 + fxFeeRate);
+3032:      let currentPriceVal = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
+3033:      let previousCloseVal = quote?.previousClose != null ? quote.previousClose : currentPriceVal;
+3037:        currentPriceVal *= rate;
+3041:      const currentValue = currentPriceVal * h.shares;
+3042:      const costBasis = convertedAvgPrice * h.shares;
+3046:      const dayChange = (currentPriceVal - previousCloseVal) * h.shares;
+3047:      const dayChangePercent = previousCloseVal > 0 ? ((currentPriceVal - previousCloseVal) / previousCloseVal) * 100 : 0;
+3064:        displayAvgPrice: convertedAvgPrice,
+3065:        currentPrice: currentPriceVal,
+3118:        const sourceCurrency = h.avgPriceCurrency || (h.portfolioType === 'india' ? 'INR' : (h.portfolioType === 'australia' ? 'AUD' : 'USD'));
+3130:      let currentPrice = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
+3131:      let previousClose = quote?.previousClose != null ? quote.previousClose : currentPrice;
+3134:      const storedCurrency = h.avgPriceCurrency || sourceCurrency;
+3137:      let convertedAvgPrice = h.avg_price;
+3140:        convertedAvgPrice = h.avg_price * rate;
+3143:          convertedAvgPrice *= 1.007; // FX fee
+3147:      // Convert Current Price to targetCurrency
+3148:      let currentPriceVal = currentPrice;
+3152:        currentPriceVal *= rate;
+3156:      totalValue += currentPriceVal * h.shares;
+3157:      totalCost += convertedAvgPrice * h.shares;
+3158:      totalDayChange += (currentPriceVal - previousCloseVal) * h.shares;
+3350:    { id: 'displayAvgPrice', label: `Avg Cost (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'displayAvgPrice' as SortKey },
+3352:    { id: 'currentPrice', label: `Price (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'currentPrice' as SortKey },
+3423:      case 'displayAvgPrice':
+3425:          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); handleEditClick(holding, 'displayAvgPrice'); }}>
+3429:                  value={editAvgPriceCurrency}
+3430:                  onChange={(e) => setEditAvgPriceCurrency(e.target.value)}
+3444:                  value={editAvgPrice}
+3445:                  onChange={(e) => setEditAvgPrice(e.target.value)}
+3449:                  autoFocus={editField === 'displayAvgPrice'}
+3453:              formatCurrency(holding.displayAvgPrice, activeCurrency)
+3463:      case 'currentPrice':
+3467:              {formatCurrency(holding.currentPrice, activeCurrency)}
+4631:                    <label htmlFor="avgPrice" className="block text-sm font-medium text-zinc-700 mb-1">
+4632:                      {ticker.toUpperCase() === 'CASH' ? 'Currency' : (transactionType === 'buy' ? 'Avg Cost' : 'Sell Price')}
+4653:                          id="avgPrice"
+4661:                          value={avgPrice}
+4662:                          onChange={(e) => setAvgPrice(e.target.value)}
+4785:                    Price Chart
+4847:                <HistoricalPriceChart ticker={selectedChartTicker} activeCurrency={activeCurrency} />
+5045:                        <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Price</th>
+5246:                  <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Price per Share ({getCurrencySymbol(activeCurrency)})</label>
+5250:                    value={quickAddPrice}
+5251:                    onChange={(e) => setQuickAddPrice(e.target.value)}

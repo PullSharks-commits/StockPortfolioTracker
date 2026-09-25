@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, X, Loader2 } from 'lucide-react';
+import { CompanyLogo } from './CompanyLogo';
 
 interface SearchResult {
   symbol: string;
@@ -8,7 +9,7 @@ interface SearchResult {
   typeDisp: string;
 }
 
-export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string) => void, activeTab?: string }) => {
+export const StockSearch = ({ onSelect, activeTab, clearOnSelect = false }: { onSelect: (ticker: string) => void, activeTab?: string, clearOnSelect?: boolean }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -16,9 +17,6 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   const formatTicker = (ticker: string) => {
-    if (activeTab === 'india') {
-      return ticker.replace('.NS', '').replace('.BO', '');
-    }
     if (activeTab === 'australia') {
       return ticker.replace('.AX', '');
     }
@@ -56,9 +54,7 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
           let filtered = data.quotes || [];
           
           // Filter results based on active tab to help user find correct exchange
-          if (activeTab === 'india') {
-            filtered = filtered.filter((r: any) => r.symbol.endsWith('.NS') || r.symbol.endsWith('.BO') || r.exchange === 'NSI' || r.exchange === 'BSE');
-          } else if (activeTab === 'australia') {
+          if (activeTab === 'australia') {
             filtered = filtered.filter((r: any) => r.symbol.endsWith('.AX') || r.exchange === 'ASX');
           }
 
@@ -87,7 +83,7 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
             setQuery(e.target.value);
             setIsOpen(true);
           }}
-          placeholder={activeTab === 'india' ? "Search Indian stocks..." : activeTab === 'australia' ? "Search Australian stocks..." : "Search stocks..."}
+          placeholder={activeTab === 'australia' ? "Search Australian stocks..." : "Search stocks..."}
           className="w-full pl-10 pr-4 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent uppercase placeholder:normal-case"
         />
         <Search className="absolute left-3 top-2.5 text-zinc-400" size={20} />
@@ -101,15 +97,24 @@ export const StockSearch = ({ onSelect, activeTab }: { onSelect: (ticker: string
               className="px-4 py-2 hover:bg-zinc-100 cursor-pointer border-b border-zinc-50 last:border-0"
               onClick={() => {
                 onSelect(result.symbol);
-                setQuery(result.symbol);
+                if (clearOnSelect) {
+                  setQuery('');
+                } else {
+                  setQuery(result.symbol);
+                }
                 setIsOpen(false);
               }}
             >
-              <div className="flex justify-between items-center">
-                <div className="font-semibold text-zinc-900">{result.symbol}</div>
-                <div className="text-[10px] font-bold px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded uppercase">{result.exchange}</div>
+              <div className="flex items-center gap-3">
+                <CompanyLogo ticker={result.symbol} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-center">
+                    <div className="font-semibold text-zinc-900">{result.symbol}</div>
+                    <div className="text-[10px] font-bold px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded uppercase">{result.exchange}</div>
+                  </div>
+                  <div className="text-xs text-zinc-500 truncate">{result.shortname}</div>
+                </div>
               </div>
-              <div className="text-xs text-zinc-500 truncate">{result.shortname}</div>
             </li>
           ))}
         </ul>

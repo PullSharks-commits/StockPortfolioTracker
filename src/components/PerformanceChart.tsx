@@ -160,7 +160,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
 
         // Collect all tickers needed
         const tickers = Array.from(new Set(transactions.map(t => t.ticker).filter(Boolean)));
-        const allSymbols = [...tickers, ...Object.keys(BENCHMARKS)];
+        const allSymbols = Array.from(new Set([...tickers, ...Object.keys(BENCHMARKS)]));
 
         // Find the earliest transaction date
         const sortedDates = transactions
@@ -184,27 +184,37 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
         let res: Response | undefined;
         let retries = 5;
         let lastError = null;
+        let historicalData: any = null;
 
         while (retries > 0 && isMounted) {
           try {
             res = await fetch(`/api/historical-bulk?${params.toString()}`);
             
+            const text = await res.text();
             const contentType = res.headers.get('content-type');
-            const isJson = contentType && contentType.includes('application/json');
+            const isJson = (contentType && contentType.includes('application/json')) || 
+                           (text.trim().startsWith('{') || text.trim().startsWith('['));
 
             if (res.ok && isJson) {
-              break;
+              try {
+                historicalData = JSON.parse(text);
+                break;
+              } catch (parseErr) {
+                console.warn('JSON parsing failed, treating as invalid: ', parseErr);
+              }
             }
 
             // If we got a 200 but it's not JSON, it's likely the "Starting Server" HTML or a fallback
-            if (res.ok && !isJson) {
-              const text = await res.text();
-              if (text.includes('Starting Server') || text.includes('<doctype')) {
-                console.warn(`Fetch attempt ${6-retries}: Received HTML instead of JSON. Server might be warming up. Waiting...`);
-                await new Promise(r => setTimeout(r, 2000 * (6 - retries)));
-                retries--;
-                continue;
-              }
+            const textLower = text.toLowerCase();
+            const isHtml = textLower.includes('starting server') || 
+                           textLower.includes('<doctype') || 
+                           textLower.includes('<html');
+
+            if (res.ok && isHtml) {
+              console.warn(`Fetch attempt ${6-retries}: Received HTML instead of JSON. Server might be warming up. Waiting...`);
+              await new Promise(r => setTimeout(r, 2000 * (6 - retries)));
+              retries--;
+              continue;
             }
 
             if (res.status === 503 || res.status === 429) {
@@ -216,23 +226,26 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
             }
 
             // Other errors
-            const errorText = await res.text().catch(() => 'No body');
-            console.error(`API Error (${res.status}):`, errorText.slice(0, 200));
-            throw new Error(`Failed to fetch historical data: ${res.status} ${res.statusText}`);
+            console.error(`API Error (${res.status}):`, text.slice(0, 200));
+            throw new Error(`Failed to fetch historical data: ${res.status} ${res.statusText}. Response: ${text.slice(0, 100)}`);
           } catch (fetchErr: any) {
-            if (!isMounted) throw fetchErr;
+            if (!isMounted) return;
             lastError = fetchErr;
             console.warn(`Fetch attempt failed (${retries - 1} left):`, fetchErr);
             retries--;
-            if (retries === 0) throw fetchErr;
+            if (retries === 0) {
+              console.warn('Failed to fetch historical data, using fallback map instead of crashing:', fetchErr);
+              historicalData = {};
+              break;
+            }
             await new Promise(r => setTimeout(r, 2000));
           }
         }
         
         if (!isMounted) return;
-        if (!res) throw lastError || new Error('Failed to fetch after retries');
-
-        const historicalData = await res.json();
+        if (!historicalData) {
+          historicalData = {};
+        }
 
         // Convert historical data into a fast map: historical[symbol][date_string_yyyy_mm_dd] = price
         const priceMap: Record<string, Record<string, number>> = {};
@@ -267,70 +280,106 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
         Object.keys(BENCHMARKS).forEach(idx => benchmarkIndices[idx] = 100);
 
         const lastKnownPrices: Record<string, number> = {};
-        let prevPortfolioValue = 0;
-        const prevBenchmarkValues: Record<string, number> = {};
+        allSymbols.forEach(sym => {
+          const datePrices = priceMap[sym] ? Object.values(priceMap[sym]) : [];
+          if (datePrices.length > 0) {
+            lastKnownPrices[sym] = datePrices[0];
+          } else {
+            const tx = transactions.find(t => t.ticker === sym);
+            if (tx) {
+              lastKnownPrices[sym] = tx.price;
+            } else {
+              const h = holdings.find(h => h.ticker === sym);
+              if (h) {
+                lastKnownPrices[sym] = h.avg_price || 0;
+              } else {
+                lastKnownPrices[sym] = 0;
+              }
+            }
+          }
+        });
+
+        let prevPortfolioBase = 0;
+        const prevBenchmarkBases: Record<string, number> = {};
         let grossInvested = 0;
         let cumulativeWithdrawn = 0;
 
         while (currentDate <= today) {
           const dateStr = format(currentDate, 'yyyy-MM-dd');
 
-          let valueBeforeTransactions = 0;
-          Object.keys(currentHoldings).forEach(sym => {
-            const price = priceMap[sym]?.[dateStr] || lastKnownPrices[sym] || 0;
-            valueBeforeTransactions += currentHoldings[sym] * price;
-          });
-
-          const benchValuesBeforeTransactions: Record<string, number> = {};
-          Object.keys(currentBenchmarkHoldings).forEach(idx => {
-            const price = priceMap[idx]?.[dateStr] || lastKnownPrices[idx] || 0;
-            benchValuesBeforeTransactions[idx] = currentBenchmarkHoldings[idx] * price;
-          });
-
-          if (prevPortfolioValue > 0) {
-            const portfolioGrowth = valueBeforeTransactions / prevPortfolioValue;
-            portfolioIndex *= portfolioGrowth;
-          }
-          
-          Object.keys(benchmarkIndices).forEach(idx => {
-            if ((prevBenchmarkValues[idx] || 0) > 0) {
-              const benchmarkGrowth = benchValuesBeforeTransactions[idx] / prevBenchmarkValues[idx];
-              benchmarkIndices[idx] *= benchmarkGrowth;
-            }
-          });
-
+          // Update last known prices for today if available
           allSymbols.forEach(sym => {
             if (priceMap[sym] && priceMap[sym][dateStr] !== undefined) {
               lastKnownPrices[sym] = priceMap[sym][dateStr];
             }
           });
 
+          // Process intra-day transactions (cash flows) as sub-period boundaries
           const dailyTxs = txByDate[dateStr] || [];
-          dailyTxs.forEach(tx => {
-            const sym = tx.ticker;
-            if (!sym) return;
+          if (dailyTxs.length > 0) {
+            dailyTxs.forEach(tx => {
+              const sym = tx.ticker;
+              if (!sym) return;
 
-            const value = tx.price * tx.shares;
-            const idxPriceMap: Record<string, number> = {};
-            Object.keys(BENCHMARKS).forEach(idx => {
-              idxPriceMap[idx] = lastKnownPrices[idx] || (priceMap[idx] && Object.values(priceMap[idx])[0]) || 1;
+              // Value of portfolio immediately before this transaction
+              let valBeforeTx = 0;
+              Object.keys(currentHoldings).forEach(s => {
+                const price = lastKnownPrices[s] || 0;
+                valBeforeTx += currentHoldings[s] * price;
+              });
+
+              // Benchmark values immediately before this transaction
+              const benchValBeforeTx: Record<string, number> = {};
+              Object.keys(currentBenchmarkHoldings).forEach(idx => {
+                const price = lastKnownPrices[idx] || 0;
+                benchValBeforeTx[idx] = currentBenchmarkHoldings[idx] * price;
+              });
+
+              // Complete sub-period return right before this transaction if base > 0
+              if (prevPortfolioBase > 0 && valBeforeTx > 0) {
+                const subHpr = (valBeforeTx - prevPortfolioBase) / prevPortfolioBase;
+                portfolioIndex *= (1 + subHpr);
+              }
+
+              Object.keys(benchmarkIndices).forEach(idx => {
+                if ((prevBenchmarkBases[idx] || 0) > 0 && (benchValBeforeTx[idx] || 0) > 0) {
+                  const benchHpr = (benchValBeforeTx[idx] - prevBenchmarkBases[idx]) / prevBenchmarkBases[idx];
+                  benchmarkIndices[idx] *= (1 + benchHpr);
+                }
+              });
+
+              // Calculate cash flow for this transaction
+              const txValue = tx.price * tx.shares;
+              const isBuy = tx.type.toLowerCase() === 'buy';
+              const flow = isBuy ? txValue : -txValue;
+
+              if (isBuy) {
+                currentHoldings[sym] = (currentHoldings[sym] || 0) + tx.shares;
+                grossInvested += txValue;
+              } else {
+                currentHoldings[sym] = Math.max(0, (currentHoldings[sym] || 0) - tx.shares);
+                cumulativeWithdrawn += txValue;
+              }
+
+              // Adjust benchmark holdings by cash flow
+              Object.keys(BENCHMARKS).forEach(idx => {
+                const benchPrice = lastKnownPrices[idx] || 1;
+                if (isBuy) {
+                  currentBenchmarkHoldings[idx] = (currentBenchmarkHoldings[idx] || 0) + (txValue / benchPrice);
+                } else {
+                  currentBenchmarkHoldings[idx] = Math.max(0, (currentBenchmarkHoldings[idx] || 0) - (txValue / benchPrice));
+                }
+              });
+
+              // Establish new beginning base value immediately after the cash flow
+              prevPortfolioBase = valBeforeTx + flow;
+              Object.keys(BENCHMARKS).forEach(idx => {
+                prevBenchmarkBases[idx] = (benchValBeforeTx[idx] || 0) + flow;
+              });
             });
+          }
 
-            if (tx.type.toLowerCase() === 'buy') {
-              currentHoldings[sym] = (currentHoldings[sym] || 0) + tx.shares;
-              grossInvested += value;
-              Object.keys(BENCHMARKS).forEach(idx => {
-                currentBenchmarkHoldings[idx] = (currentBenchmarkHoldings[idx] || 0) + (value / (idxPriceMap[idx] || 1));
-              });
-            } else if (tx.type.toLowerCase() === 'sell') {
-              currentHoldings[sym] = Math.max(0, (currentHoldings[sym] || 0) - tx.shares);
-              cumulativeWithdrawn += value;
-              Object.keys(BENCHMARKS).forEach(idx => {
-                currentBenchmarkHoldings[idx] = Math.max(0, (currentBenchmarkHoldings[idx] || 0) - (value / (idxPriceMap[idx] || 1)));
-              });
-            }
-          });
-
+          // Calculate end-of-day market values
           let endOfDayPortfolioValue = 0;
           Object.keys(currentHoldings).forEach(sym => {
             const price = lastKnownPrices[sym] || 0;
@@ -343,6 +392,20 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
             endOfDayBenchmarkValues[idx] = currentBenchmarkHoldings[idx] * price;
           });
 
+          // End-of-day sub-period return (from last cash flow / start of day to market close)
+          if (prevPortfolioBase > 0 && endOfDayPortfolioValue > 0) {
+            const subHpr = (endOfDayPortfolioValue - prevPortfolioBase) / prevPortfolioBase;
+            portfolioIndex *= (1 + subHpr);
+          }
+
+          Object.keys(benchmarkIndices).forEach(idx => {
+            if ((prevBenchmarkBases[idx] || 0) > 0 && (endOfDayBenchmarkValues[idx] || 0) > 0) {
+              const benchHpr = (endOfDayBenchmarkValues[idx] - prevBenchmarkBases[idx]) / prevBenchmarkBases[idx];
+              benchmarkIndices[idx] *= (1 + benchHpr);
+            }
+          });
+
+          // Save point to chart data
           if (endOfDayPortfolioValue > 0 || chartData.length > 0) {
             chartData.push({
               date: dateStr,
@@ -363,10 +426,12 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
             });
           }
 
-          prevPortfolioValue = endOfDayPortfolioValue;
+          // Set beginning base value for next sub-period
+          prevPortfolioBase = endOfDayPortfolioValue;
           Object.keys(endOfDayBenchmarkValues).forEach(idx => {
-            prevBenchmarkValues[idx] = endOfDayBenchmarkValues[idx];
+            prevBenchmarkBases[idx] = endOfDayBenchmarkValues[idx];
           });
+
           currentDate = addDays(currentDate, 1);
         }
 
@@ -375,8 +440,8 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
           setLoading(false);
         }
       } catch (err: any) {
-        console.error('Error computing performance:', err);
         if (isMounted) {
+          console.error('Error computing performance:', err);
           setError(err.message || 'Failed to compute performance graph.');
           setLoading(false);
         }
@@ -390,28 +455,35 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     };
   }, [simulationKey]); // Use simulationKey instead of raw holdings
 
-  const filteredData = useMemo(() => {
+  const visibleData = useMemo(() => {
     if (data.length === 0) return [];
-    
-    let visibleData = data;
-    if (timeRange !== 'All') {
-      const now = new Date();
-      let startDate: Date;
-      
-      switch (timeRange) {
-        case 'Today': startDate = startOfDay(now); break;
-        case 'This Week': startDate = startOfWeek(now); break;
-        case 'This Month': startDate = startOfMonth(now); break;
-        case 'YTD': startDate = startOfYear(now); break;
-        case '1Y': startDate = subYears(now, 1); break;
-        case '5Y': startDate = subYears(now, 5); break;
-        default: startDate = new Date(0);
-      }
-      
-      const startTimestamp = startDate.getTime();
-      visibleData = data.filter(d => d.timestamp >= startTimestamp);
-    }
+    if (timeRange === 'All') return data;
 
+    const now = new Date();
+    let startDate: Date;
+    
+    switch (timeRange) {
+      case 'Today': startDate = startOfDay(now); break;
+      case 'This Week': startDate = startOfWeek(now); break;
+      case 'This Month': startDate = startOfMonth(now); break;
+      case 'YTD': startDate = startOfYear(now); break;
+      case '1Y': startDate = subYears(now, 1); break;
+      case '5Y': startDate = subYears(now, 5); break;
+      default: startDate = new Date(0);
+    }
+    
+    const startTimestamp = startDate.getTime();
+    const startIndex = data.findIndex(d => d.timestamp >= startTimestamp);
+    if (startIndex > 0) {
+      return data.slice(startIndex - 1);
+    } else if (startIndex === 0) {
+      return data;
+    }
+    return [];
+  }, [data, timeRange]);
+
+  const filteredData = useMemo(() => {
+    if (visibleData.length === 0) return [];
     if (displayMode === 'value') return visibleData;
 
     if (visibleData.length === 0) return [];
@@ -442,7 +514,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     // Time-weighted
     return visibleData.map(d => {
       const result = { ...d };
-      result.Portfolio = ((d.PortfolioIndex / (base.PortfolioIndex || 1)) - 1) * 100;
+      result.Portfolio = ((d.PortfolioIndex / (base.PortfolioIndex || 100)) - 1) * 100;
       benchmarkNames.forEach(name => {
         const baseIdx = base[`${name}Index`] || 100;
         const currentIdx = d[`${name}Index`] || 100;
@@ -453,9 +525,18 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
   }, [data, timeRange, displayMode, weightingMethod]);
 
   const summary = useMemo(() => {
-    if (filteredData.length < 2) return null;
-    const start = filteredData[0];
-    const end = filteredData[filteredData.length - 1];
+    if (visibleData.length === 0) return null;
+    if (visibleData.length === 1) {
+      return {
+        portfolio: 0,
+        benchmarks: Object.entries(BENCHMARKS).reduce((acc, [symbol, name]) => {
+          acc[name] = 0;
+          return acc;
+        }, {} as Record<string, number>)
+      };
+    }
+    const start = visibleData[0];
+    const end = visibleData[visibleData.length - 1];
     
     if (weightingMethod === 'money') {
       const drawnSinceBase = end.cumulativeWithdrawn - start.cumulativeWithdrawn;
@@ -559,7 +640,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
                             } else {
                               const baseIdx = entry.name === 'Portfolio' ? base.PortfolioIndex : base[`${entry.name}Index`];
                               const currentIdx = entry.name === 'Portfolio' ? current.PortfolioIndex : current[`${entry.name}Index`];
-                              ret = ((currentIdx / (baseIdx || 1)) - 1) * 100;
+                              ret = ((currentIdx / (baseIdx || 100)) - 1) * 100;
                             }
                             
                             return ret >= 0 ? 'text-emerald-500' : 'text-rose-500';
@@ -580,7 +661,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
                             } else {
                               const baseIdx = entry.name === 'Portfolio' ? base.PortfolioIndex : base[`${entry.name}Index`];
                               const currentIdx = entry.name === 'Portfolio' ? current.PortfolioIndex : current[`${entry.name}Index`];
-                              ret = ((currentIdx / (baseIdx || 1)) - 1) * 100;
+                              ret = ((currentIdx / (baseIdx || 100)) - 1) * 100;
                             }
 
                             return `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`;
@@ -598,6 +679,11 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     }
     return null;
   };
+
+  const isDark = document.documentElement.classList.contains('dark');
+  const chartStroke = isDark ? '#27272a' : '#E5E7EB';
+  const chartText = isDark ? '#a1a1aa' : '#6B7280';
+  const chartBrushFill = isDark ? '#18181b' : '#F9FAFB';
 
   return (
     <div className="w-full h-full min-h-[350px] flex flex-col">
@@ -676,16 +762,16 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
       <div className="flex-1 w-full min-h-[300px]">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={filteredData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-            <XAxis dataKey="displayDate" tick={{ fontSize: 11, fill: '#6B7280' }} tickMargin={10} minTickGap={30} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(value) => displayMode === 'percent' ? `${value.toFixed(0)}%` : formatCurrency(value, activeCurrency, true)} tick={{ fontSize: 11, fill: '#6B7280' }} domain={['auto', 'auto']} axisLine={false} tickLine={false} width={displayMode === 'percent' ? 60 : 70} />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartStroke} />
+            <XAxis dataKey="displayDate" tick={{ fontSize: 11, fill: chartText }} tickMargin={10} minTickGap={30} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(value) => displayMode === 'percent' ? `${value.toFixed(0)}%` : formatCurrency(value, activeCurrency, true)} tick={{ fontSize: 11, fill: chartText }} domain={['auto', 'auto']} axisLine={false} tickLine={false} width={displayMode === 'percent' ? 60 : 70} />
             <RechartsTooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} iconType="circle" />
             <Brush 
               dataKey="displayDate" 
               height={30} 
-              stroke="#E5E7EB"
-              fill="#F9FAFB"
+              stroke={chartStroke}
+              fill={chartBrushFill}
               travellerWidth={10}
               gap={5}
             >

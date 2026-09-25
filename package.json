@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "start": "node server.ts",
-    "build": "vite build",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -37,7 +37,6 @@
     "express-session": "^1.19.0",
     "finnhub": "^2.0.13",
     "firebase": "^12.10.0",
-    "investing-economic-calendar": "^0.0.5",
     "lucide-react": "^1.11.0",
     "motion": "^12.23.24",
     "multer": "^2.1.1",
@@ -51,6 +50,8 @@
     "react-resizable": "^3.1.3",
     "react-ts-tradingview-widgets": "^1.2.8",
     "recharts": "^3.8.0",
+    "resend": "^6.12.3",
+    "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
     "vite": "^6.2.0",
     "ws": "^8.19.0",
@@ -67,9 +68,12 @@
     "@types/react-resizable": "^3.0.8",
     "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.21",
+    "firebase-admin": "^14.1.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "typescript": "~5.8.2"
+  },
+  "overrides": {
+    "node-domexception": "file:shims/node-domexception"
   }
 }

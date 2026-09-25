@@ -1,16 +1,23 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ScatterChart, Scatter, ZAxis, Legend } from 'recharts';
-import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle, Undo2, Download, Upload, History, Activity } from 'lucide-react';
+import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, AlertTriangle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle, Undo2, Download, Upload, History, Activity, Bell, Sun, Moon, Grid, Eye, Globe, Key, Cpu, Sparkles, Lock, Sliders, EyeOff, RotateCcw } from 'lucide-react';
 import { format, isSameMonth, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, addMonths, subMonths, subYears, parseISO } from 'date-fns';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
-import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, horizontalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, horizontalListSortingStrategy, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Chart } from "react-google-charts";
-import { GoogleGenAI, Type } from '@google/genai';
+import { motion, useAnimation } from 'motion/react';
 import Papa from 'papaparse';
+import { 
+  AIProvider, 
+  AIUserConfig, 
+  DEFAULT_AI_CONFIG, 
+  POPULAR_AI_MODELS, 
+  PROVIDER_INFO 
+} from './types';
 import { 
   auth, 
   db, 
@@ -30,14 +37,28 @@ import {
   addDoc, 
   updateDoc,
   serverTimestamp,
-  User
+  User,
+  handleFirestoreError,
+  OperationType
 } from './firebase';
-import { StatCard, AllocationChart, PortfolioSummary } from './components/DashboardComponents';
+import { StatCard, AllocationChart, PortfolioSummary, AnimatedCountUp } from './components/DashboardComponents';
 import { PerformanceChart } from './components/PerformanceChart';
 import { HistoricalPriceChart } from './components/HistoricalPriceChart';
+import { WatchlistSparkline } from './components/WatchlistSparkline';
 import { StockSearch } from './components/StockSearch';
+import { CompanyLogo } from './components/CompanyLogo';
+import { CorporateLogoScatterPoint } from './components/CorporateLogoScatterPoint';
+import PriceAlertsWidget, { PriceAlert } from './components/PriceAlertsWidget';
+import SectorHeatmapWidget from './components/SectorHeatmapWidget';
+import TransactionsWidget from './components/TransactionsWidget';
+import { TwrCalculatorWidget } from './components/TwrCalculatorWidget';
+import { TradingViewChartWithSkeleton } from './components/TradingViewChartWithSkeleton';
+import { EditHoldingModal } from './components/EditHoldingModal';
+import { computeHoldingFromTransactions } from './utils/portfolioCalculations';
+import { Toaster, toast } from 'sonner';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
+import { calculateGroupFearGreed } from './lib/fearGreed';
 
 const getExchangeRate = (fromCurrency: string, toCurrency: string, quotes: any) => {
   if (fromCurrency === toCurrency) return 1;
@@ -65,6 +86,46 @@ const getExchangeRate = (fromCurrency: string, toCurrency: string, quotes: any) 
 
   return getRateToUSD(fromCurrency) * (1 / getRateToUSD(toCurrency));
 };
+
+
+// A helper component to wrap cell contents and pulse on value change
+function PulseCell({ value, children, className }: { value: number; children: React.ReactNode; className?: string }) {
+  const prevValueRef = useRef<number | null>(null);
+  const controls = useAnimation();
+
+  useEffect(() => {
+    if (value != null && !isNaN(value) && prevValueRef.current !== null && !isNaN(prevValueRef.current) && value !== prevValueRef.current) {
+      const isIncrease = value > prevValueRef.current;
+      
+      // Determine glow/flash color
+      const highlightColor = isIncrease 
+        ? "rgba(16, 185, 129, 0.2)" // emerald (green)
+        : "rgba(239, 68, 68, 0.2)"; // rose (red)
+
+      controls.start({
+        backgroundColor: [
+          "rgba(0, 0, 0, 0)",
+          highlightColor,
+          "rgba(0, 0, 0, 0)"
+        ],
+        scale: [1, 1.05, 1],
+        transition: { duration: 0.6, ease: "easeInOut" }
+      });
+    }
+    if (value != null && !isNaN(value)) {
+      prevValueRef.current = value;
+    }
+  }, [value, controls]);
+
+  return (
+    <motion.div
+      animate={controls}
+      className={cn("inline-flex flex-col items-end px-1.5 py-0.5 rounded transition-colors duration-150", className)}
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 
 // Memoized Holding Row Component
@@ -144,7 +205,7 @@ const HoldingRow = React.memo(({
               <option value="INR">INR</option>
               <option value="SGD">SGD</option>
             </select>
-            {editTicker.toUpperCase() !== 'CASH' && (
+            {editTicker?.toUpperCase() !== 'CASH' && (
               <input
                 type="text"
                 inputMode="decimal"
@@ -173,7 +234,7 @@ const HoldingRow = React.memo(({
         {holding.ticker === 'CASH' ? (
           <span className="text-zinc-400">-</span>
         ) : (
-          <>
+          <PulseCell value={holding.dayChange} className="items-end">
             <div className={cn(
               "inline-flex items-center gap-1 font-medium text-sm",
               holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
@@ -187,7 +248,7 @@ const HoldingRow = React.memo(({
             )}>
               {formatCurrency(holding.dayChange, activeCurrency, true)}
             </div>
-          </>
+          </PulseCell>
         )}
       </td>
       <td className="px-6 py-4 text-right font-mono text-sm font-medium">
@@ -197,7 +258,7 @@ const HoldingRow = React.memo(({
         {holding.ticker === 'CASH' ? (
           <span className="text-zinc-400">-</span>
         ) : (
-          <>
+          <PulseCell value={holding.profitLoss} className="items-end">
             <div className={cn(
               "inline-flex items-center gap-1 font-medium text-sm",
               holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
@@ -211,7 +272,7 @@ const HoldingRow = React.memo(({
             )}>
               {formatCurrency(holding.profitLoss, activeCurrency, true)}
             </div>
-          </>
+          </PulseCell>
         )}
       </td>
       <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
@@ -299,7 +360,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'marketCap';
+type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'manual';
 
 interface Holding {
   id: string;
@@ -308,8 +369,9 @@ interface Holding {
   avg_price: number;
   avgPriceCurrency?: string;
   userId: string;
-  portfolioType?: 'global' | 'india' | 'australia';
+  portfolioType?: 'global' | 'australia';
   updatedAt?: any;
+  order?: number;
   // Enriched properties
   displayAvgPrice?: number;
   currentPrice?: number;
@@ -341,6 +403,8 @@ interface Transaction {
   price: number;
   date: string;
   userId: string;
+  lotId?: string;
+  avgPriceCurrency?: string;
 }
 
 interface EarningsEvent {
@@ -361,28 +425,29 @@ interface DividendEvent {
   fiveYearAvgDividendYield?: number;
 }
 
-interface EconomicEvent {
-  actual: number | null;
-  country: string;
-  estimate: number | null;
-  event: string;
-  impact: string;
-  previous: number | null;
-  time: string;
-  unit: string;
-}
-
-const CustomTooltip = ({ active, payload, label, activeCurrency }: any) => {
+const CustomTooltip = ({ active, payload, label, activeCurrency, metadata }: any) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload;
     const value = data.value || 0;
     const profitLoss = data.profitLoss || 0;
     const cost = data.cost ?? (value - profitLoss);
     const name = data.name || label;
+    const ticker = (name || '').toString().toUpperCase();
+    const logoUrl = metadata?.[ticker]?.logo || metadata?.[name]?.logo || (ticker && ticker !== 'CASH' ? `/api/logo/${ticker}` : undefined);
     
     return (
-      <div className="bg-white p-4 border border-zinc-200 shadow-xl rounded-xl min-w-[200px]">
-        <p className="font-bold text-zinc-900 mb-3 border-b border-zinc-100 pb-2">{name}</p>
+      <div className="bg-white dark:bg-zinc-900 p-4 border border-zinc-200 dark:border-zinc-800 shadow-xl rounded-xl min-w-[210px] z-50">
+        <div className="flex items-center gap-2.5 mb-3 border-b border-zinc-100 dark:border-zinc-800 pb-2">
+          {ticker !== 'CASH' && (
+            <CompanyLogo ticker={ticker} logo={logoUrl} size="sm" />
+          )}
+          <div className="overflow-hidden">
+            <p className="font-bold text-zinc-900 dark:text-zinc-100 leading-tight truncate">{name}</p>
+            {metadata?.[ticker]?.industry && metadata[ticker].industry !== 'Unknown' && (
+              <p className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-tight mt-0.5 truncate">{metadata[ticker].industry}</p>
+            )}
+          </div>
+        </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="flex items-center gap-2">
@@ -426,45 +491,362 @@ const CustomTooltip = ({ active, payload, label, activeCurrency }: any) => {
   return null;
 };
 
-const CompanyLogo = ({ ticker, logo, size = 'md' }: { ticker: string, logo?: string, size?: 'sm' | 'md' }) => {
-  const [error, setError] = useState(false);
-  const dimensions = size === 'sm' ? 'w-6 h-6' : 'w-8 h-8';
-  const fontSize = size === 'sm' ? 'text-[8px]' : 'text-[10px]';
+const hasExactTime = (dateStr: string | undefined): boolean => {
+  if (!dateStr) return false;
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return false;
+    return d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0;
+  } catch (e) {
+    return false;
+  }
+};
+
+const formatEarningsTime = (dateStr: string | undefined): string => {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '';
+    
+    // Format in Melbourne Time (AEST / AEDT)
+    const melbourneFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Australia/Melbourne',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZoneName: 'short'
+    });
+    const melbourneTimeStr = melbourneFormatter.format(d); // e.g. "6:00 AM AEST" or "6:00 AM AEDT"
+    
+    // Convert to US Eastern Time to determine US market session (BMO or AMC)
+    const estTimeFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+    const estParts = estTimeFormatter.formatToParts(d);
+    const estHour = parseInt(estParts.find(p => p.type === 'hour')?.value || '0');
+    const estMinute = parseInt(estParts.find(p => p.type === 'minute')?.value || '0');
+    
+    let session = '';
+    if (estHour < 9 || (estHour === 9 && estMinute <= 30)) {
+      session = ' (BMO)'; // Before Market Open
+    } else if (estHour >= 16) {
+      session = ' (AMC)'; // After Market Close
+    } else {
+      session = ' (During Market)';
+    }
+
+    return `${melbourneTimeStr}${session}`;
+  } catch (e) {
+    return '';
+  }
+};
+
+const getEventDateKey = (dateStr: string | undefined): string => {
+  if (!dateStr) return '';
+  if (typeof dateStr === 'string' && dateStr.includes('T')) {
+    try {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) {
+        const melbourneDateFormatter = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Australia/Melbourne',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        });
+        return melbourneDateFormatter.format(d); // YYYY-MM-DD in Melbourne
+      }
+    } catch (e) {
+      // fallback
+    }
+  }
+  if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return dateStr;
+  }
+  try {
+    const d = parseISO(dateStr);
+    if (!isNaN(d.getTime())) {
+      const melbourneDateFormatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Australia/Melbourne',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+      return melbourneDateFormatter.format(d);
+    }
+    return format(d, 'yyyy-MM-dd');
+  } catch (e) {
+    return dateStr;
+  }
+};
+
+const formatEventDateStr = (dateStr: string | undefined, formatPattern: string = 'MMMM d, yyyy'): string => {
+  if (!dateStr) return '';
+  const dateKey = getEventDateKey(dateStr);
+  const parts = dateKey.split('-').map(Number);
+  if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+    const localD = new Date(parts[0], parts[1] - 1, parts[2]);
+    return format(localD, formatPattern);
+  }
+  try {
+    return format(parseISO(dateStr), formatPattern);
+  } catch (e) {
+    return dateStr;
+  }
+};
+
+const EditEarningsEventModal = ({
+  isOpen,
+  onClose,
+  initialEvent,
+  holdings,
+  onSave,
+  onReset
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  initialEvent: Partial<EarningsEvent> | null;
+  holdings: Holding[];
+  onSave: (event: EarningsEvent) => void;
+  onReset?: (symbol: string) => void;
+}) => {
+  const [symbol, setSymbol] = useState('');
+  const [date, setDate] = useState('');
+  const [session, setSession] = useState<'AMC' | 'BMO' | 'CUSTOM'>('AMC');
+  const [customTime, setCustomTime] = useState('20:00');
+  const [estimate, setEstimate] = useState('');
 
   useEffect(() => {
-    // Reset error if ticker changes
-    setError(false);
-  }, [ticker]);
+    if (initialEvent) {
+      setSymbol(initialEvent.symbol || '');
+      const rawDate = initialEvent.date ? getEventDateKey(initialEvent.date) : format(new Date(), 'yyyy-MM-dd');
+      setDate(rawDate);
+      setEstimate(initialEvent.estimate !== undefined && initialEvent.estimate !== null ? String(initialEvent.estimate) : '');
+      if (initialEvent.date && initialEvent.date.includes('T')) {
+        const timePart = initialEvent.date.split('T')[1]?.substring(0, 5);
+        if (timePart === '20:00') setSession('AMC');
+        else if (timePart === '11:00' || timePart === '12:00') setSession('BMO');
+        else {
+          setSession('CUSTOM');
+          setCustomTime(timePart || '16:00');
+        }
+      } else {
+        setSession('AMC');
+      }
+    }
+  }, [initialEvent, isOpen]);
 
-  const displayLogo = logo || `/api/logo/${ticker}`;
+  if (!isOpen) return null;
 
-  if (error) {
-    return (
-      <div className={cn(dimensions, "rounded-lg bg-zinc-100 flex items-center justify-center shrink-0 border border-zinc-200")}>
-        <span className={cn("font-bold text-zinc-400", fontSize)}>{ticker.slice(0, 2)}</span>
-      </div>
-    );
-  }
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!symbol || !date) return;
+
+    let isoDate = date;
+    if (session === 'AMC') {
+      isoDate = `${date}T20:00:00.000Z`; // 4:00 PM EDT / 8:00 PM UTC
+    } else if (session === 'BMO') {
+      isoDate = `${date}T11:00:00.000Z`; // 7:00 AM EDT / 11:00 AM UTC
+    } else if (customTime) {
+      isoDate = `${date}T${customTime}:00.000Z`;
+    }
+
+    onSave({
+      symbol: symbol.toUpperCase().trim(),
+      date: isoDate,
+      estimate: estimate ? parseFloat(estimate) : undefined,
+      high: initialEvent?.high,
+      low: initialEvent?.low
+    });
+    onClose();
+  };
+
+  const tickerOptions = Array.from(new Set(holdings.map(h => h.ticker).filter(t => t !== 'CASH')));
 
   return (
-    <div className={cn(dimensions, "rounded-lg bg-white flex items-center justify-center overflow-hidden shrink-0 border border-zinc-200 p-0.5")}>
-      <img 
-        src={displayLogo} 
-        alt={ticker} 
-        className="w-full h-full object-contain"
-        referrerPolicy="no-referrer"
-        onError={() => {
-          // Log only once per session per ticker to avoid spam
-          setError(true);
-        }}
-      />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-zinc-100">
+        <div className="p-5 border-b border-zinc-100 bg-zinc-50/50 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+              <CalendarIcon size={18} />
+            </div>
+            <div>
+              <h3 className="font-bold text-zinc-900">Set / Correct Earnings Date</h3>
+              <p className="text-xs text-zinc-500">Override calendar date for any holding</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 text-zinc-400 hover:text-zinc-600 rounded-lg hover:bg-zinc-100">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-zinc-700 mb-1">Ticker Symbol</label>
+            <input
+              type="text"
+              value={symbol}
+              onChange={e => setSymbol(e.target.value.toUpperCase())}
+              placeholder="e.g. GOOGL, AAPL, MSFT"
+              required
+              className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
+            />
+            {tickerOptions.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                <span className="text-[10px] text-zinc-400 self-center">Holdings:</span>
+                {tickerOptions.map(t => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setSymbol(t)}
+                    className={cn(
+                      "text-[10px] px-2 py-0.5 rounded-md font-semibold transition-colors",
+                      symbol === t ? "bg-indigo-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                    )}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-zinc-700 mb-1">Earnings Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={e => setDate(e.target.value)}
+              required
+              className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-zinc-700 mb-1">Timing / Market Session</label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setSession('AMC')}
+                className={cn(
+                  "py-2 px-2 text-xs rounded-xl font-semibold border text-center transition-all",
+                  session === 'AMC' ? "bg-indigo-50 border-indigo-200 text-indigo-600 shadow-sm" : "border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                )}
+              >
+                After Market (AMC)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSession('BMO')}
+                className={cn(
+                  "py-2 px-2 text-xs rounded-xl font-semibold border text-center transition-all",
+                  session === 'BMO' ? "bg-indigo-50 border-indigo-200 text-indigo-600 shadow-sm" : "border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                )}
+              >
+                Before Open (BMO)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSession('CUSTOM')}
+                className={cn(
+                  "py-2 px-2 text-xs rounded-xl font-semibold border text-center transition-all",
+                  session === 'CUSTOM' ? "bg-indigo-50 border-indigo-200 text-indigo-600 shadow-sm" : "border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                )}
+              >
+                Specific Time
+              </button>
+            </div>
+            {session === 'CUSTOM' && (
+              <input
+                type="time"
+                value={customTime}
+                onChange={e => setCustomTime(e.target.value)}
+                className="mt-2 w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-zinc-700 mb-1">EPS Estimate (Optional)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={estimate}
+              onChange={e => setEstimate(e.target.value)}
+              placeholder="e.g. 3.01"
+              className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="pt-3 flex items-center justify-between border-t border-zinc-100">
+            {onReset && initialEvent?.symbol ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (initialEvent.symbol) {
+                    onReset(initialEvent.symbol);
+                    onClose();
+                  }
+                }}
+                className="px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
+              >
+                Reset Default
+              </button>
+            ) : <div />}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-semibold text-zinc-600 hover:bg-zinc-100 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md shadow-indigo-100 transition-all flex items-center gap-1.5"
+              >
+                <Check size={14} />
+                Save Event
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
     </div>
   );
 };
 
-const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className, onResize, onRemove, size, activeCurrency, onEarningsClick }: { earningsEvents: EarningsEvent[], economicEvents: EconomicEvent[], metadata: any, className?: string, onResize?: () => void, onRemove?: () => void, size?: number, activeCurrency: string, onEarningsClick?: (event: EarningsEvent) => void }) => {
+const FinancialCalendar = ({ 
+  earningsEvents, 
+  metadata, 
+  className, 
+  onResize, 
+  onRemove, 
+  size, 
+  activeCurrency, 
+  onEarningsClick,
+  onRemoveEvent,
+  onEditEvent,
+  hasHiddenEvents,
+  onRestoreEvents
+}: { 
+  earningsEvents: EarningsEvent[], 
+  metadata: any, 
+  className?: string, 
+  onResize?: () => void, 
+  onRemove?: () => void, 
+  size?: number, 
+  activeCurrency: string, 
+  onEarningsClick?: (event: EarningsEvent) => void,
+  onRemoveEvent?: (symbol: string, date: string) => void,
+  onEditEvent?: (event: Partial<EarningsEvent>) => void,
+  hasHiddenEvents?: boolean,
+  onRestoreEvents?: () => void
+}) => {
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [activeTab, setActiveTab] = useState<'earnings' | 'economic'>('earnings');
 
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(monthStart);
@@ -482,89 +864,50 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
   const earningsByDate = useMemo(() => {
     const map: Record<string, EarningsEvent[]> = {};
     earningsEvents.forEach(event => {
-      const dateKey = format(parseISO(event.date), 'yyyy-MM-dd');
+      const dateKey = getEventDateKey(event.date);
       if (!map[dateKey]) map[dateKey] = [];
       map[dateKey].push(event);
     });
     return map;
   }, [earningsEvents]);
 
-  const economicByDate = useMemo(() => {
-    const map: Record<string, EconomicEvent[]> = {};
-    if (economicEvents) {
-      economicEvents.forEach(event => {
-        const dateKey = format(parseISO(event.time), 'yyyy-MM-dd');
-        if (!map[dateKey]) map[dateKey] = [];
-        map[dateKey].push(event);
-      });
-    }
-    // Sort by impact
-    Object.keys(map).forEach(key => {
-      map[key].sort((a, b) => {
-        const impactScore = { 'High': 3, 'Medium': 2, 'Low': 1 };
-        return (impactScore[b.impact as keyof typeof impactScore] || 0) - (impactScore[a.impact as keyof typeof impactScore] || 0);
-      });
-    });
-    return map;
-  }, [economicEvents]);
-
   const handleExport = () => {
-    if (activeTab === 'earnings') {
-      if (earningsEvents.length === 0) return;
-      let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Earnings Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Earnings Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
-      earningsEvents.forEach(event => {
-        if (!event.date) return;
-        const date = new Date(event.date);
-        const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 8);
-        const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        ics += 'BEGIN:VEVENT\r\n';
-        ics += `UID:${event.symbol}-earnings-${dateStr}@stocktracker\r\n`;
-        ics += `DTSTAMP:${dtstamp}\r\n`;
+    if (earningsEvents.length === 0) return;
+    let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Earnings Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Earnings Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
+    earningsEvents.forEach(event => {
+      if (!event.date) return;
+      const dateKey = getEventDateKey(event.date);
+      const date = new Date(event.date);
+      const dateStr = dateKey.replace(/-/g, '');
+      const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+      ics += 'BEGIN:VEVENT\r\n';
+      ics += `UID:${event.symbol}-earnings-${dateStr}@stocktracker\r\n`;
+      ics += `DTSTAMP:${dtstamp}\r\n`;
+      
+      if (hasExactTime(event.date)) {
+        const dateTimeStr = date.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        ics += `DTSTART:${dateTimeStr}\r\n`;
+        const endDate = new Date(date.getTime() + 60 * 60 * 1000); // 1 hour duration
+        const endDateTimeStr = endDate.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
+        ics += `DTEND:${endDateTimeStr}\r\n`;
+      } else {
         ics += `DTSTART;VALUE=DATE:${dateStr}\r\n`;
-        ics += `SUMMARY:${event.symbol} Earnings\r\n`;
-        ics += `DESCRIPTION:Estimated EPS: ${event.estimate || 'N/A'}\\nHigh: ${event.high || 'N/A'}\\nLow: ${event.low || 'N/A'}\r\n`;
-        ics += 'END:VEVENT\r\n';
-      });
-      ics += 'END:VCALENDAR\r\n';
-      const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'earnings.ics');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } else {
-      if (economicEvents.length === 0) return;
-      let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Stock Portfolio Tracker//Economic Calendar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Economic Calendar\r\nX-WR-TIMEZONE:UTC\r\n';
-      economicEvents.forEach(event => {
-        if (!event.time) return;
-        const date = parseISO(event.time);
-        const dateStr = date.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        const dtstamp = new Date().toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        ics += 'BEGIN:VEVENT\r\n';
-        ics += `UID:${event.event.replace(/\s+/g, '-')}-${dateStr}@stocktracker\r\n`;
-        ics += `DTSTAMP:${dtstamp}\r\n`;
-        ics += `DTSTART:${dateStr}\r\n`;
-        const endDateShort = new Date(date.getTime() + 30 * 60000);
-        const endDateStr = endDateShort.toISOString().replace(/[-:]/g, '').substring(0, 15) + 'Z';
-        ics += `DTEND:${endDateStr}\r\n`;
-        ics += `SUMMARY:Economic: ${event.event}\r\n`;
-        ics += `DESCRIPTION:Country: ${event.country}\\nImpact: ${event.impact}\\nEstimate: ${event.estimate || 'N/A'}${event.unit || ''}\\nPrevious: ${event.previous || 'N/A'}${event.unit || ''}\r\n`;
-        ics += 'END:VEVENT\r\n';
-      });
-      ics += 'END:VCALENDAR\r\n';
-      const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'economic_events.ics');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    }
+      }
+      
+      ics += `SUMMARY:${event.symbol} Earnings\r\n`;
+      ics += `DESCRIPTION:Estimated EPS: ${event.estimate || 'N/A'}\\nHigh: ${event.high || 'N/A'}\\nLow: ${event.low || 'N/A'}\r\n`;
+      ics += 'END:VEVENT\r\n';
+    });
+    ics += 'END:VCALENDAR\r\n';
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'earnings.ics');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
   };
 
   return (
@@ -572,58 +915,50 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
       <div className="p-6 border-b border-zinc-100 bg-zinc-50/50 flex flex-col xl:flex-row xl:items-center justify-between gap-6">
         <div className="flex flex-col md:flex-row md:items-center gap-6">
           <div className="flex items-center gap-3">
-            <div className={cn(
-              "w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-lg transition-colors",
-              activeTab === 'earnings' ? "bg-indigo-600 shadow-indigo-100" : "bg-amber-500 shadow-amber-100"
-            )}>
-              {activeTab === 'earnings' ? <CalendarIcon size={20} /> : <Zap size={20} />}
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-lg transition-colors bg-indigo-600 shadow-indigo-100">
+              <CalendarIcon size={20} />
             </div>
             <div>
               <h2 className="text-xl font-bold text-zinc-900">Financial Calendar</h2>
               <div className="flex items-center gap-2 text-sm text-zinc-500">
-                <span>{activeTab === 'earnings' ? 'Corporate Earnings' : 'US Macro Economic Events'}</span>
+                <span>Corporate Earnings</span>
+                <span className="text-zinc-300">•</span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/50">
+                  <Globe size={11} />
+                  Melbourne Time (AEST/AEDT)
+                </span>
               </div>
             </div>
-          </div>
-
-          <div className="flex p-1 bg-zinc-100 rounded-xl w-fit">
-            <button
-              onClick={() => setActiveTab('earnings')}
-              className={cn(
-                "px-4 py-1.5 text-sm font-medium rounded-lg transition-all flex items-center gap-2",
-                activeTab === 'earnings' 
-                  ? "bg-white text-indigo-600 shadow-sm" 
-                  : "text-zinc-500 hover:text-zinc-700"
-              )}
-            >
-              <CalendarIcon size={16} />
-              Earnings
-            </button>
-            <button
-              onClick={() => setActiveTab('economic')}
-              className={cn(
-                "px-4 py-1.5 text-sm font-medium rounded-lg transition-all flex items-center gap-2",
-                activeTab === 'economic' 
-                  ? "bg-white text-amber-600 shadow-sm" 
-                  : "text-zinc-500 hover:text-zinc-700"
-              )}
-            >
-              <Zap size={16} />
-              US Economic
-            </button>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onEditEvent && (
+            <button
+              onClick={() => onEditEvent({ symbol: '', date: format(new Date(), 'yyyy-MM-dd') })}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+              title="Add or correct earnings date"
+            >
+              <Edit2 className="w-4 h-4" />
+              <span>Correct Date</span>
+            </button>
+          )}
+
+          {hasHiddenEvents && onRestoreEvents && (
+            <button
+              onClick={onRestoreEvents}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg text-rose-600 bg-rose-50 hover:bg-rose-100 transition-colors"
+              title="Restore all hidden calendar events"
+            >
+              <Undo2 className="w-4 h-4" />
+              <span>Restore Removed</span>
+            </button>
+          )}
+
           <button
             onClick={handleExport}
-            disabled={activeTab === 'earnings' ? earningsEvents.length === 0 : economicEvents.length === 0}
-            className={cn(
-              "flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-              activeTab === 'earnings' 
-                ? "text-indigo-600 bg-indigo-50 hover:bg-indigo-100" 
-                : "text-amber-700 bg-amber-50 hover:bg-amber-100"
-            )}
+            disabled={earningsEvents.length === 0}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
             title="Export to Calendar (.ics)"
           >
             <Download className="w-4 h-4" />
@@ -676,20 +1011,17 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
           {calendarDays.map((day, i) => {
             const dateKey = format(day, 'yyyy-MM-dd');
             const eEvents = earningsByDate[dateKey] || [];
-            const ecEvents = economicByDate[dateKey] || [];
             const isCurrentMonth = isSameMonth(day, monthStart);
             const isToday = isSameDay(day, new Date());
 
-            const todayColor = activeTab === 'earnings' ? "bg-indigo-50/30" : "bg-amber-50/30";
-            const badgeColor = activeTab === 'earnings' 
-              ? (isToday ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-zinc-500")
-              : (isToday ? "bg-amber-500 text-white shadow-md shadow-amber-100" : "text-zinc-500");
+            const todayColor = "bg-indigo-50/30";
+            const badgeColor = isToday ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "text-zinc-500";
 
             return (
               <div 
                 key={i} 
                 className={cn(
-                  "min-h-[140px] p-2 border-r border-b border-zinc-100 transition-colors",
+                  "min-h-[140px] p-2 border-r border-b border-zinc-100 transition-colors relative group/cell",
                   !isCurrentMonth && "bg-zinc-50/30",
                   isToday && todayColor
                 )}
@@ -702,44 +1034,79 @@ const FinancialCalendar = ({ earningsEvents, economicEvents, metadata, className
                   )}>
                     {format(day, 'd')}
                   </span>
+                  {onEditEvent && (
+                    <button
+                      onClick={() => onEditEvent({ symbol: '', date: dateKey })}
+                      className="opacity-0 group-hover/cell:opacity-100 transition-opacity p-1 hover:bg-indigo-50 rounded text-zinc-400 hover:text-indigo-600 text-[10px]"
+                      title={`Add event on ${dateKey}`}
+                    >
+                      <Plus size={12} />
+                    </button>
+                  )}
                 </div>
                 <div className="space-y-1">
-                  {activeTab === 'earnings' ? (
-                    eEvents.map((event, idx) => (
-                      <div 
-                        key={`earn-${idx}`}
-                        onClick={() => onEarningsClick && onEarningsClick(event)}
-                        className={cn(
-                          "group relative flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-zinc-200 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all",
-                          onEarningsClick ? "cursor-pointer" : "cursor-default"
-                        )}
-                      >
-                        <CompanyLogo ticker={event.symbol} logo={metadata[event.symbol]?.logo} size="sm" />
-                        <div className="min-w-0">
+                  {eEvents.map((event, idx) => (
+                    <div 
+                      key={`earn-${idx}`}
+                      onClick={() => onEarningsClick && onEarningsClick(event)}
+                      className={cn(
+                        "group relative flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-zinc-200 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all pr-12",
+                        onEarningsClick ? "cursor-pointer" : "cursor-default"
+                      )}
+                      title={`${event.symbol} Earnings Announcement\nDate: ${formatEventDateStr(event.date)}${hasExactTime(event.date) ? `\nTime: ${formatEarningsTime(event.date)}` : ''}`}
+                    >
+                      <CompanyLogo ticker={event.symbol} logo={metadata[event.symbol]?.logo} size="sm" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-1">
                           <div className="text-[10px] font-bold text-zinc-900 truncate">{event.symbol}</div>
+                          {hasExactTime(event.date) && (
+                            <span className="text-[8px] px-1 py-0.5 bg-indigo-50 text-indigo-600 rounded font-semibold font-sans whitespace-nowrap">
+                              {formatEarningsTime(event.date).split(' ').slice(0, 2).join(' ')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-0.5 mt-0.5">
+                          {hasExactTime(event.date) && (
+                            <div className="text-[8px] text-indigo-500 font-medium font-sans">
+                              {formatEarningsTime(event.date).split(' ').slice(2).join(' ')}
+                            </div>
+                          )}
                           {event.estimate && (
-                            <div className="text-[8px] text-zinc-500 font-mono">EST: {getCurrencySymbol(activeCurrency)}{event.estimate.toFixed(2)}</div>
+                            <div className="text-[8px] text-zinc-500 font-mono">
+                              EST: {getCurrencySymbol(activeCurrency)}{event.estimate.toFixed(2)}
+                            </div>
                           )}
                         </div>
                       </div>
-                    ))
-                  ) : (
-                    ecEvents.map((event, idx) => {
-                      const impactColorClass = event.impact === 'High' ? 'text-rose-600 bg-rose-50 border-rose-200' : event.impact === 'Medium' ? 'text-amber-600 bg-amber-50 border-amber-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200';
-                      return (
-                        <div 
-                          key={`econ-${idx}`}
-                          className={cn("group relative flex items-center gap-1.5 p-1.5 rounded-lg border shadow-sm hover:shadow-md transition-all cursor-default", impactColorClass)}
-                        >
-                          <AlertCircle className="w-3 h-3 shrink-0" />
-                          <div className="min-w-0">
-                            <div className="text-[10px] font-bold truncate">{event.event}</div>
-                            <div className="text-[8px] font-mono opacity-80">{format(parseISO(event.time), 'HH:mm')}</div>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
+
+                      <div className="absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        {onEditEvent && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onEditEvent(event);
+                            }}
+                            className="bg-white hover:bg-indigo-50 hover:text-indigo-600 p-1 rounded-full text-zinc-400 border border-zinc-150 shadow-sm"
+                            title={`Edit ${event.symbol} earnings date`}
+                          >
+                            <Edit2 size={10} className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                        {onRemoveEvent && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveEvent(event.symbol, event.date);
+                            }}
+                            className="bg-white hover:bg-rose-50 hover:text-rose-600 p-1 rounded-full text-zinc-400 border border-zinc-150 shadow-sm"
+                            title={`Remove ${event.symbol} from calendar`}
+                          >
+                            <Trash2 size={10} className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             );
@@ -755,6 +1122,140 @@ const TRADINGVIEW_STUDIES = [
   "VbPFixed@tv-volumebyprice" as any,
   "VbPVisible@tv-volumebyprice" as any
 ];
+
+const getInvestingTheme = (holding: any, metadata: Record<string, any>): string => {
+  const ticker = (holding?.ticker || '').toUpperCase().trim();
+  if (ticker === 'CASH' || ticker.startsWith('CASH')) {
+    return 'Cash & Liquid Reserves';
+  }
+
+  const meta = metadata[holding?.ticker] || metadata[ticker] || {};
+  const sector = (meta.sector || '').toLowerCase();
+  const industry = (meta.industry || '').toLowerCase();
+  const name = (holding?.name || meta.name || '').toLowerCase();
+
+  // 1. Crypto & Web3 Ecosystem
+  if (
+    (holding as any)?.isCrypto ||
+    ticker.endsWith('-USD') ||
+    sector === 'cryptocurrency' ||
+    ['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'DOT', 'COIN', 'BMNR', 'MSTR', 'MARA', 'RIOT', 'BITO', 'SUI', 'PEPE', 'SHIB', 'NEAR'].includes(ticker)
+  ) {
+    return 'Crypto & Web3 Ecosystem';
+  }
+
+  // 2. Semiconductors & AI Hardware
+  if (
+    ['NVDA', 'AMD', 'TSM', 'INTC', 'AVGO', 'ARM', 'ASML', 'QCOM', 'MU', 'LRCX', 'AMAT', 'SMCI', 'ON', 'MRVL', 'TXN', 'ADI', 'MPWR', 'KLAC'].includes(ticker) ||
+    industry.includes('semiconductor') ||
+    industry.includes('chip')
+  ) {
+    return 'Semiconductors & AI Hardware';
+  }
+
+  // 3. Artificial Intelligence & Big Tech
+  if (
+    ['MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'AAPL', 'PLTR', 'PATH', 'AI', 'CRWD', 'PANW', 'SNOW', 'ORCL', 'CRM', 'ADBE', 'NOW', 'IBM', 'DELL', 'HPE'].includes(ticker) ||
+    industry.includes('software') ||
+    industry.includes('cloud') ||
+    industry.includes('artificial intelligence') ||
+    name.includes('cloud') ||
+    name.includes('software')
+  ) {
+    return 'Artificial Intelligence & Big Tech';
+  }
+
+  // 4. Clean Energy & Autonomous Mobility
+  if (
+    ['TSLA', 'RIVN', 'LCID', 'NIO', 'XPEV', 'BYD', 'ENPH', 'SEDG', 'FSLR', 'RUN', 'PLUG', 'NEST', 'BE', 'BLNK', 'CHPT'].includes(ticker) ||
+    industry.includes('electric vehicle') ||
+    industry.includes('solar') ||
+    industry.includes('clean energy') ||
+    industry.includes('renewable')
+  ) {
+    return 'Clean Energy & Autonomous Mobility';
+  }
+
+  // 5. Defense, Aerospace & Security
+  if (
+    ['LMT', 'RTX', 'NOC', 'GD', 'BA', 'ITA', 'XAR', 'PPA', 'KTOS', 'HWM', 'RHM', 'LHX'].includes(ticker) ||
+    industry.includes('aerospace') ||
+    industry.includes('defense')
+  ) {
+    return 'Defense, Aerospace & Security';
+  }
+
+  // 6. Healthcare, Biotech & Longevity
+  if (
+    ['JNJ', 'PFE', 'UNH', 'LLY', 'NVO', 'ABBV', 'MRK', 'AMGN', 'GILD', 'ISRG', 'MODA', 'VRTX', 'REGN', 'AZN', 'BMY'].includes(ticker) ||
+    sector.includes('health') ||
+    industry.includes('biotech') ||
+    industry.includes('pharmaceutical') ||
+    industry.includes('medical')
+  ) {
+    return 'Healthcare, Biotech & Longevity';
+  }
+
+  // 7. Banking, Payments & Fintech
+  if (
+    ['JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'V', 'MA', 'PYPL', 'SQ', 'HOOD', 'AXP', 'BLK', 'FINN', 'NU'].includes(ticker) ||
+    sector.includes('financial') ||
+    industry.includes('bank') ||
+    industry.includes('fintech') ||
+    industry.includes('credit')
+  ) {
+    return 'Banking, Payments & Fintech';
+  }
+
+  // 8. Energy & Hard Assets
+  if (
+    ['XOM', 'CVX', 'SHEL', 'TTE', 'COP', 'SLB', 'HAL', 'OXY', 'EQNR', 'GLD', 'SLV', 'IAU', 'USO', 'DBA', 'RIO', 'BHP', 'VALE', 'FCX', 'NEM'].includes(ticker) ||
+    sector.includes('energy') ||
+    sector.includes('basic materials') ||
+    industry.includes('oil') ||
+    industry.includes('mining') ||
+    industry.includes('gold') ||
+    industry.includes('metal')
+  ) {
+    return 'Energy & Hard Assets';
+  }
+
+  // 9. Real Estate & Infrastructure
+  if (
+    ['O', 'AMT', 'CCI', 'PLD', 'EQIX', 'SPG', 'WY', 'DLR', 'VNQ', 'IYR'].includes(ticker) ||
+    sector.includes('real estate') ||
+    industry.includes('reit')
+  ) {
+    return 'Real Estate & Infrastructure';
+  }
+
+  // 10. Consumer Brands & Retail
+  if (
+    ['WMT', 'COST', 'TGT', 'PG', 'KO', 'PEP', 'DIS', 'NFLX', 'SBUX', 'NKE', 'MCD', 'HD', 'LOW', 'CMG', 'BKNG', 'ABNB', 'MELI'].includes(ticker) ||
+    sector.includes('consumer') ||
+    industry.includes('retail') ||
+    industry.includes('beverage') ||
+    industry.includes('restaurant')
+  ) {
+    return 'Consumer Brands & Retail';
+  }
+
+  // 11. ETFs & Index Funds
+  if (
+    ['SPY', 'QQQ', 'IVV', 'VOO', 'VTI', 'IWM', 'EFA', 'VEA', 'VWO', 'SCHD', 'JEPI', 'XYLD', 'VYM', 'VT', 'SPLG', 'DIA', 'NIFTY50', '^NSEI'].includes(ticker) ||
+    industry.includes('etf') ||
+    sector.includes('etf') ||
+    sector.includes('index')
+  ) {
+    return 'ETFs & Index Funds';
+  }
+
+  if (meta.sector && meta.sector !== 'Unknown') {
+    return meta.sector;
+  }
+
+  return 'Global Growth & Diversified';
+};
 
 const SortableHeader = ({ id, label, sortKey, align, sortConfig, onSort }: any) => {
   const {
@@ -802,6 +1303,140 @@ const SortableHeader = ({ id, label, sortKey, align, sortConfig, onSort }: any) 
   );
 };
 
+const SortableHoldingRow = ({ 
+  holding, 
+  columnOrder, 
+  renderCell, 
+  editingId, 
+  setSelectedChartTicker, 
+  handleSaveEdit, 
+  handleCancelEdit, 
+  promptAnalysisStrategy, 
+  handleEditClick, 
+  handleViewHistory, 
+  handleDelete,
+  isSortable = true
+}: any) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: holding.id, disabled: !isSortable });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : 0,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <tr 
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "hover:bg-zinc-100/50 hover:shadow-sm transition-all duration-200 group/row relative",
+        editingId === holding.id ? "cursor-default" : "cursor-pointer",
+        isDragging && "bg-white shadow-xl ring-1 ring-zinc-200"
+      )}
+      onClick={() => {
+        if (editingId !== holding.id) {
+          setSelectedChartTicker(holding.ticker);
+        }
+      }}
+    >
+      {isSortable && (
+        <td className="w-8 px-2 py-4">
+          <div 
+            {...attributes} 
+            {...listeners}
+            className="cursor-grab active:cursor-grabbing p-1 text-zinc-300 hover:text-zinc-500 opacity-0 group-hover/row:opacity-100 transition-opacity"
+          >
+            <GripHorizontal className="w-4 h-4" />
+          </div>
+        </td>
+      )}
+      {columnOrder.map((colId: string) => renderCell(colId, holding))}
+      <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
+        {editingId === holding.id ? (
+          <div className="flex items-center justify-center gap-1 relative z-20">
+            <button
+              onClick={() => handleSaveEdit(holding.id)}
+              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+              title="Save changes"
+            >
+              <Check className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleCancelEdit}
+              className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
+              title="Cancel edit"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center gap-1 relative z-20">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                promptAnalysisStrategy(holding.ticker);
+              }}
+              className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+              title="Analyze Stock"
+            >
+              <Zap className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handleEditClick(holding)}
+              className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
+              title="Edit holding"
+            >
+              <Edit2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setSelectedChartTicker(holding.ticker)}
+              className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+              title="View Chart"
+            >
+              <LineChart className="w-4 h-4" />
+            </button>
+            {holding.ticker !== 'CASH' && holding.shares > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleViewHistory(holding);
+                }}
+                className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                title="Sell Specific Lot"
+              >
+                <TrendingDown className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={() => handleViewHistory(holding)}
+              className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+              title="View History"
+            >
+              <FileText className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handleDelete(holding.id)}
+              className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+              title="Remove holding"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+};
+
 const SortableWidget = ({ id, className, children, onDoubleClick }: { id: string, className?: string, children: React.ReactNode, onDoubleClick?: () => void }) => {
   const {
     attributes,
@@ -815,7 +1450,7 @@ const SortableWidget = ({ id, className, children, onDoubleClick }: { id: string
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    zIndex: isDragging ? 50 : 'auto',
+    zIndex: isDragging ? 110 : 'auto',
     opacity: isDragging ? 0.5 : 1,
   };
 
@@ -845,6 +1480,7 @@ const SortableWidget = ({ id, className, children, onDoubleClick }: { id: string
         className
       )}
       onDoubleClick={handleDoubleClick}
+      {...attributes}
     >
       <div 
         className="absolute top-3 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-600 z-20 p-1 bg-white/90 backdrop-blur-sm rounded-md shadow-sm border border-zinc-100" 
@@ -865,25 +1501,91 @@ const SettingsModal = ({
   userSettings, 
   activeTab, 
   onSave, 
-  isSaving 
+  isSaving,
+  initialTab = 'profile'
 }: { 
   isOpen: boolean, 
   onClose: () => void, 
   tabSettings: any, 
   userSettings: any, 
   activeTab: string, 
-  onSave: (tabs: any, user: any) => void, 
-  isSaving: boolean 
+  onSave: (tabs: any, user: any, autoClose?: boolean) => Promise<void>, 
+  isSaving: boolean,
+  initialTab?: 'profile' | 'ai' | 'portfolios'
 }) => {
+  const [activeModalTab, setActiveModalTab] = useState<'profile' | 'ai' | 'portfolios'>(initialTab);
   const [localTabSettings, setLocalTabSettings] = useState(tabSettings);
   const [localUserSettings, setLocalUserSettings] = useState(userSettings);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [showKeys, setShowKeys] = useState<{ [key: string]: boolean }>({});
+
+  const syncedTabsRef = useRef(JSON.stringify(tabSettings));
+  const syncedUserRef = useRef(JSON.stringify(userSettings));
+  const onSaveRef = useRef(onSave);
+
+  useEffect(() => {
+    onSaveRef.current = onSave;
+  }, [onSave]);
 
   useEffect(() => {
     if (isOpen) {
+      setActiveModalTab(initialTab);
+      const initialUser = {
+        displayName: '',
+        avatarUrl: '',
+        showCombinedSummary: true,
+        combinedCurrency: 'USD',
+        combinedBenchmark: 'SPY',
+        autoSave: false,
+        darkMode: false,
+        aiConfig: {
+          ...DEFAULT_AI_CONFIG,
+          ...(userSettings?.aiConfig || {})
+        },
+        ...userSettings
+      };
       setLocalTabSettings(tabSettings);
-      setLocalUserSettings(userSettings);
+      setLocalUserSettings(initialUser);
+      setSyncStatus('idle');
+
+      syncedTabsRef.current = JSON.stringify(tabSettings);
+      syncedUserRef.current = JSON.stringify(initialUser);
     }
-  }, [tabSettings, userSettings, isOpen]);
+  }, [tabSettings, userSettings, isOpen, initialTab]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const localTabsStr = JSON.stringify(localTabSettings);
+    const localUserStr = JSON.stringify(localUserSettings);
+
+    const tabsChanged = localTabsStr !== syncedTabsRef.current;
+    const userChanged = localUserStr !== syncedUserRef.current;
+
+    if (tabsChanged || userChanged) {
+      if (localUserSettings.autoSave) {
+        setSyncStatus('saving');
+        const timer = setTimeout(async () => {
+          try {
+            await onSaveRef.current(localTabSettings, localUserSettings, false);
+            syncedTabsRef.current = localTabsStr;
+            syncedUserRef.current = localUserStr;
+            setSyncStatus('saved');
+          } catch (err) {
+            console.error('Auto-save failed:', err);
+            setSyncStatus('error');
+          }
+        }, 1200);
+        return () => clearTimeout(timer);
+      } else {
+        setSyncStatus('idle');
+      }
+    } else {
+      if (syncStatus !== 'saved' && syncStatus !== 'saving') {
+        setSyncStatus('idle');
+      }
+    }
+  }, [localTabSettings, localUserSettings, isOpen, syncStatus]);
 
   if (!isOpen) return null;
 
@@ -904,172 +1606,601 @@ const SettingsModal = ({
     }));
   };
 
+  const handleAiConfigChange = (key: keyof AIUserConfig, value: any) => {
+    setLocalUserSettings((prev: any) => {
+      const currentAi = prev.aiConfig || DEFAULT_AI_CONFIG;
+      const updatedAi = {
+        ...currentAi,
+        [key]: value
+      };
+
+      // If provider changes and current model doesn't match new provider, auto-pick default model for that provider
+      if (key === 'provider') {
+        const matchingModels = POPULAR_AI_MODELS.filter(m => m.provider === value);
+        if (matchingModels.length > 0) {
+          updatedAi.model = matchingModels[0].id;
+        } else if (value === 'custom') {
+          updatedAi.model = updatedAi.customModelName || 'gpt-4o';
+        }
+      }
+
+      return {
+        ...prev,
+        aiConfig: updatedAi
+      };
+    });
+  };
+
+  const toggleShowKey = (field: string) => {
+    setShowKeys(prev => ({ ...prev, [field]: !prev[field] }));
+  };
+
+  const currentAi = localUserSettings.aiConfig || DEFAULT_AI_CONFIG;
+
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[300] flex items-center justify-center p-4">
+      <div className="bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] border border-zinc-100 dark:border-zinc-800">
+        <div className="p-6 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between bg-zinc-50/50 dark:bg-zinc-800/40">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center text-white">
+            <div className="w-10 h-10 rounded-xl bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center text-white dark:text-zinc-900 shadow-sm">
               <Settings size={20} />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-zinc-900">Settings</h2>
-              <p className="text-sm text-zinc-500">Manage your profile and investment preferences</p>
+              <h2 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Preferences & Configuration</h2>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">Manage profile, AI models, and portfolios</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-zinc-100 rounded-full transition-colors">
+          <button onClick={onClose} className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors">
             <X size={20} className="text-zinc-400" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-8 space-y-10">
-          {/* User Profile Section */}
-          <section>
-            <div className="flex items-center gap-2 mb-6 text-zinc-900">
-              <UserIcon size={18} className="text-indigo-600" />
-              <h3 className="font-bold uppercase tracking-wider text-xs">User Profile</h3>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-zinc-700">Display Name</label>
-                <input 
-                  type="text" 
-                  value={localUserSettings.displayName}
-                  onChange={(e) => handleUserSettingChange('displayName', e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
-                  placeholder="Your name"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-zinc-700">Avatar URL</label>
-                <input 
-                  type="text" 
-                  value={localUserSettings.avatarUrl}
-                  onChange={(e) => handleUserSettingChange('avatarUrl', e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
-                  placeholder="https://..."
-                />
-              </div>
-              <div className="space-y-2 flex items-center gap-3 pt-6">
-                <button
-                  onClick={() => handleUserSettingChange('showCombinedSummary', !localUserSettings.showCombinedSummary)}
-                  className={cn(
-                    "w-12 h-6 rounded-full transition-all relative",
-                    localUserSettings.showCombinedSummary ? "bg-indigo-600" : "bg-zinc-200"
-                  )}
-                >
-                  <div className={cn(
-                    "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
-                    localUserSettings.showCombinedSummary ? "left-7" : "left-1"
-                  )} />
-                </button>
-                <span className="text-sm font-bold text-zinc-700">Show Combined Portfolio Summary</span>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-zinc-700">Combined Portfolio Currency</label>
-                <select 
-                  value={localUserSettings.combinedCurrency || 'USD'}
-                  onChange={(e) => handleUserSettingChange('combinedCurrency', e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-zinc-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-sm"
-                >
-                  <option value="USD">USD ($)</option>
-                  <option value="INR">INR (₹)</option>
-                  <option value="AUD">AUD (A$)</option>
-                  <option value="EUR">EUR (€)</option>
-                  <option value="GBP">GBP (£)</option>
-                  <option value="CAD">CAD (C$)</option>
-                  <option value="SGD">SGD (S$)</option>
-                </select>
-              </div>
-            </div>
-          </section>
-
-          {/* Investment Settings Section */}
-          <section>
-            <div className="flex items-center gap-2 mb-6 text-zinc-900">
-              <Briefcase size={18} className="text-indigo-600" />
-              <h3 className="font-bold uppercase tracking-wider text-xs">Investment Settings (Tab Specific)</h3>
-            </div>
-            
-            <div className="space-y-8">
-              {['global', 'india', 'australia'].map((tab) => (
-                <div key={tab} className={cn(
-                  "p-6 rounded-2xl border transition-all",
-                  activeTab === tab ? "bg-indigo-50/30 border-indigo-100 ring-1 ring-indigo-100" : "bg-white border-zinc-100"
-                )}>
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="font-bold text-zinc-900 capitalize">{tab} Portfolio</h4>
-                    {activeTab === tab && <span className="text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded-full uppercase tracking-tighter">Active</span>}
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                    <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Currency</label>
-                      <select 
-                        value={localTabSettings[tab]?.currency || (tab === 'india' ? 'INR' : tab === 'australia' ? 'AUD' : 'USD')}
-                        onChange={(e) => handleTabSettingChange(tab, 'currency', e.target.value)}
-                        className="w-full px-3 py-2 rounded-lg border border-zinc-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-mono"
-                      >
-                        <option value="USD">USD ($)</option>
-                        <option value="INR">INR (₹)</option>
-                        <option value="AUD">AUD (A$)</option>
-                        <option value="EUR">EUR (€)</option>
-                        <option value="GBP">GBP (£)</option>
-                        <option value="CAD">CAD (C$)</option>
-                        <option value="SGD">SGD (S$)</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Benchmark</label>
-                      <input 
-                        type="text" 
-                        value={localTabSettings[tab]?.benchmark}
-                        onChange={(e) => handleTabSettingChange(tab, 'benchmark', e.target.value.toUpperCase())}
-                        className="w-full px-3 py-2 rounded-lg border border-zinc-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-mono"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Risk Profile</label>
-                      <select 
-                        value={localTabSettings[tab]?.riskProfile}
-                        onChange={(e) => handleTabSettingChange(tab, 'riskProfile', e.target.value)}
-                        className="w-full px-3 py-2 rounded-lg border border-zinc-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
-                      >
-                        <option value="conservative">Conservative</option>
-                        <option value="moderate">Moderate</option>
-                        <option value="aggressive">Aggressive</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider">Target Return (%)</label>
-                      <input 
-                        type="number" 
-                        value={localTabSettings[tab]?.targetReturn}
-                        onChange={(e) => handleTabSettingChange(tab, 'targetReturn', parseFloat(e.target.value))}
-                        className="w-full px-3 py-2 rounded-lg border border-zinc-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
+        {/* Modal Navigation Tabs */}
+        <div className="flex border-b border-zinc-100 dark:border-zinc-800 px-6 pt-3 bg-zinc-50/30 dark:bg-zinc-900/50 gap-2">
+          <button
+            onClick={() => setActiveModalTab('profile')}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-t-xl border-b-2 transition-all",
+              activeModalTab === 'profile'
+                ? "border-indigo-600 text-indigo-600 dark:text-indigo-400 bg-white dark:bg-zinc-900"
+                : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            )}
+          >
+            <UserIcon size={15} />
+            Profile & Display
+          </button>
+          <button
+            onClick={() => setActiveModalTab('ai')}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-t-xl border-b-2 transition-all",
+              activeModalTab === 'ai'
+                ? "border-indigo-600 text-indigo-600 dark:text-indigo-400 bg-white dark:bg-zinc-900"
+                : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            )}
+          >
+            <Sparkles size={15} className="text-amber-500" />
+            AI Intelligence & Models
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 uppercase font-extrabold tracking-tight">
+              Claude / Gemini
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveModalTab('portfolios')}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-t-xl border-b-2 transition-all",
+              activeModalTab === 'portfolios'
+                ? "border-indigo-600 text-indigo-600 dark:text-indigo-400 bg-white dark:bg-zinc-900"
+                : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            )}
+          >
+            <Briefcase size={15} />
+            Portfolios
+          </button>
         </div>
 
-        <div className="p-6 border-t border-zinc-100 bg-zinc-50/50 flex items-center justify-end gap-3">
-          <button 
-            onClick={onClose}
-            className="px-6 py-2.5 rounded-xl font-bold text-zinc-600 hover:bg-zinc-100 transition-all text-sm"
-          >
-            Cancel
-          </button>
-          <button 
-            onClick={() => onSave(localTabSettings, localUserSettings)}
-            disabled={isSaving}
-            className="px-8 py-2.5 bg-zinc-900 text-white rounded-xl font-bold hover:bg-zinc-800 transition-all flex items-center gap-2 shadow-lg shadow-zinc-200 disabled:opacity-50 text-sm"
-          >
-            {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-            Save Settings
-          </button>
+        <div className="flex-1 overflow-y-auto p-8 space-y-8">
+          {/* TAB 1: User Profile & Display */}
+          {activeModalTab === 'profile' && (
+            <section className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-zinc-700 dark:text-zinc-300">Display Name</label>
+                  <input 
+                    type="text" 
+                    value={localUserSettings.displayName}
+                    onChange={(e) => handleUserSettingChange('displayName', e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    placeholder="Your name"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-zinc-700 dark:text-zinc-300">Avatar URL</label>
+                  <input 
+                    type="text" 
+                    value={localUserSettings.avatarUrl}
+                    onChange={(e) => handleUserSettingChange('avatarUrl', e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    placeholder="https://..."
+                  />
+                </div>
+                <div className="space-y-2 flex items-center gap-3 pt-4">
+                  <button
+                    onClick={() => handleUserSettingChange('showCombinedSummary', !localUserSettings.showCombinedSummary)}
+                    className={cn(
+                      "w-12 h-6 rounded-full transition-all relative flex-shrink-0",
+                      localUserSettings.showCombinedSummary ? "bg-indigo-600" : "bg-zinc-200 dark:bg-zinc-700"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
+                      localUserSettings.showCombinedSummary ? "left-7" : "left-1"
+                    )} />
+                  </button>
+                  <span className="text-sm font-bold text-zinc-700 dark:text-zinc-300">Show Combined Portfolio Summary</span>
+                </div>
+                <div className="space-y-2 flex items-center gap-3 pt-4">
+                  <button
+                    onClick={() => handleUserSettingChange('autoSave', !localUserSettings.autoSave)}
+                    className={cn(
+                      "w-12 h-6 rounded-full transition-all relative flex-shrink-0",
+                      localUserSettings.autoSave ? "bg-indigo-600" : "bg-zinc-200 dark:bg-zinc-700"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
+                      localUserSettings.autoSave ? "left-7" : "left-1"
+                    )} />
+                  </button>
+                  <span className="text-sm font-bold text-zinc-700 dark:text-zinc-300 flex flex-col">
+                    <span>Auto-save changes</span>
+                    <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">Persist preferences instantly</span>
+                  </span>
+                </div>
+                <div className="space-y-2 flex items-center gap-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => handleUserSettingChange('darkMode', !localUserSettings.darkMode)}
+                    className={cn(
+                      "w-12 h-6 rounded-full transition-all relative flex-shrink-0",
+                      localUserSettings.darkMode ? "bg-indigo-600" : "bg-zinc-200 dark:bg-zinc-700"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 bg-white rounded-full absolute top-1 transition-all",
+                      localUserSettings.darkMode ? "left-7" : "left-1"
+                    )} />
+                  </button>
+                  <span className="text-sm font-bold text-zinc-700 dark:text-zinc-300 flex flex-col">
+                    <span>Dark Mode Theme</span>
+                    <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">Enable modern dark canvas theme</span>
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-zinc-700 dark:text-zinc-300">Combined Portfolio Currency</label>
+                  <select 
+                    value={localUserSettings.combinedCurrency || 'USD'}
+                    onChange={(e) => handleUserSettingChange('combinedCurrency', e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm"
+                  >
+                    <option value="USD">USD ($)</option>
+                    <option value="INR">INR (₹)</option>
+                    <option value="AUD">AUD (A$)</option>
+                    <option value="EUR">EUR (€)</option>
+                    <option value="GBP">GBP (£)</option>
+                    <option value="CAD">CAD (C$)</option>
+                    <option value="SGD">SGD (S$)</option>
+                  </select>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* TAB 2: AI Intelligence & Model Configuration */}
+          {activeModalTab === 'ai' && (
+            <section className="space-y-8">
+              {/* Provider Selection */}
+              <div>
+                <label className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider block mb-3">
+                  Default AI Provider
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {(['anthropic', 'gemini', 'openai', 'deepseek', 'custom'] as AIProvider[]).map((p) => {
+                    const info = PROVIDER_INFO[p];
+                    const isSelected = currentAi.provider === p;
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => handleAiConfigChange('provider', p)}
+                        className={cn(
+                          "p-3.5 rounded-2xl border text-left flex flex-col justify-between transition-all relative",
+                          isSelected 
+                            ? "border-indigo-600 bg-indigo-50/40 dark:bg-indigo-950/30 ring-2 ring-indigo-500/20" 
+                            : "border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-600"
+                        )}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className={cn("text-xs font-bold tracking-tight", info.color)}>
+                            {info.name}
+                          </span>
+                          {isSelected && (
+                            <div className="w-4 h-4 rounded-full bg-indigo-600 text-white flex items-center justify-center">
+                              <Check size={10} strokeWidth={3} />
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium">
+                          {p === 'anthropic' && 'Claude 3.7 / 3.5 Sonnet'}
+                          {p === 'gemini' && 'Gemini 3.1 Pro / 2.5'}
+                          {p === 'openai' && 'GPT-4o / o3-mini'}
+                          {p === 'deepseek' && 'DeepSeek V3 / R1'}
+                          {p === 'custom' && 'Ollama / OpenRouter'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Model Selection */}
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider block">
+                  Active Model
+                </label>
+                <div className="space-y-2">
+                  <select
+                    value={currentAi.model}
+                    onChange={(e) => handleAiConfigChange('model', e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                  >
+                    <optgroup label="Anthropic (Claude)">
+                      {POPULAR_AI_MODELS.filter(m => m.provider === 'anthropic').map(m => (
+                        <option key={m.id} value={m.id}>{m.name} {m.badge ? `— ${m.badge}` : ''}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Google Gemini">
+                      {POPULAR_AI_MODELS.filter(m => m.provider === 'gemini').map(m => (
+                        <option key={m.id} value={m.id}>{m.name} {m.badge ? `— ${m.badge}` : ''}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                      {POPULAR_AI_MODELS.filter(m => m.provider === 'openai').map(m => (
+                        <option key={m.id} value={m.id}>{m.name} {m.badge ? `— ${m.badge}` : ''}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="DeepSeek">
+                      {POPULAR_AI_MODELS.filter(m => m.provider === 'deepseek').map(m => (
+                        <option key={m.id} value={m.id}>{m.name} {m.badge ? `— ${m.badge}` : ''}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Custom ID">
+                      <option value="custom_model_id">Custom Model ID...</option>
+                    </optgroup>
+                  </select>
+
+                  {/* If custom or selected custom ID */}
+                  {(currentAi.provider === 'custom' || currentAi.model === 'custom_model_id') && (
+                    <div className="mt-2 space-y-2">
+                      <label className="text-[11px] font-semibold text-zinc-500">Custom Model Identifier</label>
+                      <input
+                        type="text"
+                        value={currentAi.customModelName || ''}
+                        onChange={(e) => {
+                          handleAiConfigChange('customModelName', e.target.value);
+                          if (currentAi.model === 'custom_model_id') {
+                            handleAiConfigChange('model', e.target.value);
+                          }
+                        }}
+                        placeholder="e.g. claude-3-7-sonnet-latest, mistral-large, llama3.3"
+                        className="w-full px-4 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm font-mono"
+                      />
+                    </div>
+                  )}
+
+                  {/* Model Description Box */}
+                  {(() => {
+                    const matched = POPULAR_AI_MODELS.find(m => m.id === currentAi.model);
+                    if (!matched) return null;
+                    return (
+                      <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-400">
+                        <span>{matched.description}</span>
+                        {matched.badge && (
+                          <span className="px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 font-semibold text-[10px] whitespace-nowrap ml-2">
+                            {matched.badge}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* API Keys Configuration */}
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Key size={16} className="text-indigo-600" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-900 dark:text-zinc-100">
+                      User API Keys (Stored Privately in your Profile)
+                    </h4>
+                  </div>
+                  <span className="text-[11px] text-zinc-400 flex items-center gap-1">
+                    <Lock size={12} /> Encrypted & Private
+                  </span>
+                </div>
+
+                <div className="space-y-3">
+                  {/* Anthropic Claude Key */}
+                  <div className="p-4 rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/60 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                        Anthropic API Key (Claude)
+                      </label>
+                      <span className="text-[10px] text-zinc-400">Optional user key</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showKeys['anthropic'] ? 'text' : 'password'}
+                        value={currentAi.anthropicApiKey || ''}
+                        onChange={(e) => handleAiConfigChange('anthropicApiKey', e.target.value)}
+                        placeholder="sk-ant-api03-..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-xs font-mono pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleShowKey('anthropic')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                      >
+                        {showKeys['anthropic'] ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-zinc-400">
+                      Used when selecting Claude models. If empty, falls back to server environment variable if configured.
+                    </p>
+                  </div>
+
+                  {/* OpenAI Key */}
+                  <div className="p-4 rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/60 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                        OpenAI API Key (ChatGPT / GPT-4o / o3-mini)
+                      </label>
+                      <span className="text-[10px] text-zinc-400">Optional user key</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showKeys['openai'] ? 'text' : 'password'}
+                        value={currentAi.openaiApiKey || ''}
+                        onChange={(e) => handleAiConfigChange('openaiApiKey', e.target.value)}
+                        placeholder="sk-proj-..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-xs font-mono pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleShowKey('openai')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                      >
+                        {showKeys['openai'] ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Google Gemini Key */}
+                  <div className="p-4 rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/60 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-indigo-700 dark:text-indigo-400 flex items-center gap-1.5">
+                        Google Gemini API Key
+                      </label>
+                      <span className="text-[10px] text-zinc-400">Optional override</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showKeys['gemini'] ? 'text' : 'password'}
+                        value={currentAi.geminiApiKey || ''}
+                        onChange={(e) => handleAiConfigChange('geminiApiKey', e.target.value)}
+                        placeholder="AIzaSy..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-xs font-mono pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleShowKey('gemini')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                      >
+                        {showKeys['gemini'] ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Custom Endpoint (if custom is chosen) */}
+                  {currentAi.provider === 'custom' && (
+                    <div className="p-4 rounded-2xl border border-purple-200 dark:border-purple-800 bg-purple-50/20 dark:bg-purple-950/20 space-y-3">
+                      <label className="text-xs font-bold text-purple-700 dark:text-purple-400">
+                        Custom OpenAI-Compatible Endpoint URL
+                      </label>
+                      <input
+                        type="text"
+                        value={currentAi.customEndpoint || ''}
+                        onChange={(e) => handleAiConfigChange('customEndpoint', e.target.value)}
+                        placeholder="https://api.openai.com/v1/chat/completions or http://localhost:11434/v1/chat/completions"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-xs font-mono"
+                      />
+                      <input
+                        type={showKeys['custom'] ? 'text' : 'password'}
+                        value={currentAi.customApiKey || ''}
+                        onChange={(e) => handleAiConfigChange('customApiKey', e.target.value)}
+                        placeholder="Custom API Key (optional for local Ollama)"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-xs font-mono"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Analysis Preferences */}
+              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-4">
+                <div className="flex items-center gap-2">
+                  <Sliders size={16} className="text-indigo-600" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-900 dark:text-zinc-100">
+                    Analysis Depth & Preferences
+                  </h4>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { id: 'comprehensive', label: 'Comprehensive', desc: 'Deep macro, moat, valuation & risk analysis' },
+                    { id: 'concise', label: 'Concise', desc: 'Fast, bulleted executive takeaway & actions' },
+                    { id: 'technical', label: 'Valuation & Technical', desc: 'Financial multiples, levels, support & resistance' }
+                  ].map(style => (
+                    <button
+                      key={style.id}
+                      type="button"
+                      onClick={() => handleAiConfigChange('analysisStyle', style.id)}
+                      className={cn(
+                        "p-3 rounded-xl border text-left transition-all",
+                        currentAi.analysisStyle === style.id
+                          ? "border-indigo-600 bg-indigo-50/40 dark:bg-indigo-950/30 text-indigo-900 dark:text-indigo-200"
+                          : "border-zinc-200 dark:border-zinc-700 hover:border-zinc-300 text-zinc-700 dark:text-zinc-300"
+                      )}
+                    >
+                      <div className="text-xs font-bold mb-1">{style.label}</div>
+                      <div className="text-[10px] text-zinc-500 dark:text-zinc-400">{style.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* TAB 3: Investment Portfolios */}
+          {activeModalTab === 'portfolios' && (
+            <section className="space-y-8">
+              <div className="space-y-6">
+                {['global', 'australia'].map((tab) => (
+                  <div key={tab} className={cn(
+                    "p-6 rounded-2xl border transition-all",
+                    activeTab === tab 
+                      ? "bg-indigo-50/30 dark:bg-indigo-950/20 border-indigo-100 dark:border-indigo-800 ring-1 ring-indigo-100 dark:ring-indigo-800" 
+                      : "bg-white dark:bg-zinc-800/60 border-zinc-100 dark:border-zinc-700"
+                  )}>
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-bold text-zinc-900 dark:text-zinc-100 capitalize">{tab} Portfolio</h4>
+                      {activeTab === tab && <span className="text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded-full uppercase tracking-tighter">Active</span>}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Currency</label>
+                        <select 
+                          value={localTabSettings[tab]?.currency || (tab === 'australia' ? 'AUD' : 'USD')}
+                          onChange={(e) => handleTabSettingChange(tab, 'currency', e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-mono"
+                        >
+                          <option value="USD">USD ($)</option>
+                          <option value="INR">INR (₹)</option>
+                          <option value="AUD">AUD (A$)</option>
+                          <option value="EUR">EUR (€)</option>
+                          <option value="GBP">GBP (£)</option>
+                          <option value="CAD">CAD (C$)</option>
+                          <option value="SGD">SGD (S$)</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Benchmark</label>
+                        <input 
+                          type="text" 
+                          value={localTabSettings[tab]?.benchmark}
+                          onChange={(e) => handleTabSettingChange(tab, 'benchmark', e.target.value.toUpperCase())}
+                          className="w-full px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Risk Profile</label>
+                        <select 
+                          value={localTabSettings[tab]?.riskProfile}
+                          onChange={(e) => handleTabSettingChange(tab, 'riskProfile', e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                        >
+                          <option value="conservative">Conservative</option>
+                          <option value="moderate">Moderate</option>
+                          <option value="aggressive">Aggressive</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Target Return (%)</label>
+                        <input 
+                          type="number" 
+                          value={localTabSettings[tab]?.targetReturn}
+                          onChange={(e) => handleTabSettingChange(tab, 'targetReturn', parseFloat(e.target.value))}
+                          className="w-full px-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center min-h-[36px]">
+            {localUserSettings.autoSave && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200/50 dark:border-zinc-700 text-xs font-semibold shadow-sm transition-all duration-300">
+                {syncStatus === 'saving' && (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
+                    <span>Syncing changes...</span>
+                  </>
+                )}
+                {syncStatus === 'saved' && (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-600 font-extrabold" />
+                    <span className="text-emerald-700 dark:text-emerald-400 font-bold">All changes saved to cloud</span>
+                  </>
+                )}
+                {syncStatus === 'error' && (
+                  <>
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                    <span className="text-rose-700 dark:text-rose-400 font-bold">Error syncing changes</span>
+                  </>
+                )}
+                {syncStatus === 'idle' && (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-zinc-400" />
+                    <span className="text-zinc-500">Synced</span>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 justify-end">
+            {localUserSettings.autoSave ? (
+              <button 
+                onClick={onClose}
+                className="px-8 py-2.5 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-xl font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-all flex items-center gap-2 shadow-lg shadow-zinc-200 dark:shadow-none text-sm"
+              >
+                <Check size={16} />
+                Done
+              </button>
+            ) : (
+              <>
+                <button 
+                  onClick={onClose}
+                  className="px-6 py-2.5 rounded-xl font-bold text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-all text-sm"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => onSave(localTabSettings, localUserSettings, true)}
+                  disabled={isSaving}
+                  className="px-8 py-2.5 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-xl font-bold hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-all flex items-center gap-2 shadow-lg shadow-zinc-200 dark:shadow-none disabled:opacity-50 text-sm"
+                >
+                  {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                  Save Settings
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1081,17 +2212,22 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   const [allHoldings, setAllHoldings] = useState<Holding[]>([]);
-  const [activeTab, setActiveTab] = useState<'global' | 'india' | 'australia'>('global');
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  const [txLoaded, setTxLoaded] = useState(false);
+  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [activeTab, setActiveTab] = useState<'global' | 'australia'>('global');
   
   const holdings = useMemo(() => {
     return allHoldings.filter(h => (h.portfolioType || 'global') === activeTab);
   }, [allHoldings, activeTab]);
 
   const [quotes, setQuotes] = useState<Quotes>({});
+  const [betas, setBetas] = useState<Record<string, number | null>>({});
   const [metadata, setMetadata] = useState<Record<string, { sector: string, industry: string, logo?: string, website?: string }>>({});
   const [earningsEvents, setEarningsEvents] = useState<EarningsEvent[]>([]);
+  const [hiddenCalendarEvents, setHiddenCalendarEvents] = useState<string[]>([]);
+
   const [dividendEvents, setDividendEvents] = useState<DividendEvent[]>([]);
-  const [economicEvents, setEconomicEvents] = useState<EconomicEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Form state
@@ -1124,14 +2260,17 @@ export default function App() {
   const [editAvgPrice, setEditAvgPrice] = useState('');
   const [editAvgPriceCurrency, setEditAvgPriceCurrency] = useState('');
   const [editField, setEditField] = useState<string | null>(null);
+  const [editModalHolding, setEditModalHolding] = useState<Holding | null>(null);
   const [selectedChartTicker, setSelectedChartTicker] = useState<string | null>(null);
   const [chartModalTab, setChartModalTab] = useState<'chart' | 'kpis' | 'history'>('chart');
+  const [showRsi, setShowRsi] = useState(false);
   const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   const [kpiTimeScale, setKpiTimeScale] = useState<'5y' | '10y' | 'all_y' | '8q' | '12q' | '20q'>('5y');
   const [financialsData, setFinancialsData] = useState<any>(null);
   const [isFinancialsLoading, setIsFinancialsLoading] = useState(false);
   const [businessKpisData, setBusinessKpisData] = useState<any>(null);
   const [isBusinessKpisLoading, setIsBusinessKpisLoading] = useState(false);
+  const [fearGreedData, setFearGreedData] = useState<any>(null);
 
   // History state
   const [historyHolding, setHistoryHolding] = useState<Holding | null>(null);
@@ -1139,6 +2278,10 @@ export default function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [confirmUndoId, setConfirmUndoId] = useState<string | null>(null);
   const [undoError, setUndoError] = useState<string | null>(null);
+  const [sellingLot, setSellingLot] = useState<Transaction | null>(null);
+  const [sellLotShares, setSellLotShares] = useState<number>(0);
+  const [sellLotPrice, setSellLotPrice] = useState<number>(0);
+  const [sellLotDate, setSellLotDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
 
   // Portfolio Analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -1156,6 +2299,11 @@ export default function App() {
   const [analysisSentiment, setAnalysisSentiment] = useState<string>('neutral');
   const [isSavingAnalysis, setIsSavingAnalysis] = useState(false);
   const [analysisSaved, setAnalysisSaved] = useState(false);
+  const [analysisModelName, setAnalysisModelName] = useState<string>('');
+  const [analysisProviderName, setAnalysisProviderName] = useState<AIProvider>('gemini');
+  const [analysisErrorCode, setAnalysisErrorCode] = useState<string | null>(null);
+  const [analysisErrorProvider, setAnalysisErrorProvider] = useState<string | null>(null);
+  const [analysisFallbackNotice, setAnalysisFallbackNotice] = useState<string | null>(null);
   
   // Earnings Analysis state
   const [selectedEarningsEvent, setSelectedEarningsEvent] = useState<EarningsEvent | null>(null);
@@ -1164,9 +2312,22 @@ export default function App() {
   const [showEarningsAnalysisModal, setShowEarningsAnalysisModal] = useState(false);
   const [isSavingEarningsAnalysis, setIsSavingEarningsAnalysis] = useState(false);
   const [earningsAnalysisSaved, setEarningsAnalysisSaved] = useState(false);
+  const [earningsAnalysisModelName, setEarningsAnalysisModelName] = useState<string>('');
+  const [earningsAnalysisProviderName, setEarningsAnalysisProviderName] = useState<AIProvider>('gemini');
+  const [earningsAnalysisErrorCode, setEarningsAnalysisErrorCode] = useState<string | null>(null);
+  const [earningsAnalysisErrorProvider, setEarningsAnalysisErrorProvider] = useState<string | null>(null);
+  const [earningsAnalysisFallbackNotice, setEarningsAnalysisFallbackNotice] = useState<string | null>(null);
 
   const [showEarningsAnalysisStrategyModal, setShowEarningsAnalysisStrategyModal] = useState(false);
   const [strategyEarningsEvent, setStrategyEarningsEvent] = useState<EarningsEvent | null>(null);
+  const [selectedStrategyModel, setSelectedStrategyModel] = useState<string>('');
+  const [selectedEarningsStrategyModel, setSelectedEarningsStrategyModel] = useState<string>('');
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'profile' | 'ai' | 'portfolios'>('profile');
+
+  // Custom Earnings Events & Overrides state
+  const [customCalendarEvents, setCustomCalendarEvents] = useState<EarningsEvent[]>([]);
+  const [showEditEarningsModal, setShowEditEarningsModal] = useState(false);
+  const [editingEarningsEvent, setEditingEarningsEvent] = useState<Partial<EarningsEvent> | null>(null);
 
   const promptEarningsAnalysisStrategy = (event: EarningsEvent) => {
     setStrategyEarningsEvent(event);
@@ -1177,6 +2338,8 @@ export default function App() {
   const [chartType, setChartType] = useState<'pie' | 'bar' | 'scatter'>('pie');
   const [chartView, setChartView] = useState<'asset' | 'industry'>('asset');
   const [showAllAllocation, setShowAllAllocation] = useState(false);
+  const [hoveredScatterTicker, setHoveredScatterTicker] = useState<string | null>(null);
+  const [deconflictScatter, setDeconflictScatter] = useState<boolean>(true);
 
   // Widget sizes state (1, 2, or 3 columns)
   const [widgetSizes, setWidgetSizes] = useState<Record<string, number>>(() => {
@@ -1186,7 +2349,9 @@ export default function App() {
       holdings: 3,
       dividends: 3,
       addPosition: 1,
+      transactions: 3,
       upload: 1,
+      sectorHeatmap: 3,
     };
     const saved = localStorage.getItem('widgetSizes');
     if (saved) {
@@ -1247,22 +2412,32 @@ export default function App() {
 
   const [widgetOrder, setWidgetOrder] = useState(() => {
     const saved = localStorage.getItem('widgetOrder');
-    let order = [
+    const defaultOrder = [
       'performance',
+      'twrCalculator',
       'allocation',
+      'beta',
       'calendar',
       'holdings',
+      'watchlist',
       'dividends',
       'addPosition',
+      'transactions',
+      'priceAlerts',
+      'sectorHeatmap',
       'upload'
     ];
+    let order = [...defaultOrder];
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          // If they don't have the performance widget yet, add it to the top
-          if (!parsed.includes('performance')) {
-            parsed.unshift('performance');
+          // Ensure mandatory widgets are present
+          if (!parsed.includes('performance')) parsed.unshift('performance');
+          if (!parsed.includes('holdings')) parsed.push('holdings');
+          if (!parsed.includes('watchlist')) {
+            const hIdx = parsed.indexOf('holdings');
+            parsed.splice(hIdx + 1, 0, 'watchlist');
           }
           order = parsed;
         }
@@ -1279,10 +2454,16 @@ export default function App() {
 
   const [showAddWidget, setShowAddWidget] = useState(false);
   const addWidgetRef = useRef<HTMLDivElement>(null);
+  const addWidgetBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (addWidgetRef.current && !addWidgetRef.current.contains(event.target as Node)) {
+      if (
+        addWidgetRef.current && 
+        !addWidgetRef.current.contains(event.target as Node) &&
+        addWidgetBtnRef.current &&
+        !addWidgetBtnRef.current.contains(event.target as Node)
+      ) {
         setShowAddWidget(false);
       }
     };
@@ -1292,11 +2473,17 @@ export default function App() {
 
   const ALL_WIDGETS = [
     { id: 'performance', label: 'Performance vs Benchmarks' },
+    { id: 'twrCalculator', label: 'TWR Return Calculator' },
     { id: 'allocation', label: 'Portfolio Allocation' },
     { id: 'calendar', label: 'Financial Calendar' },
     { id: 'holdings', label: 'Current Holdings' },
+    { id: 'watchlist', label: 'Watchlist' },
+    { id: 'beta', label: 'Portfolio Beta vs Benchmark' },
     { id: 'dividends', label: 'Dividends' },
     { id: 'addPosition', label: 'Add Position' },
+    { id: 'transactions', label: 'Transactions Registry' },
+    { id: 'priceAlerts', label: 'Price Alerts' },
+    { id: 'sectorHeatmap', label: 'Sector Heatmap' },
     { id: 'upload', label: 'Import Portfolio' }
   ];
 
@@ -1322,10 +2509,10 @@ export default function App() {
       const res = await fetch(`/api/historical-bulk?${params.toString()}`);
       if (!res.ok) throw new Error('Failed to sync history');
       
-      alert('Portfolio historical data (5Y) has been synced and cached locally.');
+      toast.success('Portfolio historical data (5Y) has been synced and cached locally.');
     } catch (err) {
       console.error('Error syncing history:', err);
-      alert('Failed to sync historical data. Please try again later.');
+      toast.error('Failed to sync historical data. Please try again later.');
     } finally {
       setIsSyncingHistory(false);
     }
@@ -1374,26 +2561,79 @@ export default function App() {
 
   // Sort state
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'currentValue', direction: 'desc' });
+  const [tableGrouping, setTableGrouping] = useState<'none' | 'theme' | 'assetType' | 'sector' | 'industry' | 'marketCap'>('none');
   const [filterGroup, setFilterGroup] = useState<string | null>(null);
   const [columnOrder, setColumnOrder] = useState<string[]>([
-    'ticker', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'profitLoss', 'marketCap'
+    'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap'
   ]);
 
   // Settings state
   const [tabSettings, setTabSettings] = useState<Record<string, { benchmark: string, riskProfile: string, targetReturn: number, currency: string }>>({
     global: { benchmark: 'SPY', riskProfile: 'moderate', targetReturn: 8, currency: 'USD' },
-    india: { benchmark: '^NSEI', riskProfile: 'moderate', targetReturn: 12, currency: 'INR' },
     australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' },
   });
-  const [userSettings, setUserSettings] = useState<{ displayName: string, avatarUrl: string, showCombinedSummary: boolean, combinedCurrency: string, combinedBenchmark: string }>({
+  const [userSettings, setUserSettings] = useState<{ 
+    displayName: string; 
+    avatarUrl: string; 
+    showCombinedSummary: boolean; 
+    combinedCurrency: string; 
+    combinedBenchmark: string; 
+    autoSave?: boolean; 
+    darkMode?: boolean;
+    aiConfig?: AIUserConfig;
+  }>({
     displayName: '',
     avatarUrl: '',
     showCombinedSummary: true,
     combinedCurrency: 'USD',
     combinedBenchmark: 'SPY',
+    autoSave: false,
+    darkMode: false,
+    aiConfig: DEFAULT_AI_CONFIG
   });
   const [showSettings, setShowSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+
+  const resolveAiConfig = (modelOverride?: string, providerOverride?: AIProvider) => {
+    const config: AIUserConfig = {
+      ...DEFAULT_AI_CONFIG,
+      ...(userSettings?.aiConfig || {})
+    };
+
+    let provider: AIProvider = providerOverride || config.provider || 'gemini';
+    let model: string = modelOverride || config.model || 'gemini-2.5-flash';
+
+    if (modelOverride && !providerOverride) {
+      const matched = POPULAR_AI_MODELS.find(m => m.id === modelOverride);
+      if (matched) {
+        provider = matched.provider;
+      } else if (modelOverride.startsWith('claude')) {
+        provider = 'anthropic';
+      } else if (modelOverride.startsWith('gpt') || modelOverride.startsWith('o1') || modelOverride.startsWith('o3')) {
+        provider = 'openai';
+      } else if (modelOverride.startsWith('deepseek')) {
+        provider = 'deepseek';
+      } else if (modelOverride.startsWith('gemini')) {
+        provider = 'gemini';
+      }
+    }
+
+    let apiKey = '';
+    if (provider === 'anthropic') apiKey = config.anthropicApiKey || '';
+    else if (provider === 'openai') apiKey = config.openaiApiKey || '';
+    else if (provider === 'gemini') apiKey = config.geminiApiKey || '';
+    else if (provider === 'deepseek') apiKey = config.deepseekApiKey || '';
+    else if (provider === 'custom') apiKey = config.customApiKey || '';
+
+    return {
+      provider,
+      model,
+      apiKey,
+      customEndpoint: config.customEndpoint || '',
+      temperature: config.temperature ?? 0.7,
+      analysisStyle: config.analysisStyle || 'comprehensive'
+    };
+  };
 
   const [showSavedAnalysesModal, setShowSavedAnalysesModal] = useState(false);
   const [savedAnalyses, setSavedAnalyses] = useState<any[]>([]);
@@ -1433,35 +2673,69 @@ export default function App() {
   };
 
   const benchmarkTicker = tabSettings[activeTab]?.benchmark || 'SPY';
-  const activeCurrency = tabSettings[activeTab]?.currency || (activeTab === 'india' ? 'INR' : activeTab === 'australia' ? 'AUD' : 'USD');
+  const activeCurrency = tabSettings[activeTab]?.currency || (activeTab === 'australia' ? 'AUD' : 'USD');
 
   useEffect(() => {
     if (!user) return;
     const unsubscribe = onSnapshot(doc(db, 'settings', user.uid), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        if (data.tabs) setTabSettings(data.tabs);
+        if (data.tabs) {
+          const loadedTabs = { ...data.tabs };
+          delete loadedTabs.india;
+          delete loadedTabs.crypto;
+          setTabSettings(loadedTabs);
+        }
+        setHiddenCalendarEvents(data.hiddenCalendarEvents || []);
+        if (data.customCalendarEvents) setCustomCalendarEvents(data.customCalendarEvents);
         if (data.user) setUserSettings({
           displayName: data.user.displayName || '',
           avatarUrl: data.user.avatarUrl || '',
           showCombinedSummary: data.user.showCombinedSummary !== undefined ? data.user.showCombinedSummary : true,
           combinedCurrency: data.user.combinedCurrency || 'USD',
           combinedBenchmark: data.user.combinedBenchmark || 'SPY',
+          autoSave: data.user.autoSave !== undefined ? data.user.autoSave : false,
+          darkMode: data.user.darkMode !== undefined ? data.user.darkMode : false,
         });
+        if (data.tableLayout) {
+          if (data.tableLayout.columnOrder) {
+            let loadedOrder = [...data.tableLayout.columnOrder];
+            if (!loadedOrder.includes('growthMultiple')) {
+              const pIdx = loadedOrder.indexOf('profitLoss');
+              if (pIdx !== -1) {
+                loadedOrder.splice(pIdx + 1, 0, 'growthMultiple');
+              } else {
+                loadedOrder.push('growthMultiple');
+              }
+            }
+            setColumnOrder(loadedOrder);
+          }
+          if (data.tableLayout.tableGrouping) setTableGrouping(data.tableLayout.tableGrouping);
+          if (data.tableLayout.sortConfig) setSortConfig(data.tableLayout.sortConfig);
+        }
       } else {
         // Initialize default settings in Firestore
         setDoc(doc(db, 'settings', user.uid), {
           tabs: {
             global: { benchmark: 'SPY', riskProfile: 'moderate', targetReturn: 8, currency: 'USD' },
-            india: { benchmark: '^NSEI', riskProfile: 'moderate', targetReturn: 12, currency: 'INR' },
             australia: { benchmark: '^AXJO', riskProfile: 'moderate', targetReturn: 7, currency: 'AUD' }
           },
+          hiddenCalendarEvents: [],
           user: {
             displayName: user.displayName || user.email?.split('@')[0] || 'Investor',
             avatarUrl: user.photoURL || '',
             showCombinedSummary: true,
             combinedCurrency: 'USD',
             combinedBenchmark: 'SPY',
+            autoSave: false,
+            darkMode: false,
+          },
+          tableLayout: {
+            columnOrder: [
+              'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap'
+            ],
+            tableGrouping: 'none',
+            sortConfig: { key: 'currentValue', direction: 'desc' }
           }
         });
       }
@@ -1469,7 +2743,55 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
-  const handleSaveSettings = async (newTabSettings: any, newUserSettings: any) => {
+  useEffect(() => {
+    if (userSettings.darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [userSettings.darkMode]);
+
+  useEffect(() => {
+    const fetchFearGreed = async () => {
+      if (holdings.length === 0) return;
+      
+      const tickers = Array.from(new Set(holdings.map(h => h.ticker))).filter(t => t !== 'CASH');
+      if (tickers.length === 0) return;
+
+      try {
+        const res = await fetch(`/api/fear-greed?symbols=${encodeURIComponent(tickers.join(','))}`);
+        if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+          const data = await res.json();
+          setFearGreedData(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch Fear & Greed index:', err);
+      }
+    };
+
+    fetchFearGreed();
+  }, [holdings.length, activeTab]);
+
+  const toggleDarkMode = async () => {
+    if (!user) {
+      setUserSettings(prev => ({ ...prev, darkMode: !prev.darkMode }));
+      return;
+    }
+    const updatedUserSettings = {
+      ...userSettings,
+      darkMode: !userSettings.darkMode
+    };
+    try {
+      await setDoc(doc(db, 'settings', user.uid), {
+        user: updatedUserSettings
+      }, { merge: true });
+      setUserSettings(updatedUserSettings);
+    } catch (err) {
+      console.error('Failed to toggle dark mode:', err);
+    }
+  };
+
+  const handleSaveSettings = async (newTabSettings: any, newUserSettings: any, autoClose = true) => {
     if (!user) return;
     setIsSavingSettings(true);
     try {
@@ -1481,16 +2803,158 @@ export default function App() {
       setTabSettings(newTabSettings);
       setUserSettings(newUserSettings);
 
-      setSaveMessage({ text: 'Settings saved', type: 'success' });
-      setShowSettings(false);
+      if (autoClose) {
+        setSaveMessage({ text: 'Settings saved', type: 'success' });
+        setShowSettings(false);
+      }
     } catch (error) {
       console.error('Error saving settings:', error);
-      setSaveMessage({ text: 'Failed to save settings', type: 'error' });
+      if (autoClose) {
+        setSaveMessage({ text: 'Failed to save settings', type: 'error' });
+      }
+      throw error;
     } finally {
       setIsSavingSettings(false);
-      setTimeout(() => setSaveMessage(null), 3000);
+      if (autoClose) {
+        setTimeout(() => setSaveMessage(null), 3000);
+      }
     }
   };
+
+  const [layoutSaveStatus, setLayoutSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  const saveTableLayout = async (layout: { columnOrder?: string[], tableGrouping?: string, sortConfig?: any }) => {
+    if (!user) return;
+    setLayoutSaveStatus('saving');
+    try {
+      await setDoc(doc(db, 'settings', user.uid), {
+        tableLayout: {
+          columnOrder: layout.columnOrder !== undefined ? layout.columnOrder : columnOrder,
+          tableGrouping: layout.tableGrouping !== undefined ? layout.tableGrouping : tableGrouping,
+          sortConfig: layout.sortConfig !== undefined ? layout.sortConfig : sortConfig
+        }
+      }, { merge: true });
+      setLayoutSaveStatus('saved');
+      setTimeout(() => setLayoutSaveStatus('idle'), 2000);
+    } catch (err) {
+      console.error('Failed to save table layout:', err);
+      setLayoutSaveStatus('error');
+      setTimeout(() => setLayoutSaveStatus('idle'), 3000);
+    }
+  };
+
+  const handleRemoveCalendarEvent = async (symbol: string, date: string) => {
+    if (!user) return;
+    try {
+      const dateKey = getEventDateKey(date);
+      const safeSym = (symbol || '').toUpperCase();
+      const eventKey = `${safeSym}-${dateKey}`;
+      const newHidden = [...hiddenCalendarEvents, eventKey];
+      const newCustom = customCalendarEvents.filter(e => (e?.symbol || '').toUpperCase() !== safeSym);
+
+      setHiddenCalendarEvents(newHidden);
+      setCustomCalendarEvents(newCustom);
+
+      await setDoc(doc(db, 'settings', user.uid), {
+        hiddenCalendarEvents: newHidden,
+        customCalendarEvents: newCustom
+      }, { merge: true });
+    } catch (err) {
+      console.error('Failed to remove calendar event:', err);
+    }
+  };
+
+  const handleSaveCustomCalendarEvent = async (event: EarningsEvent) => {
+    if (!user) return;
+    try {
+      const cleanSymbol = (event?.symbol || '').toUpperCase().trim();
+      const updatedEvent: EarningsEvent = {
+        ...event,
+        symbol: cleanSymbol,
+      };
+
+      const existingIndex = customCalendarEvents.findIndex(e => (e?.symbol || '').toUpperCase() === cleanSymbol);
+      let newCustom: EarningsEvent[];
+      if (existingIndex >= 0) {
+        newCustom = [...customCalendarEvents];
+        newCustom[existingIndex] = updatedEvent;
+      } else {
+        newCustom = [...customCalendarEvents, updatedEvent];
+      }
+
+      const dateKey = getEventDateKey(updatedEvent.date);
+      const eventKey = `${cleanSymbol}-${dateKey}`;
+      const newHidden = hiddenCalendarEvents.filter(k => k !== eventKey);
+
+      setCustomCalendarEvents(newCustom);
+      setHiddenCalendarEvents(newHidden);
+
+      await setDoc(doc(db, 'settings', user.uid), {
+        customCalendarEvents: newCustom,
+        hiddenCalendarEvents: newHidden
+      }, { merge: true });
+    } catch (err) {
+      console.error('Failed to save custom calendar event:', err);
+    }
+  };
+
+  const handleResetCustomCalendarEvent = async (symbol: string) => {
+    if (!user) return;
+    try {
+      const cleanSymbol = (symbol || '').toUpperCase().trim();
+      const newCustom = customCalendarEvents.filter(e => (e?.symbol || '').toUpperCase() !== cleanSymbol);
+      setCustomCalendarEvents(newCustom);
+
+      await setDoc(doc(db, 'settings', user.uid), {
+        customCalendarEvents: newCustom
+      }, { merge: true });
+    } catch (err) {
+      console.error('Failed to reset custom calendar event:', err);
+    }
+  };
+
+  const handleRestoreCalendarEvents = async () => {
+    if (!user) return;
+    try {
+      setHiddenCalendarEvents([]);
+      await setDoc(doc(db, 'settings', user.uid), {
+        hiddenCalendarEvents: []
+      }, { merge: true });
+    } catch (err) {
+      console.error('Failed to restore calendar events:', err);
+    }
+  };
+
+  const filteredEarningsEvents = useMemo(() => {
+    const result: EarningsEvent[] = [];
+    const processedSymbols = new Set<string>();
+
+    // Custom overrides first
+    customCalendarEvents.forEach(ce => {
+      if (!ce || !ce.symbol) return;
+      const ceSym = ce.symbol.toUpperCase();
+      const dateKey = getEventDateKey(ce.date);
+      const eventKey = `${ceSym}-${dateKey}`;
+      if (!hiddenCalendarEvents.includes(eventKey)) {
+        result.push(ce);
+        processedSymbols.add(ceSym);
+      }
+    });
+
+    // API events for tickers without custom overrides
+    earningsEvents.forEach(event => {
+      if (!event || !event.symbol) return;
+      const evSym = event.symbol.toUpperCase();
+      if (processedSymbols.has(evSym)) return;
+      const dateKey = getEventDateKey(event.date);
+      const eventKey = `${evSym}-${dateKey}`;
+      if (!hiddenCalendarEvents.includes(eventKey)) {
+        result.push(event);
+      }
+    });
+
+    return result;
+  }, [earningsEvents, customCalendarEvents, hiddenCalendarEvents]);
 
   const [benchmarkData, setBenchmarkData] = useState<{ dayChangePercent: number, ytdReturn?: number } | null>(null);
 
@@ -1499,7 +2963,9 @@ export default function App() {
     if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
       direction = 'desc';
     }
-    setSortConfig({ key, direction });
+    const newSortConfig = { key, direction };
+    setSortConfig(newSortConfig);
+    saveTableLayout({ sortConfig: newSortConfig });
   };
 
   const handleDownload = () => {
@@ -1510,6 +2976,80 @@ export default function App() {
     linkElement.setAttribute('href', dataUri);
     linkElement.setAttribute('download', exportFileDefaultName);
     linkElement.click();
+  };
+
+  const handleExportCSV = () => {
+    const itemsToExport = sortedHoldings && sortedHoldings.length > 0 ? sortedHoldings : portfolioStats.enrichedHoldings;
+    if (!itemsToExport || itemsToExport.length === 0) {
+      toast.error("No holdings available to export");
+      return;
+    }
+
+    const currSym = getCurrencySymbol(activeCurrency).trim();
+
+    const headers = [
+      'Ticker',
+      'Asset Name',
+      'Investing Theme',
+      'Shares',
+      `Avg Cost (${currSym})`,
+      `Cost Basis (${currSym})`,
+      `Current Price (${currSym})`,
+      `Current Value (${currSym})`,
+      `Day Change (${currSym})`,
+      `Day Change %`,
+      `Total Return (${currSym})`,
+      `Total Return %`,
+      `Growth Multiple`,
+      `Allocation %`,
+      `Realized P&L (${currSym})`
+    ];
+
+    const escapeCsv = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = itemsToExport.map((hItem: any) => {
+      const h = hItem;
+      const theme = getInvestingTheme(h, metadata);
+      const name = h.name || (metadata[h.ticker] as any)?.name || h.ticker;
+      return [
+        escapeCsv(h.ticker),
+        escapeCsv(name),
+        escapeCsv(theme),
+        h.shares,
+        (h.displayAvgPrice || 0).toFixed(2),
+        (h.costBasis || 0).toFixed(2),
+        (h.currentPrice || 0).toFixed(2),
+        (h.currentValue || 0).toFixed(2),
+        (h.dayChange || 0).toFixed(2),
+        (h.dayChangePercent || 0).toFixed(2) + '%',
+        (h.profitLoss || 0).toFixed(2),
+        (h.profitLossPercent || 0).toFixed(2) + '%',
+        (h.growthMultiple || 1).toFixed(2) + 'x',
+        (h.allocation || 0).toFixed(2) + '%',
+        (h.realizedProfitLoss || 0).toFixed(2)
+      ];
+    });
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    link.setAttribute('download', `portfolio_${activeTab}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success("Portfolio exported to CSV file successfully!");
   };
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1531,19 +3071,29 @@ export default function App() {
         await Promise.all(docsToDelete.map(d => deleteDoc(d.ref)));
 
         for (const h of importedHoldings) {
-          await addDoc(collection(db, 'holdings'), {
-            ticker: h.ticker.toUpperCase(),
+          const holdingRef = await addDoc(collection(db, 'holdings'), {
+            ticker: (h.ticker || '').toUpperCase(),
             shares: h.shares,
             avg_price: h.avg_price,
             userId: user.uid,
             portfolioType: activeTab,
             updatedAt: serverTimestamp()
           });
+
+          // Record an initial purchase transaction for the new holding!
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: holdingRef.id,
+            type: 'buy',
+            shares: h.shares,
+            price: h.avg_price,
+            date: new Date().toISOString(),
+            userId: user.uid
+          });
         }
         setSaveMessage({ text: 'Portfolio imported successfully', type: 'success' });
       } catch (err) {
         console.error('Import error:', err);
-        alert('Failed to import portfolio. Please check the file format.');
+        toast.error('Failed to import portfolio. Please check the file format.');
       } finally {
         setIsSubmitting(false);
         setTimeout(() => setSaveMessage(null), 3000);
@@ -1553,35 +3103,110 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  const handleDownloadTransactions = async () => {
-    if (!user) return;
+  const handleDownloadTransactions = async (formatType: 'csv' | 'json' = 'csv', scope: 'all' | 'activeTab' = 'all') => {
+    if (!user) {
+      toast.error('Please sign in to export transactions.');
+      return;
+    }
     try {
       const q = query(collection(db, 'transactions'), where('userId', '==', user.uid));
       const snapshot = await getDocs(q);
       
-      const holdingsMap = Object.fromEntries(holdings.map(h => [h.id, h.ticker]));
+      const holdingsMap = new Map(allHoldings.map(h => [h.id, h]));
 
-      const transactionData = snapshot.docs
-        .map(docSnap => {
-          const tx = docSnap.data();
-          return {
-            ...tx,
-            id: docSnap.id,
-            ticker: holdingsMap[tx.holdingId] || 'UNKNOWN'
-          };
-        })
-        .filter(tx => tx.ticker !== 'UNKNOWN');
+      const rawTxs = snapshot.docs.map(docSnap => {
+        const tx = docSnap.data();
+        const holding = holdingsMap.get(tx.holdingId);
+        const ticker = (tx as any).ticker || (tx as any).symbol || holding?.ticker || 'UNKNOWN';
+        const portfolio = (tx as any).portfolioType || (tx as any).portfolio || holding?.portfolioType || 'global';
+        const currency = (tx as any).currency || holding?.avgPriceCurrency || (portfolio === 'australia' ? 'AUD' : 'USD');
+        const shares = Number(tx.shares) || 0;
+        const price = Number(tx.price) || 0;
+        const total = Number((shares * price).toFixed(4));
+        const date = tx.date || (tx.createdAt?.toDate ? tx.createdAt.toDate().toISOString().slice(0, 10) : '');
+        const type = (tx.type || 'buy').toUpperCase();
 
-      const dataStr = JSON.stringify(transactionData, null, 2);
-      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-      const exportFileDefaultName = `transactions_${activeTab}.json`;
-      const linkElement = document.createElement('a');
-      linkElement.setAttribute('href', dataUri);
-      linkElement.setAttribute('download', exportFileDefaultName);
-      linkElement.click();
+        return {
+          id: docSnap.id,
+          date,
+          ticker,
+          type,
+          shares,
+          price,
+          total,
+          currency,
+          portfolio,
+          holdingId: tx.holdingId || '',
+          ...tx
+        };
+      });
+
+      const filteredTxs = scope === 'activeTab'
+        ? rawTxs.filter(t => t.portfolio === activeTab)
+        : rawTxs;
+
+      // Sort by date descending
+      filteredTxs.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+
+      if (filteredTxs.length === 0) {
+        toast.info('No transactions found to export.');
+        return;
+      }
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const filenameBase = `transactions_${scope === 'all' ? 'whole_history' : activeTab}_${dateStr}`;
+
+      if (formatType === 'json') {
+        const cleanJson = filteredTxs.map(t => ({
+          date: t.date,
+          ticker: t.ticker,
+          type: t.type,
+          shares: t.shares,
+          price: t.price,
+          total: t.total,
+          currency: t.currency,
+          portfolio: t.portfolio,
+          holdingId: t.holdingId,
+          id: t.id
+        }));
+        const blob = new Blob([JSON.stringify(cleanJson, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${filenameBase}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.success(`Exported ${filteredTxs.length} transactions as JSON!`);
+      } else {
+        const csvRows = filteredTxs.map(t => ({
+          Date: t.date,
+          Ticker: t.ticker,
+          Type: t.type,
+          Shares: t.shares,
+          Price: t.price,
+          Total: t.total,
+          Currency: t.currency,
+          Portfolio: t.portfolio,
+          TransactionId: t.id,
+          HoldingId: t.holdingId
+        }));
+        const csv = Papa.unparse(csvRows);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${filenameBase}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.success(`Exported whole transaction history (${filteredTxs.length} records) as CSV!`);
+      }
     } catch (error) {
       console.error('Export transactions error:', error);
-      alert('Failed to export transactions');
+      toast.error('Failed to export transactions');
     }
   };
 
@@ -1676,7 +3301,7 @@ export default function App() {
           return normalized;
         }).map(tx => {
           // Clean up ticker (handle cases like "Bitcoin BTC" or "BTC-USD")
-          let ticker = tx.ticker.trim();
+          let ticker = (tx.ticker || '').toString().trim();
           if (ticker.includes(' ')) {
              // If there's a space, the last word is often the ticker in descriptions
              const parts = ticker.split(' ');
@@ -1811,7 +3436,7 @@ export default function App() {
         });
       } catch (err) {
         console.error('Import transactions error:', err);
-        alert('Failed to import transactions. Please check the file format.');
+        toast.error('Failed to import transactions. Please check the file format.');
       } finally {
         setIsSubmitting(false);
         setTimeout(() => setSaveMessage(null), 3000);
@@ -1836,7 +3461,7 @@ export default function App() {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
       console.error('OAuth error:', error);
-      alert('Failed to connect to Google');
+      toast.error('Failed to connect to Google');
     }
   };
 
@@ -1846,6 +3471,7 @@ export default function App() {
     try {
       await Promise.all([
         fetchQuotes(allHoldings),
+        fetchBetas(holdings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
         fetchDividends(holdings)
@@ -1956,10 +3582,17 @@ export default function App() {
   const fetchQuotes = async (currentHoldings: Holding[]) => {
     const allBenchmarks = [
       tabSettings['global']?.benchmark || 'SPY',
-      tabSettings['india']?.benchmark || '^NSEI',
       tabSettings['australia']?.benchmark || '^AXJO'
     ];
-    const symbolsToFetch = Array.from(new Set([...currentHoldings.map(h => h.ticker), ...allBenchmarks, 'AUD=X', 'INR=X', 'EUR=X', 'GBP=X', 'CAD=X', 'SGD=X'])).join(',');
+    const sectorEtfs = [
+      'XLK', 'XLV', 'XLF', 'XLY', 'XLI', 'XLC', 'XLP', 'XLE', 'XLRE', 'XLU', 'XLB'
+    ];
+    const symbolsToFetch = Array.from(new Set([
+      ...currentHoldings.map(h => h.ticker), 
+      ...allBenchmarks, 
+      ...sectorEtfs, 
+      'AUD=X', 'INR=X', 'EUR=X', 'GBP=X', 'CAD=X', 'SGD=X'
+    ])).join(',');
     try {
       const res = await fetch(`/api/quotes?symbols=${symbolsToFetch}`);
       if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
@@ -1968,6 +3601,21 @@ export default function App() {
       }
     } catch (error) {
       console.error('Error fetching quotes:', error);
+    }
+  };
+
+  const fetchBetas = async (currentHoldings: Holding[]) => {
+    if (currentHoldings.length === 0) return;
+    
+    const symbols = Array.from(new Set(currentHoldings.map(h => h.ticker))).join(',');
+    try {
+      const res = await fetch(`/api/beta?symbols=${symbols}`);
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json();
+        setBetas(prev => ({ ...prev, ...data }));
+      }
+    } catch (error) {
+      console.error('Error fetching betas:', error);
     }
   };
 
@@ -2017,20 +3665,6 @@ export default function App() {
     }
   };
 
-  const fetchEconomicEvents = async () => {
-    try {
-      const from = format(subMonths(new Date(), 1), 'yyyy-MM-dd');
-      const to = format(addMonths(new Date(), 2), 'yyyy-MM-dd');
-      const res = await fetch(`/api/economic-events?from=${from}&to=${to}`);
-      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json();
-        setEconomicEvents(data);
-      }
-    } catch (error) {
-      console.error('Error fetching economic events:', error);
-    }
-  };
-
   // Debounced data fetching to prevent excessive API calls
   useEffect(() => {
     if (allHoldings.length === 0) return;
@@ -2040,10 +3674,10 @@ export default function App() {
       // We fetch quotes for ALL holdings to keep the Combined Value accurate across tabs
       Promise.all([
         fetchQuotes(allHoldings),
+        fetchBetas(holdings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
-        fetchDividends(holdings),
-        fetchEconomicEvents()
+        fetchDividends(holdings)
       ]);
     }, 500); // 500ms debounce
 
@@ -2065,6 +3699,7 @@ export default function App() {
         id: doc.id,
         ...doc.data()
       })) as Holding[];
+      data.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       setAllHoldings(data);
       setLoading(false);
     }, (error) => {
@@ -2072,15 +3707,179 @@ export default function App() {
       setLoading(false);
     });
 
+    const txQ = query(collection(db, 'transactions'), where('userId', '==', user.uid));
+    const txUnsubscribe = onSnapshot(txQ, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Transaction[];
+      setAllTransactions(data);
+      setTxLoaded(true);
+    }, (error) => {
+      console.error('Firestore Transactions Error:', error);
+      setTxLoaded(true);
+    });
+
     const backupUnsubscribe = onSnapshot(doc(db, 'backups', user.uid), (snapshot) => {
       setHasBackup(snapshot.exists());
     });
 
+    const alertsQ = query(collection(db, 'alerts'), where('userId', '==', user.uid));
+    const alertsUnsubscribe = onSnapshot(alertsQ, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as PriceAlert[];
+      setAlerts(data);
+    });
+
+    const settingsUnsubscribe = onSnapshot(doc(db, 'settings', user.uid), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.tabs) {
+          setTabSettings(prev => ({ ...prev, ...data.tabs }));
+        }
+        if (data.user) {
+          setUserSettings(prev => ({
+            ...prev,
+            ...data.user,
+            aiConfig: {
+              ...DEFAULT_AI_CONFIG,
+              ...(data.user.aiConfig || {})
+            }
+          }));
+        }
+      }
+    });
+
     return () => {
       unsubscribe();
+      txUnsubscribe();
       backupUnsubscribe();
+      alertsUnsubscribe();
+      settingsUnsubscribe();
     };
   }, [user]);
+
+  // Automatic background transaction self-healing for imported portfolios
+  useEffect(() => {
+    if (!user || !txLoaded || allHoldings.length === 0) return;
+
+    const selfHeal = async () => {
+      // Find holdings with positive shares that have 0 transactions (excluding CASH)
+      const txHoldingIds = new Set(allTransactions.map(tx => tx.holdingId));
+      const holdingsToHeal = allHoldings.filter(h => h.shares > 0 && h.ticker !== 'CASH' && !txHoldingIds.has(h.id));
+
+      if (holdingsToHeal.length === 0) return;
+
+      console.log(`[Self-Heal] Found ${holdingsToHeal.length} holdings without transaction history. Healing...`);
+
+      for (const holding of holdingsToHeal) {
+        try {
+          const initialTx = {
+            holdingId: holding.id,
+            type: 'buy' as const,
+            shares: holding.shares,
+            price: holding.avg_price || 0,
+            date: holding.updatedAt 
+              ? (holding.updatedAt as any).toDate?.()?.toISOString() || new Date().toISOString() 
+              : new Date().toISOString(),
+            userId: user.uid
+          };
+          await addDoc(collection(db, 'transactions'), initialTx);
+          console.log(`[Self-Heal] Successfully created transaction for ${holding.ticker}`);
+        } catch (err) {
+          console.error(`[Self-Heal] Failed to create transaction for ${holding.ticker}:`, err);
+        }
+      }
+    };
+
+    selfHeal();
+  }, [allHoldings, allTransactions, txLoaded, user]);
+
+  // Self-heal corrupted positions (e.g. negative avg_price or negative shares, reconciling with transactions ledger)
+  useEffect(() => {
+    if (!user || !txLoaded || allHoldings.length === 0) return;
+
+    const healCorruptedHoldings = async () => {
+      const corruptedHoldings = allHoldings.filter(h => (h.avg_price < 0 || h.shares < 0) && h.userId === user.uid);
+      if (corruptedHoldings.length === 0) return;
+
+      console.log(`[Self-Heal] Detected ${corruptedHoldings.length} corrupted holdings with negative values. Repairing...`);
+
+      for (const corrupted of corruptedHoldings) {
+        try {
+          const hTxs = allTransactions.filter(tx => tx.holdingId === corrupted.id);
+          const computed = computeHoldingFromTransactions(hTxs);
+
+          let repairedShares = corrupted.shares;
+          let repairedAvgPrice = Math.max(0, corrupted.avg_price);
+
+          if (computed && computed.totalBuys > 0) {
+            repairedShares = computed.shares;
+            repairedAvgPrice = computed.avg_price;
+          } else {
+            repairedShares = Math.max(0, repairedShares);
+            repairedAvgPrice = Math.max(0, repairedAvgPrice);
+          }
+
+          await updateDoc(doc(db, 'holdings', corrupted.id), {
+            shares: repairedShares,
+            avg_price: repairedAvgPrice,
+            updatedAt: serverTimestamp()
+          });
+
+          console.log(`[Self-Heal] Repaired negative holding ${corrupted.ticker}: ${repairedShares} shares @ ${repairedAvgPrice}`);
+          toast.success(`Repaired ${corrupted.ticker} position: ${repairedShares} shares @ ${formatCurrency(repairedAvgPrice, corrupted.avgPriceCurrency || activeCurrency)}`);
+        } catch (err) {
+          console.error(`[Self-Heal] Error repairing negative holding ${corrupted.ticker}:`, err);
+        }
+      }
+    };
+
+    healCorruptedHoldings();
+  }, [allHoldings, allTransactions, txLoaded, user, activeCurrency]);
+
+  // Check price alerts
+  useEffect(() => {
+    if (!alerts.length || Object.keys(quotes).length === 0) return;
+    
+    alerts.forEach(alert => {
+      if (alert.isTriggered) return; // Only notify once
+      
+      const currentQuote = quotes[alert.ticker];
+      if (!currentQuote || !currentQuote.price) return;
+      
+      const price = currentQuote.price;
+      const conditionMet = 
+        (alert.condition === 'above' && price >= alert.targetPrice) ||
+        (alert.condition === 'below' && price <= alert.targetPrice);
+        
+      if (conditionMet) {
+        toast.success(`Price Alert Triggered!`, {
+          description: `${alert.ticker} has crossed your target limit of ${alert.targetPrice}. Current price is ${price}.`,
+          duration: 10000,
+        });
+        
+        if (user.email) {
+          fetch('/api/send-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: user.email,
+              subject: `Price Alert Triggered: ${alert.ticker}`,
+              text: `Your price alert for ${alert.ticker} has been triggered.\n\nIt crossed your target limit of ${alert.targetPrice}.\nThe current price is ${price}.`
+            })
+          }).catch(err => console.error('Failed to send price alert email:', err));
+        }
+
+        // Update in firestore to prevent repeated triggering
+        updateDoc(doc(db, 'alerts', alert.id), {
+          isTriggered: true
+        }).catch(err => console.error('Failed to update alert', err));
+      }
+    });
+  }, [quotes, alerts]);
 
   useEffect(() => {
     if (selectedChartTicker && chartModalTab === 'kpis') {
@@ -2105,44 +3904,47 @@ export default function App() {
       const fetchBusinessKpis = async () => {
         setIsBusinessKpisLoading(true);
         try {
-          const apiKey = process.env.GEMINI_API_KEY;
-          if (!apiKey) {
-            throw new Error('GEMINI_API_KEY is not configured');
-          }
-          const ai = new GoogleGenAI({ apiKey });
-          
           const isQuarterly = kpiTimeScale.endsWith('q');
           const timeValue = kpiTimeScale.replace(/[yq]/, '').replace('all_', 'all ');
           const periodText = isQuarterly ? 'quarterly' : 'annual';
           const durationText = kpiTimeScale.startsWith('all') ? 'all available' : `the last ${timeValue}`;
           const durationUnit = isQuarterly ? 'quarters' : 'years';
 
-          const response = await ai.models.generateContent({
-            model: "gemini-3.1-pro-preview",
-            contents: `Provide the historical and projected ${periodText} business KPIs (e.g., Daily Active Users, Monthly Active Users, Subscribers, Deliveries, or other relevant operational metrics) for the company with ticker symbol ${selectedChartTicker} over ${durationText} ${durationUnit}, plus the next 2-3 ${durationUnit} of analyst and company projections. If the company is not a tech/service company with users, provide their most relevant operational KPIs (e.g., vehicles delivered for TSLA, stores opened for SBUX). Return the data as a JSON array of objects, where each object has a 'period' (string, e.g., '2023' for annual or 'Q1 2023' for quarterly), a boolean 'isProjection' indicating if it's a future estimate, and 2-3 relevant KPI fields (numbers). Use short, camelCase keys for the KPI fields.`,
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    period: { type: Type.STRING },
-                    isProjection: { type: Type.BOOLEAN, description: "True if this period is a future projection/estimate" },
-                    kpi1Name: { type: Type.STRING, description: "Display name of the first KPI (e.g., 'Daily Active Users (Millions)')" },
-                    kpi1Value: { type: Type.NUMBER },
-                    kpi2Name: { type: Type.STRING, description: "Display name of the second KPI" },
-                    kpi2Value: { type: Type.NUMBER },
-                    kpi3Name: { type: Type.STRING, description: "Display name of the third KPI (optional)" },
-                    kpi3Value: { type: Type.NUMBER }
-                  },
-                  required: ["period", "isProjection", "kpi1Name", "kpi1Value", "kpi2Name", "kpi2Value"]
+          const res = await fetch('/api/gemini-analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: "gemini-3.1-pro-preview",
+              prompt: `Provide the historical and projected ${periodText} business KPIs (e.g., Daily Active Users, Monthly Active Users, Subscribers, Deliveries, or other relevant operational metrics) for the company with ticker symbol ${selectedChartTicker} over ${durationText} ${durationUnit}, plus the next 2-3 ${durationUnit} of analyst and company projections. If the company is not a tech/service company with users, provide their most relevant operational KPIs (e.g., vehicles delivered for TSLA, stores opened for SBUX). Return the data as a JSON array of objects, where each object has a 'period' (string, e.g., '2023' for annual or 'Q1 2023' for quarterly), a boolean 'isProjection' indicating if it's a future estimate, and 2-3 relevant KPI fields (numbers). Use short, camelCase keys for the KPI fields.`,
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      period: { type: "string" },
+                      isProjection: { type: "boolean", description: "True if this period is a future projection/estimate" },
+                      kpi1Name: { type: "string", description: "Display name of the first KPI (e.g., 'Daily Active Users (Millions)')" },
+                      kpi1Value: { type: "number" },
+                      kpi2Name: { type: "string", description: "Display name of the second KPI" },
+                      kpi2Value: { type: "number" },
+                      kpi3Name: { type: "string", description: "Display name of the third KPI (optional)" },
+                      kpi3Value: { type: "number" }
+                    },
+                    required: ["period", "isProjection", "kpi1Name", "kpi1Value", "kpi2Name", "kpi2Value"]
+                  }
                 }
               }
-            }
+            })
           });
-          
-          const data = JSON.parse(response.text || '[]');
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.details || err.error || 'Analysis failed');
+          }
+          const response = await res.json();
+          const data = typeof response.text === 'string' ? JSON.parse(response.text.replace(/```json\n?|\n?```/g, '').trim()) : response.text;
           setBusinessKpisData(data);
         } catch (error) {
           console.error('Error fetching business KPIs:', error);
@@ -2203,11 +4005,11 @@ export default function App() {
   useEffect(() => {
     const allBenchmarks = [
       tabSettings['global']?.benchmark || 'SPY',
-      tabSettings['india']?.benchmark || '^NSEI',
       tabSettings['australia']?.benchmark || '^AXJO'
     ];
     if (holdings.length > 0 || allBenchmarks.length > 0) {
-      const symbols = Array.from(new Set([...holdings.map(h => h.ticker), ...allBenchmarks]));
+      const symbols = Array.from(new Set([...holdings.map(h => h.ticker), ...allBenchmarks]))
+        .filter(s => s && s.trim().toUpperCase() !== 'CASH');
       const subscribeMsg = JSON.stringify({ type: 'subscribe', symbols });
       
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -2222,7 +4024,11 @@ export default function App() {
 
   const handleAddStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    const finalTicker = ticker.trim().toUpperCase();
+    let rawTicker = ticker.trim().toUpperCase();
+    if (activeTab === 'australia' && !rawTicker.includes('.') && rawTicker !== 'CASH') {
+      rawTicker = `${rawTicker}.AX`;
+    }
+    const finalTicker = rawTicker;
     const isCash = finalTicker === 'CASH';
     
     if (!ticker || !shares || (!isCash && !avgPrice) || !user) return;
@@ -2237,15 +4043,27 @@ export default function App() {
       const existingHolding = holdings.find(h => h.ticker === finalTicker);
 
       if (existingHolding) {
-        // Update existing holding
-        let newShares = isSell ? existingHolding.shares - numShares : existingHolding.shares + numShares;
-        
-        // Calculate new average price (only for buys)
-        let newAvgPrice = existingHolding.avg_price;
-        if (!isSell) {
-          const totalCost = (existingHolding.shares * existingHolding.avg_price) + (numShares * numPrice);
-          newAvgPrice = totalCost / newShares;
+        // Update existing holding safely
+        let newShares = existingHolding.shares;
+        let newAvgPrice = Math.max(0, existingHolding.avg_price || 0);
+
+        if (isSell) {
+          newShares = Math.max(0, existingHolding.shares - numShares);
+          if (newShares === 0) {
+            newAvgPrice = 0;
+          }
+        } else {
+          if (existingHolding.shares <= 0) {
+            newShares = numShares;
+            newAvgPrice = numPrice;
+          } else {
+            const currentCost = Math.max(0, existingHolding.shares) * Math.max(0, existingHolding.avg_price || 0);
+            const additionalCost = numShares * numPrice;
+            newShares = existingHolding.shares + numShares;
+            newAvgPrice = newShares > 0 ? (currentCost + additionalCost) / newShares : numPrice;
+          }
         }
+        newAvgPrice = Math.max(0, newAvgPrice);
 
         await updateDoc(doc(db, 'holdings', existingHolding.id), {
           shares: newShares,
@@ -2264,14 +4082,16 @@ export default function App() {
         });
       } else {
         // Create new holding
+        const nextOrder = Math.max(...allHoldings.filter(h => (h.portfolioType || 'global') === activeTab).map(h => h.order ?? 0), -1) + 1;
         const holdingData = {
           ticker: finalTicker,
-          shares: isSell ? -numShares : numShares,
-          avg_price: numPrice,
+          shares: Math.max(0, isSell ? 0 : numShares),
+          avg_price: Math.max(0, numPrice),
           avgPriceCurrency: formCurrency || activeCurrency,
           userId: user.uid,
           portfolioType: activeTab,
-          updatedAt: serverTimestamp()
+          updatedAt: serverTimestamp(),
+          order: nextOrder
         };
         
         const docRef = await addDoc(collection(db, 'holdings'), holdingData);
@@ -2287,6 +4107,68 @@ export default function App() {
         });
       }
 
+      // Handle cash automatically
+      if (!isCash) {
+        const cashValue = numShares * numPrice;
+        const cashHolding = holdings.find(h => h.ticker === 'CASH');
+        if (cashHolding) {
+          const newCashShares = isSell ? cashHolding.shares + cashValue : cashHolding.shares - cashValue;
+          await updateDoc(doc(db, 'holdings', cashHolding.id), {
+            shares: newCashShares,
+            updatedAt: serverTimestamp()
+          });
+          
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: cashHolding.id,
+            type: isSell ? 'buy' : 'sell', // buy cash if selling stock, sell cash if buying stock
+            shares: cashValue,
+            price: 1,
+            date: new Date(transactionDate).toISOString(),
+            userId: user.uid
+          });
+        } else if (isSell) {
+          // If selling an asset and no cash holding exists, create it instead
+          const newCashHoldingRef = await addDoc(collection(db, 'holdings'), {
+            ticker: 'CASH',
+            shares: cashValue,
+            avg_price: 1,
+            avgPriceCurrency: formCurrency || activeCurrency,
+            userId: user.uid,
+            portfolioType: activeTab,
+            updatedAt: serverTimestamp()
+          });
+          
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: newCashHoldingRef.id,
+            type: 'buy', // buying cash
+            shares: cashValue,
+            price: 1,
+            date: new Date(transactionDate).toISOString(),
+            userId: user.uid
+          });
+        } else if (!isSell) {
+           // If buying an asset and no cash holding exists, create a negative cash balance
+           const newCashHoldingRef = await addDoc(collection(db, 'holdings'), {
+            ticker: 'CASH',
+            shares: -cashValue,
+            avg_price: 1,
+            avgPriceCurrency: formCurrency || activeCurrency,
+            userId: user.uid,
+            portfolioType: activeTab,
+            updatedAt: serverTimestamp()
+          });
+          
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: newCashHoldingRef.id,
+            type: 'sell', // spending cash
+            shares: cashValue,
+            price: 1,
+            date: new Date(transactionDate).toISOString(),
+            userId: user.uid
+          });
+        }
+      }
+
       setTicker('');
       setShares('');
       setAvgPrice('');
@@ -2295,8 +4177,51 @@ export default function App() {
       setTransactionType('buy');
     } catch (error) {
       console.error('Error adding stock:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'holdings_or_transactions');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleAddToWatchlist = async (tickerSymbol: string) => {
+    if (!tickerSymbol || !user) return;
+    let formattedTicker = tickerSymbol.trim().toUpperCase();
+    if (activeTab === 'australia' && !formattedTicker.includes('.') && formattedTicker !== 'CASH') {
+      formattedTicker = `${formattedTicker}.AX`;
+    }
+
+    // Check if it already exists as an active holding or watchlist holding in the current tab
+    const existingHolding = allHoldings.find(
+      h => h.ticker === formattedTicker && (h.portfolioType || 'global') === activeTab
+    );
+
+    if (existingHolding) {
+      if (existingHolding.shares === 0) {
+        toast.info(`${formattedTicker} is already in your watchlist.`);
+      } else {
+        toast.info(`${formattedTicker} is already in your current holdings.`);
+      }
+      return;
+    }
+
+    try {
+      const nextOrder = Math.max(...allHoldings.filter(h => (h.portfolioType || 'global') === activeTab).map(h => h.order ?? 0), -1) + 1;
+      const holdingData = {
+        ticker: formattedTicker,
+        shares: 0,
+        avg_price: 0,
+        avgPriceCurrency: activeCurrency,
+        userId: user.uid,
+        portfolioType: activeTab,
+        updatedAt: serverTimestamp(),
+        order: nextOrder
+      };
+
+      await addDoc(collection(db, 'holdings'), holdingData);
+      toast.success(`${formattedTicker} added to watchlist.`);
+    } catch (error) {
+      console.error('Error adding to watchlist:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'holdings');
     }
   };
 
@@ -2350,6 +4275,47 @@ export default function App() {
         userId: user.uid
       });
 
+      // Handle cash automatically
+      if (!isCash) {
+        const cashValue = numShares * numPrice;
+        const cashHolding = holdings.find(h => h.ticker === 'CASH');
+        if (cashHolding) {
+          await updateDoc(doc(db, 'holdings', cashHolding.id), {
+            shares: cashHolding.shares - cashValue,
+            updatedAt: serverTimestamp()
+          });
+          
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: cashHolding.id,
+            type: 'sell', // spend cash
+            shares: cashValue,
+            price: 1,
+            date: new Date(quickAddDate).toISOString(),
+            userId: user.uid
+          });
+        } else {
+           // create negative cash balance
+           const newCashHoldingRef = await addDoc(collection(db, 'holdings'), {
+            ticker: 'CASH',
+            shares: -cashValue,
+            avg_price: 1,
+            avgPriceCurrency: activeCurrency,
+            userId: user.uid,
+            portfolioType: activeTab,
+            updatedAt: serverTimestamp()
+          });
+          
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: newCashHoldingRef.id,
+            type: 'sell',
+            shares: cashValue,
+            price: 1,
+            date: new Date(quickAddDate).toISOString(),
+            userId: user.uid
+          });
+        }
+      }
+
       setShowQuickAddModal(false);
       setQuickAddHolding(null);
       setQuickAddShares('');
@@ -2361,11 +4327,15 @@ export default function App() {
     }
   };
 
-  const handleEditClick = (holding: Holding, field: string | null = null) => {
+  const handleEditClick = (holding: Holding, field: string | null = null, forceModal: boolean = false) => {
+    if (forceModal || field === null) {
+      setEditModalHolding(holding);
+      return;
+    }
     setEditingId(holding.id);
     setEditTicker(holding.ticker);
     setEditShares(holding.shares.toString());
-    setEditAvgPrice(holding.avg_price.toString());
+    setEditAvgPrice(Math.max(0, holding.avg_price ?? 0).toString());
     setEditAvgPriceCurrency(holding.avgPriceCurrency || activeCurrency);
     setEditField(field);
   };
@@ -2382,13 +4352,29 @@ export default function App() {
   const handleSaveEdit = async (id: string) => {
     const finalTicker = editTicker.trim().toUpperCase();
     const isCash = finalTicker === 'CASH';
-    if (!editTicker || !editShares || (!isCash && !editAvgPrice) || !user) return;
+    if (!finalTicker || !editShares || (!isCash && !editAvgPrice) || !user) {
+      toast.error('Please enter valid ticker and values.');
+      return;
+    }
+
+    const cleanShares = parseFloat(editShares.toString().replace(/,/g, '.'));
+    if (isNaN(cleanShares) || cleanShares < 0) {
+      toast.error('Shares must be a valid non-negative number.');
+      return;
+    }
+
+    const cleanAvgPrice = isCash ? 1 : parseFloat(editAvgPrice.toString().replace(/,/g, '.'));
+    if (isNaN(cleanAvgPrice) || cleanAvgPrice < 0) {
+      toast.error('Average purchase price cannot be negative.');
+      return;
+    }
+
     try {
       await updateDoc(doc(db, 'holdings', id), {
         ticker: finalTicker,
-        shares: parseFloat(editShares.toString().replace(/,/g, '.')),
-        avg_price: isCash ? 1 : parseFloat(editAvgPrice.toString().replace(/,/g, '.')),
-        avgPriceCurrency: editAvgPriceCurrency,
+        shares: cleanShares,
+        avg_price: cleanAvgPrice,
+        avgPriceCurrency: editAvgPriceCurrency || activeCurrency,
         updatedAt: serverTimestamp()
       });
       
@@ -2398,8 +4384,84 @@ export default function App() {
       setEditAvgPrice('');
       setEditAvgPriceCurrency('');
       setEditField(null);
-    } catch (error) {
+      toast.success(`${finalTicker} updated successfully!`);
+    } catch (error: any) {
       console.error('Error updating stock:', error);
+      toast.error(`Failed to update: ${error?.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleSaveModalEdit = async (id: string, ticker: string, shares: number, avgPrice: number, currency: string) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'holdings', id), {
+        ticker: ticker.trim().toUpperCase(),
+        shares: Math.max(0, shares),
+        avg_price: Math.max(0, avgPrice),
+        avgPriceCurrency: currency,
+        updatedAt: serverTimestamp()
+      });
+      toast.success(`${ticker} position updated successfully!`);
+    } catch (error: any) {
+      console.error('Error saving holding:', error);
+      toast.error(`Failed to update position: ${error?.message || 'Unknown error'}`);
+      throw error;
+    }
+  };
+
+  const handleRepairCorruptedHoldings = async (holdingsToRepair: Holding[]) => {
+    if (!user) return;
+    for (const h of holdingsToRepair) {
+      try {
+        const txsForHolding = allTransactions.filter(t => t.holdingId === h.id);
+        const computed = computeHoldingFromTransactions(txsForHolding);
+        
+        let newShares = h.shares;
+        let newAvgPrice = Math.max(0, h.avg_price);
+
+        if (computed && computed.totalBuys > 0) {
+          newShares = computed.shares;
+          newAvgPrice = computed.avg_price;
+        } else {
+          newShares = Math.max(0, newShares);
+          newAvgPrice = Math.max(0, newAvgPrice);
+        }
+
+        await updateDoc(doc(db, 'holdings', h.id), {
+          shares: newShares,
+          avg_price: newAvgPrice,
+          updatedAt: serverTimestamp()
+        });
+
+        toast.success(`Repaired ${h.ticker} position: ${newShares} shares @ ${formatCurrency(newAvgPrice, h.avgPriceCurrency || activeCurrency)}`);
+      } catch (err: any) {
+        console.error('Failed to repair holding:', h.ticker, err);
+        toast.error(`Failed to repair ${h.ticker}: ${err?.message || 'Unknown error'}`);
+      }
+    }
+  };
+
+  const handleSyncHoldingWithLedger = async (holdingToSync: Holding, customComputed?: any) => {
+    if (!user) return;
+    try {
+      const txs = allTransactions.filter(t => t.holdingId === holdingToSync.id);
+      const computed = customComputed || computeHoldingFromTransactions(txs);
+      if (!computed || computed.totalBuys === 0) {
+        toast.error('No buy transactions found in ledger to sync from.');
+        return;
+      }
+      await updateDoc(doc(db, 'holdings', holdingToSync.id), {
+        shares: computed.shares,
+        avg_price: computed.avg_price,
+        updatedAt: serverTimestamp()
+      });
+      toast.success(`Successfully synced ${holdingToSync.ticker} to ${computed.shares} shares @ ${formatCurrency(computed.avg_price, holdingToSync.avgPriceCurrency || activeCurrency)}!`);
+      if (historyHolding && historyHolding.id === holdingToSync.id) {
+        setHistoryHolding(prev => prev ? { ...prev, shares: computed.shares, avg_price: computed.avg_price } : null);
+      }
+    } catch (err: any) {
+      console.error('Error syncing holding with ledger:', err);
+      toast.error(`Failed to sync: ${err?.message || 'Unknown error'}`);
     }
   };
 
@@ -2413,9 +4475,161 @@ export default function App() {
         id: doc.id,
         ...doc.data()
       })) as Transaction[];
-      setHistoryTransactions(data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+      
+      if (data.length === 0 && holding.shares > 0) {
+        // Self-heal: If no transactions are found for this holding but it has positive shares,
+        // dynamically create an initial purchase transaction in Firestore!
+        // This resolves the issue where imported portfolios (without transactions) have no transaction history.
+        const initialTx = {
+          holdingId: holding.id,
+          type: 'buy' as const,
+          shares: holding.shares,
+          price: holding.avg_price,
+          date: holding.updatedAt ? (holding.updatedAt as any).toDate?.()?.toISOString() || new Date().toISOString() : new Date().toISOString(),
+          userId: user?.uid || ''
+        };
+        const docRef = await addDoc(collection(db, 'transactions'), initialTx);
+        setHistoryTransactions([{ id: docRef.id, ...initialTx }]);
+      } else {
+        setHistoryTransactions(data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+      }
     } catch (error) {
       console.error('Error fetching transactions:', error);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const getRemainingSharesForLots = (txs: Transaction[]) => {
+    const lotRemaining: Record<string, number> = {};
+    const sorted = [...txs].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const buys = sorted.filter(tx => tx.type === 'buy');
+    const sells = sorted.filter(tx => tx.type === 'sell');
+    
+    buys.forEach(tx => {
+      lotRemaining[tx.id] = tx.shares;
+    });
+    
+    const sellsWithRemaining = sells.map(tx => ({
+      ...tx,
+      remainingToMatch: tx.shares
+    }));
+
+    sellsWithRemaining.forEach(tx => {
+      if (tx.lotId) {
+        const targetBuy = buys.find(b => b.id === tx.lotId);
+        if (targetBuy && lotRemaining[tx.lotId] !== undefined) {
+          const consumed = Math.min(tx.remainingToMatch, lotRemaining[tx.lotId]);
+          lotRemaining[tx.lotId] -= consumed;
+          tx.remainingToMatch -= consumed;
+        }
+      }
+    });
+    
+    sellsWithRemaining.forEach(tx => {
+      let sharesToSell = tx.remainingToMatch;
+      while (sharesToSell > 0) {
+        const oldestBuy = buys.find(b => lotRemaining[b.id] > 0);
+        if (!oldestBuy) break;
+        
+        if (lotRemaining[oldestBuy.id] <= sharesToSell) {
+          sharesToSell -= lotRemaining[oldestBuy.id];
+          lotRemaining[oldestBuy.id] = 0;
+        } else {
+          lotRemaining[oldestBuy.id] -= sharesToSell;
+          sharesToSell = 0;
+        }
+      }
+    });
+    
+    return lotRemaining;
+  };
+
+  const handleSellLot = async (sharesToSell: number, sellPrice: number, sellDate: string, lotTx: Transaction) => {
+    if (!user || !historyHolding) return;
+    
+    setIsHistoryLoading(true);
+    setUndoError(null);
+    try {
+      const existingHolding = holdings.find(h => h.id === historyHolding.id);
+      if (!existingHolding) {
+        throw new Error("Holding not found.");
+      }
+
+      const lotRemainingMap = getRemainingSharesForLots(historyTransactions);
+      const remainingForThisLot = lotRemainingMap[lotTx.id] || 0;
+      if (sharesToSell > remainingForThisLot) {
+        throw new Error(`Cannot sell more than the remaining shares in this lot (${remainingForThisLot}).`);
+      }
+
+      let newShares = existingHolding.shares - sharesToSell;
+      
+      await updateDoc(doc(db, 'holdings', existingHolding.id), {
+        shares: newShares,
+        updatedAt: serverTimestamp()
+      });
+
+      await addDoc(collection(db, 'transactions'), {
+        holdingId: existingHolding.id,
+        type: 'sell',
+        shares: sharesToSell,
+        price: sellPrice,
+        date: new Date(sellDate).toISOString(),
+        userId: user.uid,
+        lotId: lotTx.id
+      });
+
+      const cashValue = sharesToSell * sellPrice;
+      const cashHolding = holdings.find(h => h.ticker === 'CASH');
+      if (cashHolding) {
+        const newCashShares = cashHolding.shares + cashValue;
+        await updateDoc(doc(db, 'holdings', cashHolding.id), {
+          shares: newCashShares,
+          updatedAt: serverTimestamp()
+        });
+        
+        await addDoc(collection(db, 'transactions'), {
+          holdingId: cashHolding.id,
+          type: 'buy',
+          shares: cashValue,
+          price: 1,
+          date: new Date(sellDate).toISOString(),
+          userId: user.uid
+        });
+      } else {
+        const newCashHoldingRef = await addDoc(collection(db, 'holdings'), {
+          ticker: 'CASH',
+          shares: cashValue,
+          avg_price: 1,
+          avgPriceCurrency: lotTx.avgPriceCurrency || existingHolding.avgPriceCurrency || activeCurrency,
+          userId: user.uid,
+          portfolioType: activeTab,
+          updatedAt: serverTimestamp()
+        });
+        
+        await addDoc(collection(db, 'transactions'), {
+          holdingId: newCashHoldingRef.id,
+          type: 'buy',
+          shares: cashValue,
+          price: 1,
+          date: new Date(sellDate).toISOString(),
+          userId: user.uid
+        });
+      }
+
+      const q = query(collection(db, 'transactions'), where('holdingId', '==', historyHolding.id), where('userId', '==', user?.uid));
+      const snapshot = await getDocs(q);
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Transaction[];
+      setHistoryTransactions(data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+      
+      setSaveMessage({ text: 'Lot shares sold successfully', type: 'success' });
+      setSellingLot(null);
+    } catch (error: any) {
+      console.error('Error selling lot:', error);
+      setUndoError(error?.message || 'Error occurred while selling lot.');
     } finally {
       setIsHistoryLoading(false);
     }
@@ -2465,6 +4679,28 @@ export default function App() {
 
       // Delete transaction
       await deleteDoc(doc(db, 'transactions', tx.id));
+      
+      // Update cash backwards
+      if (latestHolding.ticker !== 'CASH') {
+        const cashValue = numShares * numPrice;
+        const cashHolding = holdings.find(h => h.ticker === 'CASH');
+        if (cashHolding) {
+          const newCashShares = isBuy ? cashHolding.shares + cashValue : cashHolding.shares - cashValue;
+          await updateDoc(doc(db, 'holdings', cashHolding.id), {
+            shares: newCashShares,
+            updatedAt: serverTimestamp()
+          });
+          
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: cashHolding.id,
+            type: isBuy ? 'buy' : 'sell',
+            shares: cashValue,
+            price: 1,
+            date: new Date().toISOString(),
+            userId: user.uid
+          });
+        }
+      }
 
       // Refresh history
       await handleViewHistory(latestHolding);
@@ -2500,71 +4736,70 @@ export default function App() {
     }
   };
 
-  const handleAnalyzeEarnings = async (event: EarningsEvent) => {
+  const handleAnalyzeEarnings = async (event: EarningsEvent, modelOverride?: string) => {
     setSelectedEarningsEvent(event);
     setShowEarningsAnalysisModal(true);
     setIsAnalyzingEarnings(true);
     setEarningsAnalysisResult('');
     setEarningsAnalysisSaved(false);
+    setEarningsAnalysisErrorCode(null);
+    setEarningsAnalysisErrorProvider(null);
+    setEarningsAnalysisFallbackNotice(null);
+
+    const activeAi = resolveAiConfig(modelOverride);
+    setEarningsAnalysisModelName(activeAi.model);
+    setEarningsAnalysisProviderName(activeAi.provider);
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        setEarningsAnalysisResult('Error: GEMINI_API_KEY is not configured.');
-        setIsAnalyzingEarnings(false);
-        return;
-      }
+      const prompt = `You are a professional equity research analyst. Analyze the upcoming or recent earnings report for ${event.symbol}.
 
-      const ai = new GoogleGenAI({ apiKey });
-      
-      const eventDate = parseISO(event.date);
-      const isPast = eventDate < new Date();
-      
-      let prompt = '';
-      
-      if (isPast) {
-        prompt = `You are a professional investment strategist. Analyze the recent earnings report for ${event.symbol} that occurred around ${format(eventDate, 'MMM d, yyyy')}.
-        
-        Estimated EPS was: ${event.estimate ? event.estimate.toFixed(2) : 'N/A'}
-        
-        Please provide:
-        1. **Actual Results vs Expectations**: Did they beat or miss estimates? Summarize the actual EPS and revenue vs expectations.
-        2. **Market Reaction**: How did the stock price react following the report?
-        3. **Key Takeaways & Guidance**: What were the main highlights from the earnings call and any forward guidance provided by management?
-        4. **Strategic Implications**: What does this mean for the company's outlook and the stock going forward?
-        
-        Use the search tool to get the actual reported numbers, news, and analyst reactions following this specific earnings event.
-        Use professional Markdown formatting.`;
-      } else {
-        prompt = `You are a professional investment strategist. Analyze the upcoming earnings event for ${event.symbol}.
-        
-        Earnings Date: ${format(eventDate, 'MMM d, yyyy')}
-        Estimated EPS: ${event.estimate ? event.estimate.toFixed(2) : 'N/A'}
-        High Estimate: ${event.high ? event.high.toFixed(2) : 'N/A'}
-        Low Estimate: ${event.low ? event.low.toFixed(2) : 'N/A'}
-        
-        Please provide:
-        1. **Analyst Expectations**: Summarize what the market is expecting for this quarter.
-        2. **Key Themes to Watch**: What are the main topics or metrics investors will be focusing on during the earnings call?
-        3. **Recent Performance Context**: How has the stock performed leading up to this earnings report?
-        4. **Potential Surprises**: What could cause a positive or negative surprise?
-        
-        Use the search tool to get the most up-to-date information, news, and analyst reports from the last 3 months regarding this specific earnings event.
-        Use professional Markdown formatting.`;
-      }
+Company: ${event.symbol}
+Earnings Date: ${event.date}
+${event.estimate !== undefined ? `EPS Estimate: ${event.estimate}` : ''}
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }]
-        }
+Please provide:
+1. **Earnings Preview/Review**: What are the market expectations or reported figures vs consensus?
+2. **Key Financial Metrics & Guidance**: Margins, revenue growth trajectory, and guidance outlook.
+3. **Primary Catalysts & Risks**: What specific factors could drive an earnings surprise or sell-off?
+4. **Strategic Takeaway**: Actionable commentary for an investor holding this position.
+
+Use professional Markdown formatting with clear headings and bullet points.`;
+
+      const res = await fetch('/api/ai-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: activeAi.provider,
+          model: activeAi.model,
+          apiKey: activeAi.apiKey,
+          customEndpoint: activeAi.customEndpoint,
+          prompt,
+          systemPrompt: 'You are an elite Wall Street equity research strategist with deep financial and market expertise. Deliver rigorous, data-driven, and clear investment analysis.',
+          tools: activeAi.provider === 'gemini' ? [{ googleSearch: {} }] : undefined
+        })
       });
 
-      setEarningsAnalysisResult(response.text || 'Failed to generate analysis.');
+      const responseData = await res.json();
+      if (!res.ok) {
+        setEarningsAnalysisErrorCode(responseData.code || 'PROVIDER_ERROR');
+        setEarningsAnalysisErrorProvider(responseData.provider || activeAi.provider);
+        throw new Error(responseData.details || responseData.error || 'Earnings analysis failed.');
+      }
+
+      if (responseData.fallbackNotice) {
+        setEarningsAnalysisFallbackNotice(responseData.fallbackNotice);
+      }
+      if (responseData.model) {
+        setEarningsAnalysisModelName(responseData.model);
+      }
+      if (responseData.provider) {
+        setEarningsAnalysisProviderName(responseData.provider);
+      }
+
+      setEarningsAnalysisResult(responseData.text || 'Failed to generate analysis.');
     } catch (error) {
       console.error('Earnings analysis error:', error);
-      setEarningsAnalysisResult('An error occurred during analysis.');
+      setEarningsAnalysisResult(error instanceof Error ? error.message : 'An error occurred during analysis.');
     } finally {
       setIsAnalyzingEarnings(false);
     }
@@ -2591,7 +4826,7 @@ export default function App() {
     }
   };
 
-  const handleAnalyze = async (ticker?: string) => {
+  const handleAnalyze = async (ticker?: string, modelOverride?: string) => {
     if (!ticker && holdings.length === 0) return;
     
     setIsAnalyzing(true);
@@ -2601,14 +4836,15 @@ export default function App() {
     setAnalysisSources([]);
     setAnalysisSentiment('neutral');
     setAnalysisSaved(false);
+    setAnalysisErrorCode(null);
+    setAnalysisErrorProvider(null);
+    setAnalysisFallbackNotice(null);
+
+    const activeAi = resolveAiConfig(modelOverride);
+    setAnalysisModelName(activeAi.model);
+    setAnalysisProviderName(activeAi.provider);
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        setAnalysisResult('Error: GEMINI_API_KEY is not configured.');
-        return;
-      }
-
       let prompt = '';
 
       if (ticker) {
@@ -2632,7 +4868,7 @@ export default function App() {
           5. **Strategic Recommendation**: Hold, accumulate, or trim based on the current position.
 
           IMPORTANT: Start your response with exactly "SENTIMENT: [Bullish/Bearish/Neutral]" on the first line, then follow with your detailed analysis.
-          Ensure you use the search tool to get the most up-to-date information from the last 6 months.
+          Ensure you provide fresh, accurate context.
           Use professional Markdown formatting.`;
         } else {
           prompt = `You are a professional investment strategist. Analyze the stock ${ticker} and provide actionable insights.
@@ -2645,11 +4881,11 @@ export default function App() {
           5. **Strategic Recommendation**: Buy, hold, or sell recommendation.
 
           IMPORTANT: Start your response with exactly "SENTIMENT: [Bullish/Bearish/Neutral]" on the first line, then follow with your detailed analysis.
-          Ensure you use the search tool to get the most up-to-date information from the last 6 months.
+          Ensure you provide fresh, accurate context.
           Use professional Markdown formatting.`;
         }
       } else {
-        const portfolioData = portfolioStats.enrichedHoldings.map(h => ({
+        const portfolioData = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0).map(h => ({
           ticker: h.ticker,
           shares: h.shares,
           avgPrice: h.displayAvgPrice,
@@ -2678,20 +4914,42 @@ export default function App() {
         3. **Risk Assessment**: Identify main risks (volatility, sector specific, etc).
         4. **Strategic Recommendations**: Suggest rebalancing or areas for research.
 
-        Ensure you use the search tool to get the most up-to-date information.
+        Ensure you provide thorough, quantitative, and strategic insights.
         Use professional Markdown formatting.`;
       }
 
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }]
-        }
+      const res = await fetch('/api/ai-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: activeAi.provider,
+          model: activeAi.model,
+          apiKey: activeAi.apiKey,
+          customEndpoint: activeAi.customEndpoint,
+          prompt,
+          systemPrompt: 'You are an elite investment strategist and portfolio manager. Provide clear, rigorous, data-driven analysis and insights.',
+          tools: activeAi.provider === 'gemini' ? [{ googleSearch: {} }] : undefined
+        })
       });
 
-      const fullText = response.text || 'Failed to generate analysis.';
+      const responseData = await res.json();
+      if (!res.ok) {
+        setAnalysisErrorCode(responseData.code || 'PROVIDER_ERROR');
+        setAnalysisErrorProvider(responseData.provider || activeAi.provider);
+        throw new Error(responseData.details || responseData.error || 'Analysis failed');
+      }
+
+      if (responseData.fallbackNotice) {
+        setAnalysisFallbackNotice(responseData.fallbackNotice);
+      }
+      if (responseData.model) {
+        setAnalysisModelName(responseData.model);
+      }
+      if (responseData.provider) {
+        setAnalysisProviderName(responseData.provider);
+      }
+
+      const fullText = responseData.text || 'Failed to generate analysis.';
       
       if (ticker) {
         // Parse sentiment for stock analysis
@@ -2706,23 +4964,114 @@ export default function App() {
         setAnalysisResult(fullText);
       }
 
-      // Extract URLs from grounding metadata
-      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      if (chunks) {
-        const sources = chunks
-          .filter((chunk: any) => chunk.web)
-          .map((chunk: any) => ({
-            uri: chunk.web.uri,
-            title: chunk.web.title
-          }));
-        setAnalysisSources(sources);
+      if (Array.isArray(responseData.sources)) {
+        setAnalysisSources(responseData.sources);
+      } else {
+        setAnalysisSources([]);
       }
     } catch (error) {
       console.error('Error analyzing:', error);
-      setAnalysisResult('An error occurred while analyzing. Please try again.');
+      setAnalysisResult(error instanceof Error ? error.message : 'An error occurred while analyzing. Please try again.');
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const parseCSVLocally = (csvText: string, activeTab: string) => {
+    const lines = csvText.split(/\r?\n/);
+    if (lines.length < 2) return [];
+
+    const parseCSVLine = (text: string) => {
+      const result = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (char === '"' || char === "'") {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          result.push(cur.trim());
+          cur = '';
+        } else {
+          cur += char;
+        }
+      }
+      result.push(cur.trim());
+      return result;
+    };
+
+    let headerIndex = -1;
+    let headers: string[] = [];
+    
+    for (let i = 0; i < Math.min(lines.length, 30); i++) {
+      const cols = parseCSVLine(lines[i]).map(c => c.toLowerCase());
+      const hasTicker = cols.some(c => c.includes('ticker') || c.includes('symbol') || c.includes('code') || c.includes('instrument') || c.includes('security') || c.includes('stock'));
+      const hasQty = cols.some(c => c.includes('qty') || c.includes('quantity') || c.includes('shares') || c.includes('units') || c.includes('volume'));
+      
+      if (hasTicker && hasQty) {
+        headerIndex = i;
+        headers = cols;
+        break;
+      }
+    }
+
+    if (headerIndex === -1) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim().length > 0) {
+          headerIndex = i;
+          headers = parseCSVLine(lines[i]).map(c => c.toLowerCase());
+          break;
+        }
+      }
+    }
+
+    if (headerIndex === -1) return [];
+
+    let tickerIdx = headers.findIndex(c => c.includes('ticker') || c.includes('symbol') || c.includes('code') || c.includes('instrument') || c.includes('security') || c.includes('stock'));
+    let sharesIdx = headers.findIndex(c => c.includes('shares') || c.includes('qty') || c.includes('quantity') || c.includes('units') || c.includes('volume'));
+    let priceIdx = headers.findIndex(c => c.includes('avg') || c.includes('average') || c.includes('cost') || c.includes('price') || c.includes('basis') || c.includes('rate') || c.includes('unit'));
+
+    if (tickerIdx === -1) tickerIdx = 0;
+    if (sharesIdx === -1) sharesIdx = headers.length > 1 ? 1 : 0;
+    if (priceIdx === -1) priceIdx = headers.length > 2 ? 2 : 0;
+
+    const holdings = [];
+
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      const cols = parseCSVLine(line);
+      if (cols.length <= Math.max(tickerIdx, sharesIdx, priceIdx)) continue;
+
+      const ticker = cols[tickerIdx].replace(/["']/g, '').trim();
+      if (!ticker || ticker.toLowerCase() === 'cash' || ticker.toLowerCase() === 'total' || ticker.toLowerCase().includes('grand total') || ticker.toLowerCase() === 'unknown') {
+        continue;
+      }
+
+      const sharesStr = cols[sharesIdx].replace(/[^0-9.-]/g, '');
+      const shares = parseFloat(sharesStr);
+
+      const priceStr = cols[priceIdx].replace(/[^0-9.-]/g, '');
+      const avg_price = parseFloat(priceStr);
+
+      if (isNaN(shares) || isNaN(avg_price) || shares <= 0 || avg_price < 0) {
+        continue;
+      }
+
+      let currency = undefined;
+      if (activeTab === 'australia') currency = 'AUD';
+      else currency = 'USD';
+
+      holdings.push({
+        ticker,
+        shares,
+        avg_price,
+        currency
+      });
+    }
+
+    return holdings;
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2741,14 +5090,6 @@ export default function App() {
     setUploadError('');
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        setUploadError('GEMINI_API_KEY is not configured');
-        setIsUploading(false);
-        return;
-      }
-
-      const ai = new GoogleGenAI({ apiKey });
       const reader = new FileReader();
 
       if (isPdf) {
@@ -2757,40 +5098,47 @@ export default function App() {
           try {
             const base64Pdf = (reader.result as string).split(',')[1];
             
-            const response = await ai.models.generateContent({
-              model: 'gemini-3.1-pro-preview',
-              contents: [
-                {
-                  inlineData: {
-                    data: base64Pdf,
-                    mimeType: 'application/pdf'
-                  }
-                },
-                activeTab === 'india'
-                  ? "Extract the stock portfolio from this document. This is likely an Indian brokerage statement (e.g., ICICI Direct, Zerodha). Return a list of holdings with ticker symbol, number of shares, and average price/cost basis."
-                  : activeTab === 'australia'
-                  ? "Extract the stock portfolio from this document. This is likely an Australian brokerage statement (e.g., CommSec, Spaceship, SelfWealth, Stake). Return a list of holdings with ticker symbol, number of shares, and average price/cost basis. IMPORTANT: For Australian stocks, you MUST append '.AX' to the ticker symbol. Many Australian statements for international stocks provide costs in AUD. If you see columns like 'Unit Price (A$)', 'Total Cost (A$)', or 'FX Fee (A$)', you MUST calculate the average price by dividing the 'Total Cost (A$)' (which includes the FX fee) by the number of 'Units' or 'Shares'. Set the currency to 'AUD'. If the statement only provides the native price (e.g., USD), use that and set the currency to 'USD'."
-                  : "Extract the stock portfolio from this document. Return a list of holdings with ticker symbol, number of shares, and average price/cost basis."
-              ],
-              config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      ticker: { type: Type.STRING, description: "Stock ticker symbol (e.g., AAPL)" },
-                      shares: { type: Type.NUMBER, description: "Number of shares" },
-                      avg_price: { type: Type.NUMBER, description: "Average price or cost basis per share" },
-                      currency: { type: Type.STRING, description: "The currency of the average price (e.g., 'AUD', 'USD', 'INR')" }
-                    },
-                    required: ["ticker", "shares", "avg_price"]
+            const res = await fetch('/api/gemini-analyze', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: 'gemini-3.1-pro-preview',
+                contents: [
+                  {
+                    inlineData: {
+                      data: base64Pdf,
+                      mimeType: 'application/pdf'
+                    }
+                  },
+                  activeTab === 'australia'
+                    ? "Extract the stock portfolio from this document. This is likely an Australian brokerage statement (e.g., CommSec, Spaceship, SelfWealth, Stake). Return a list of holdings with ticker symbol, number of shares, and average price/cost basis. IMPORTANT: For Australian stocks, you MUST append '.AX' to the ticker symbol. Many Australian statements for international stocks provide costs in AUD. If you see columns like 'Unit Price (A$)', 'Total Cost (A$)', or 'FX Fee (A$)', you MUST calculate the average price by dividing the 'Total Cost (A$)' (which includes the FX fee) by the number of 'Units' or 'Shares'. Set the currency to 'AUD'. If the statement only provides the native price (e.g., USD), use that and set the currency to 'USD'."
+                    : "Extract the stock portfolio from this document. Return a list of holdings with ticker symbol, number of shares, and average price/cost basis."
+                ],
+                config: {
+                  responseMimeType: "application/json",
+                  responseSchema: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        ticker: { type: "string", description: "Stock ticker symbol (e.g., AAPL)" },
+                        shares: { type: "number", description: "Number of shares" },
+                        avg_price: { type: "number", description: "Average price or cost basis per share" },
+                        currency: { type: "string", description: "The currency of the average price (e.g., 'AUD', 'USD', 'INR')" }
+                      },
+                      required: ["ticker", "shares", "avg_price"]
+                    }
                   }
                 }
-              }
+              })
             });
 
-            await processExtractedHoldings(response.text);
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.details || err.error || 'PDF extraction failed');
+            }
+            const responseData = await res.json();
+            await processExtractedHoldings(responseData.text);
           } catch (err: any) {
             console.error('Error processing PDF with Gemini:', err);
             setUploadError(err.message || 'Failed to process PDF.');
@@ -2805,51 +5153,65 @@ export default function App() {
         reader.onload = async () => {
           try {
             const csvText = reader.result as string;
+            let extractedText = '';
             
-            const response = await ai.models.generateContent({
-              model: 'gemini-3.1-pro-preview',
-              contents: [
-                activeTab === 'india'
-                  ? `Extract the stock portfolio from this CSV data. This is likely an Indian brokerage statement (e.g., ICICI Direct, Zerodha). 
-                Return a list of current holdings with ticker symbol, number of shares, and average price/cost basis.
-                IMPORTANT: Do NOT append '.NS' or any other exchange suffix to the ticker symbols. Return the exact ticker symbol as it appears in the CSV.
-                
-                CSV Data:
-                ${csvText.slice(0, 30000)}`
-                  : activeTab === 'australia'
-                  ? `Extract the stock portfolio from this CSV data. This is likely an Australian brokerage statement (e.g., CommSec, Spaceship, SelfWealth, Stake). 
-                Return a list of current holdings with ticker symbol, number of shares, and average price/cost basis.
-                IMPORTANT: For Australian stocks, you MUST append '.AX' to the ticker symbol. Many Australian statements for international stocks provide costs in AUD. If you see columns like 'Unit Price (A$)', 'Total Cost (A$)', or 'FX Fee (A$)', you MUST calculate the average price by dividing the 'Total Cost (A$)' (which includes the FX fee) by the number of 'Units' or 'Shares'. Set the currency to 'AUD'. If the CSV only provides the native price (e.g., USD), use that and set the currency to 'USD'.
-                
-                CSV Data:
-                ${csvText.slice(0, 30000)}`
-                  : `Extract the stock portfolio from this CSV data. This is likely an Interactive Brokers Flex Query or export. 
-                Return a list of current holdings with ticker symbol, number of shares, and average price/cost basis.
-                
-                CSV Data:
-                ${csvText.slice(0, 30000)}`, // Truncate if too long, though Gemini 3 series models handle more
-              ],
-              config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      ticker: { type: Type.STRING, description: "Stock ticker symbol (e.g., AAPL)" },
-                      shares: { type: Type.NUMBER, description: "Number of shares" },
-                      avg_price: { type: Type.NUMBER, description: "Average price or cost basis per share" },
-                      currency: { type: Type.STRING, description: "The currency of the average price (e.g., 'AUD', 'USD', 'INR')" }
-                    },
-                    required: ["ticker", "shares", "avg_price"]
+            try {
+              const res = await fetch('/api/gemini-analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  model: 'gemini-3.1-pro-preview',
+                  contents: [
+                    activeTab === 'australia'
+                      ? `Extract the stock portfolio from this CSV data. This is likely an Australian brokerage statement (e.g., CommSec, Spaceship, SelfWealth, Stake). 
+                    Return a list of current holdings with ticker symbol, number of shares, and average price/cost basis.
+                    IMPORTANT: For Australian stocks, you MUST append '.AX' to the ticker symbol. Many Australian statements for international stocks provide costs in AUD. If you see columns like 'Unit Price (A$)', 'Total Cost (A$)', or 'FX Fee (A$)', you MUST calculate the average price by dividing the 'Total Cost (A$)' (which includes the FX fee) by the number of 'Units' or 'Shares'. Set the currency to 'AUD'. If the CSV only provides the native price (e.g., USD), use that and set the currency to 'USD'.
+                    
+                    CSV Data:
+                    ${csvText.slice(0, 30000)}`
+                      : `Extract the stock portfolio from this CSV data. This is likely an Interactive Brokers Flex Query or export. 
+                    Return a list of current holdings with ticker symbol, number of shares, and average price/cost basis.
+                    
+                    CSV Data:
+                    ${csvText.slice(0, 30000)}`,
+                  ],
+                  config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          ticker: { type: "string" },
+                          shares: { type: "number" },
+                          avg_price: { type: "number" },
+                          currency: { type: "string" }
+                        },
+                        required: ["ticker", "shares", "avg_price"]
+                      }
+                    }
                   }
-                }
-              }
-            });
+                })
+              });
 
-            await processExtractedHoldings(response.text);
+              if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.details || err.error || 'CSV extraction failed');
+              }
+              const responseData = await res.json();
+              extractedText = responseData.text;
+            } catch (geminiErr: any) {
+              console.warn('Gemini CSV extraction failed, falling back to local parsing:', geminiErr);
+              const localHoldings = parseCSVLocally(csvText, activeTab);
+              if (localHoldings.length === 0) {
+                throw new Error(geminiErr.message || 'Failed to process CSV file with local fallback parsing.');
+              }
+              extractedText = JSON.stringify(localHoldings);
+            }
+
+            await processExtractedHoldings(extractedText);
           } catch (err: any) {
-            console.error('Error processing CSV with Gemini:', err);
+            console.error('Error processing CSV:', err);
             setUploadError(err.message || 'Failed to process CSV.');
           } finally {
             setIsUploading(false);
@@ -2897,7 +5259,12 @@ export default function App() {
         continue;
       }
 
-      let finalTicker = holding.ticker.toUpperCase().trim();
+      let finalTicker = (holding.ticker || '').toUpperCase().trim();
+
+      // For Australian stocks, append .AX suffix if missing
+      if (activeTab === 'australia' && !finalTicker.includes('.') && finalTicker !== 'CASH') {
+        finalTicker = `${finalTicker}.AX`;
+      }
 
       const holdingShares = Number(holding.shares);
       const holdingAvgPrice = Number(holding.avg_price);
@@ -2939,11 +5306,21 @@ export default function App() {
             avgPriceCurrency: existingData.avgPriceCurrency || holding.currency,
             updatedAt: serverTimestamp()
           }, { merge: true });
+
+          // Record a transaction for the merged shares!
+          await addDoc(collection(db, 'transactions'), {
+            holdingId: docRef.id,
+            type: 'buy',
+            shares: holdingShares,
+            price: holdingAvgPrice,
+            date: new Date().toISOString(),
+            userId: user.uid
+          });
           continue;
         }
       }
 
-      await addDoc(collection(db, 'holdings'), {
+      const holdingRef = await addDoc(collection(db, 'holdings'), {
         ticker: finalTicker,
         shares: holdingShares,
         avg_price: holdingAvgPrice,
@@ -2952,6 +5329,16 @@ export default function App() {
         portfolioType: activeTab,
         updatedAt: serverTimestamp()
       });
+
+      // Record an initial purchase transaction for the new holding!
+      await addDoc(collection(db, 'transactions'), {
+        holdingId: holdingRef.id,
+        type: 'buy',
+        shares: holdingShares,
+        price: holdingAvgPrice,
+        date: new Date().toISOString(),
+        userId: user.uid
+      });
     }
   };
 
@@ -2959,6 +5346,9 @@ export default function App() {
     let totalValue = 0;
     let totalCost = 0;
     let totalDayChange = 0;
+    
+    let totalBetaWeight = 0;
+    let validBetaValue = 0;
 
     const enrichedHoldings = holdings.map(h => {
       // Handle Cash
@@ -2986,6 +5376,11 @@ export default function App() {
 
         totalValue += currentValue;
         totalCost += costBasis;
+        
+        if (currentValue > 0) {
+          totalBetaWeight += currentValue;
+          validBetaValue += 0;
+        }
 
         return {
           ...h,
@@ -2998,7 +5393,9 @@ export default function App() {
           dayChange,
           dayChangePercent,
           marketState: 'REGULAR',
-          marketCap: undefined
+          marketCap: undefined,
+          beta: 0,
+          realizedProfitLoss: 0
         };
       }
 
@@ -3055,9 +5452,90 @@ export default function App() {
         }
       }
 
+      let realizedProfitLoss = 0;
+      if (allTransactions.length > 0) {
+        const hTransactions = allTransactions.filter(tx => tx.holdingId === h.id);
+        if (hTransactions.length > 0) {
+          const sortedTxs = [...hTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          const buyPool: { id: string; shares: number; priceInTarget: number }[] = [];
+          
+          let conversionRate = 1;
+          const storedCurrency = h.avgPriceCurrency || sourceCurrency;
+          if (storedCurrency && storedCurrency !== targetCurrency) {
+            conversionRate = getExchangeRate(storedCurrency, targetCurrency, quotes);
+            if (h.portfolioType === 'australia' && storedCurrency !== 'AUD') {
+              conversionRate *= 1.007; // FX fee
+            }
+          }
+
+          const buys = sortedTxs.filter(tx => tx.type === 'buy');
+          const sells = sortedTxs.filter(tx => tx.type === 'sell').map(tx => ({
+            ...tx,
+            remainingToMatch: tx.shares
+          }));
+
+          buys.forEach(tx => {
+            buyPool.push({
+              id: tx.id,
+              shares: tx.shares,
+              priceInTarget: tx.price * conversionRate
+            });
+          });
+
+          // Match specific lots first
+          sells.forEach(tx => {
+            if (tx.lotId) {
+              const txPriceInTarget = tx.price * conversionRate;
+              const targetBuy = buyPool.find(b => b.id === tx.lotId);
+              if (targetBuy && targetBuy.shares > 0) {
+                const consumed = Math.min(tx.remainingToMatch, targetBuy.shares);
+                const buyCost = consumed * targetBuy.priceInTarget;
+                const sellValue = consumed * txPriceInTarget;
+                realizedProfitLoss += (sellValue - buyCost);
+                targetBuy.shares -= consumed;
+                tx.remainingToMatch -= consumed;
+              }
+            }
+          });
+
+          // Match remainder with FIFO
+          sells.forEach(tx => {
+            let sharesToSell = tx.remainingToMatch;
+            const txPriceInTarget = tx.price * conversionRate;
+            
+            while (sharesToSell > 0 && buyPool.some(b => b.shares > 0)) {
+              const oldestBuy = buyPool.find(b => b.shares > 0);
+              if (!oldestBuy) break;
+
+              if (oldestBuy.shares <= sharesToSell) {
+                const buyCost = oldestBuy.shares * oldestBuy.priceInTarget;
+                const sellValue = oldestBuy.shares * txPriceInTarget;
+                realizedProfitLoss += (sellValue - buyCost);
+                sharesToSell -= oldestBuy.shares;
+                oldestBuy.shares = 0;
+              } else {
+                const buyCost = sharesToSell * oldestBuy.priceInTarget;
+                const sellValue = sharesToSell * txPriceInTarget;
+                realizedProfitLoss += (sellValue - buyCost);
+                oldestBuy.shares -= sharesToSell;
+                sharesToSell = 0;
+              }
+            }
+          });
+        }
+      }
+
       totalValue += currentValue;
       totalCost += costBasis;
       totalDayChange += dayChange;
+      
+      const beta = betas[h.ticker];
+      if (beta != null && currentValue > 0) {
+        totalBetaWeight += currentValue;
+        validBetaValue += beta * currentValue;
+      }
+
+      const growthMultiple = costBasis > 0 ? (currentValue / costBasis) : (currentValue > 0 ? 1 : 0);
 
       return {
         ...h,
@@ -3067,10 +5545,13 @@ export default function App() {
         costBasis,
         profitLoss,
         profitLossPercent,
+        growthMultiple,
         dayChange,
         dayChangePercent,
         marketState,
-        marketCap
+        marketCap,
+        beta,
+        realizedProfitLoss
       };
     });
 
@@ -3080,6 +5561,8 @@ export default function App() {
     // Calculate total previous close value for the portfolio to get the total day change percentage
     const totalPreviousValue = totalValue - totalDayChange;
     const totalDayChangePercent = totalPreviousValue > 0 ? (totalDayChange / totalPreviousValue) * 100 : 0;
+    
+    const portfolioBeta = totalBetaWeight > 0 ? (validBetaValue / totalBetaWeight) : null;
 
     // Benchmark stats
     const benchmarkQuote = quotes[benchmarkTicker] as any;
@@ -3099,11 +5582,12 @@ export default function App() {
       totalProfitLossPercent,
       totalDayChange,
       totalDayChangePercent,
+      portfolioBeta,
       benchmarkDayChangePercent,
       benchmarkYtdReturn,
       benchmarkTicker
     };
-  }, [holdings, quotes, benchmarkTicker]);
+  }, [holdings, quotes, betas, benchmarkTicker, allTransactions]);
 
   const combinedStats = useMemo(() => {
     let totalValue = 0;
@@ -3115,7 +5599,7 @@ export default function App() {
     allHoldings.forEach(h => {
       // Handle Cash
       if (h.ticker === 'CASH') {
-        const sourceCurrency = h.avgPriceCurrency || (h.portfolioType === 'india' ? 'INR' : (h.portfolioType === 'australia' ? 'AUD' : 'USD'));
+        const sourceCurrency = h.avgPriceCurrency || (h.portfolioType === 'australia' ? 'AUD' : 'USD');
         let rate = 1;
         if (sourceCurrency !== targetCurrency) {
           rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
@@ -3130,7 +5614,7 @@ export default function App() {
       let currentPrice = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
       let previousClose = quote?.previousClose != null ? quote.previousClose : currentPrice;
       
-      const sourceCurrency = quote?.currency || (h.portfolioType === 'india' ? 'INR' : (h.portfolioType === 'australia' ? 'AUD' : 'USD'));
+      const sourceCurrency = quote?.currency || (h.portfolioType === 'australia' ? 'AUD' : 'USD');
       const storedCurrency = h.avgPriceCurrency || sourceCurrency;
 
       // Convert Cost Basis to targetCurrency
@@ -3165,6 +5649,7 @@ export default function App() {
 
     return {
       totalValue,
+      totalCost,
       totalProfitLoss,
       totalProfitLossPercent,
       totalDayChange,
@@ -3172,8 +5657,265 @@ export default function App() {
     };
   }, [allHoldings, quotes, userSettings.combinedCurrency]);
 
+  const combinedPeriodStats = useMemo(() => {
+    const now = new Date();
+    
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(now.getMonth() - 6);
+    
+    const ytdStart = new Date(now.getFullYear(), 0, 1);
+    
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(now.getFullYear() - 1);
+
+    const stats = {
+      allTimeRealized: 0,
+      sixMonths: { realized: 0, unrealized: 0, total: 0, costBasis: 0, percent: 0 },
+      ytd: { realized: 0, unrealized: 0, total: 0, costBasis: 0, percent: 0 },
+      oneYear: { realized: 0, unrealized: 0, total: 0, costBasis: 0, percent: 0 }
+    };
+
+    if (!user || allTransactions.length === 0) return stats;
+
+    const targetCurrency = userSettings.combinedCurrency || 'USD';
+
+    allHoldings.forEach(h => {
+      if (h.ticker === 'CASH') return;
+
+      const hTransactions = allTransactions.filter(tx => tx.holdingId === h.id);
+      if (hTransactions.length === 0) return;
+
+      const quote = quotes[h.ticker] as any;
+      let currentPriceVal = quote?.price != null ? quote.price : h.avg_price;
+      const sourceCurrency = quote?.currency || (h.portfolioType === 'australia' ? 'AUD' : 'USD');
+      
+      if (sourceCurrency && sourceCurrency !== targetCurrency) {
+        const rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
+        currentPriceVal *= rate;
+      }
+
+      const storedCurrency = h.avgPriceCurrency || sourceCurrency;
+      let conversionRate = 1;
+      if (storedCurrency && storedCurrency !== targetCurrency) {
+        conversionRate = getExchangeRate(storedCurrency, targetCurrency, quotes);
+        if (h.portfolioType === 'australia' && storedCurrency !== 'AUD') {
+          conversionRate *= 1.007;
+        }
+      }
+
+      const sortedTxs = [...hTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      const buyPool: { date: Date; shares: number; priceInTarget: number }[] = [];
+      const realizedGains: { date: Date; amount: number; cost: number }[] = [];
+
+      sortedTxs.forEach(tx => {
+        const txDate = new Date(tx.date);
+        const txPriceInTarget = tx.price * conversionRate;
+
+        if (tx.type === 'buy') {
+          buyPool.push({
+            date: txDate,
+            shares: tx.shares,
+            priceInTarget: txPriceInTarget
+          });
+        } else if (tx.type === 'sell') {
+          let sharesToSell = tx.shares;
+          while (sharesToSell > 0 && buyPool.length > 0) {
+            const oldestBuy = buyPool[0];
+            if (oldestBuy.shares <= sharesToSell) {
+              const buyCost = oldestBuy.shares * oldestBuy.priceInTarget;
+              const sellValue = oldestBuy.shares * txPriceInTarget;
+              realizedGains.push({
+                date: txDate,
+                amount: sellValue - buyCost,
+                cost: buyCost
+              });
+              sharesToSell -= oldestBuy.shares;
+              buyPool.shift();
+            } else {
+              const buyCost = sharesToSell * oldestBuy.priceInTarget;
+              const sellValue = sharesToSell * txPriceInTarget;
+              realizedGains.push({
+                date: txDate,
+                amount: sellValue - buyCost,
+                cost: buyCost
+              });
+              oldestBuy.shares -= sharesToSell;
+              sharesToSell = 0;
+            }
+          }
+        }
+      });
+
+      realizedGains.forEach(gain => {
+        stats.allTimeRealized += gain.amount;
+        const d = gain.date;
+        if (d >= sixMonthsAgo) {
+          stats.sixMonths.realized += gain.amount;
+          stats.sixMonths.costBasis += gain.cost;
+        }
+        if (d >= ytdStart) {
+          stats.ytd.realized += gain.amount;
+          stats.ytd.costBasis += gain.cost;
+        }
+        if (d >= oneYearAgo) {
+          stats.oneYear.realized += gain.amount;
+          stats.oneYear.costBasis += gain.cost;
+        }
+      });
+
+      buyPool.forEach(lot => {
+        const d = lot.date;
+        const lotCost = lot.shares * lot.priceInTarget;
+        const lotCurrentValue = lot.shares * currentPriceVal;
+        const lotUnrealized = lotCurrentValue - lotCost;
+
+        if (d >= sixMonthsAgo) {
+          stats.sixMonths.unrealized += lotUnrealized;
+          stats.sixMonths.costBasis += lotCost;
+        }
+        if (d >= ytdStart) {
+          stats.ytd.unrealized += lotUnrealized;
+          stats.ytd.costBasis += lotCost;
+        }
+        if (d >= oneYearAgo) {
+          stats.oneYear.unrealized += lotUnrealized;
+          stats.oneYear.costBasis += lotCost;
+        }
+      });
+    });
+
+    const calculatePeriodTotals = (period: { realized: number; unrealized: number; total: number; costBasis: number; percent: number }) => {
+      period.total = period.realized + period.unrealized;
+      if (period.costBasis > 0) {
+        period.percent = (period.total / period.costBasis) * 100;
+      } else if (combinedStats.totalCost > 0) {
+        period.percent = (period.total / combinedStats.totalCost) * 100;
+      } else if (combinedStats.totalValue > 0) {
+        period.percent = (period.total / combinedStats.totalValue) * 100;
+      } else {
+        period.percent = 0;
+      }
+    };
+
+    calculatePeriodTotals(stats.sixMonths);
+    calculatePeriodTotals(stats.ytd);
+    calculatePeriodTotals(stats.oneYear);
+
+    return stats;
+  }, [allHoldings, allTransactions, quotes, userSettings.combinedCurrency, user, combinedStats.totalCost, combinedStats.totalValue]);
+
+  const tabPeriodStats = useMemo(() => {
+    const now = new Date();
+    
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(now.getMonth() - 6);
+    
+    const ytdStart = new Date(now.getFullYear(), 0, 1);
+    
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(now.getFullYear() - 1);
+
+    const stats = {
+      sixMonths: { realized: 0, unrealized: 0 },
+      ytd: { realized: 0, unrealized: 0 },
+      oneYear: { realized: 0, unrealized: 0 }
+    };
+
+    if (!user || allTransactions.length === 0) return stats;
+
+    const targetCurrency = activeCurrency;
+
+    holdings.forEach(h => {
+      if (h.ticker === 'CASH') return;
+
+      const hTransactions = allTransactions.filter(tx => tx.holdingId === h.id);
+      if (hTransactions.length === 0) return;
+
+      const quote = quotes[h.ticker] as any;
+      let currentPriceVal = quote?.price != null ? quote.price : h.avg_price;
+      const sourceCurrency = quote?.currency;
+      
+      if (sourceCurrency && sourceCurrency !== targetCurrency) {
+        const rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
+        currentPriceVal *= rate;
+      }
+
+      const storedCurrency = h.avgPriceCurrency || sourceCurrency;
+      let conversionRate = 1;
+      if (storedCurrency && storedCurrency !== targetCurrency) {
+        conversionRate = getExchangeRate(storedCurrency, targetCurrency, quotes);
+        if (h.portfolioType === 'australia' && storedCurrency !== 'AUD') {
+          conversionRate *= 1.007;
+        }
+      }
+
+      const sortedTxs = [...hTransactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      const buyPool: { date: Date; shares: number; priceInTarget: number }[] = [];
+      const realizedGains: { date: Date; amount: number }[] = [];
+
+      sortedTxs.forEach(tx => {
+        const txDate = new Date(tx.date);
+        const txPriceInTarget = tx.price * conversionRate;
+
+        if (tx.type === 'buy') {
+          buyPool.push({
+            date: txDate,
+            shares: tx.shares,
+            priceInTarget: txPriceInTarget
+          });
+        } else if (tx.type === 'sell') {
+          let sharesToSell = tx.shares;
+          while (sharesToSell > 0 && buyPool.length > 0) {
+            const oldestBuy = buyPool[0];
+            if (oldestBuy.shares <= sharesToSell) {
+              const buyCost = oldestBuy.shares * oldestBuy.priceInTarget;
+              const sellValue = oldestBuy.shares * txPriceInTarget;
+              realizedGains.push({
+                date: txDate,
+                amount: sellValue - buyCost
+              });
+              sharesToSell -= oldestBuy.shares;
+              buyPool.shift();
+            } else {
+              const buyCost = sharesToSell * oldestBuy.priceInTarget;
+              const sellValue = sharesToSell * txPriceInTarget;
+              realizedGains.push({
+                date: txDate,
+                amount: sellValue - buyCost
+              });
+              oldestBuy.shares -= sharesToSell;
+              sharesToSell = 0;
+            }
+          }
+        }
+      });
+
+      realizedGains.forEach(gain => {
+        const d = gain.date;
+        if (d >= sixMonthsAgo) stats.sixMonths.realized += gain.amount;
+        if (d >= ytdStart) stats.ytd.realized += gain.amount;
+        if (d >= oneYearAgo) stats.oneYear.realized += gain.amount;
+      });
+
+      buyPool.forEach(lot => {
+        const d = lot.date;
+        const lotCost = lot.shares * lot.priceInTarget;
+        const lotCurrentValue = lot.shares * currentPriceVal;
+        const lotUnrealized = lotCurrentValue - lotCost;
+
+        if (d >= sixMonthsAgo) stats.sixMonths.unrealized += lotUnrealized;
+        if (d >= ytdStart) stats.ytd.unrealized += lotUnrealized;
+        if (d >= oneYearAgo) stats.oneYear.unrealized += lotUnrealized;
+      });
+    });
+
+    return stats;
+  }, [holdings, allTransactions, quotes, activeCurrency, user]);
+
   const sortedHoldings = useMemo(() => {
-    let sortableItems = [...portfolioStats.enrichedHoldings];
+    let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0);
     
     if (filterGroup) {
       if (chartView === 'asset') {
@@ -3186,7 +5928,7 @@ export default function App() {
       }
     }
 
-    if (sortConfig !== null) {
+    if (sortConfig !== null && sortConfig.key !== 'manual') {
       sortableItems.sort((a, b) => {
         const aVal = a[sortConfig.key] ?? -Infinity;
         const bVal = b[sortConfig.key] ?? -Infinity;
@@ -3200,14 +5942,20 @@ export default function App() {
       });
     }
     return sortableItems;
-  }, [portfolioStats.enrichedHoldings, sortConfig]);
+  }, [portfolioStats.enrichedHoldings, sortConfig, filterGroup, chartView, metadata]);
+
+  const sortedWatchlist = useMemo(() => {
+    return portfolioStats.enrichedHoldings
+      .filter(h => h.shares === 0)
+      .sort((a, b) => a.ticker.localeCompare(b.ticker));
+  }, [portfolioStats.enrichedHoldings]);
 
   const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#10b981', '#06b6d4', '#3b82f6'];
 
   const chartData = useMemo(() => {
     // Group by ticker for the pie chart
     const grouped: Record<string, { value: number, profitLoss: number, cost: number }> = {};
-    portfolioStats.enrichedHoldings.forEach(h => {
+    sortedHoldings.forEach(h => {
       if (!grouped[h.ticker]) {
         grouped[h.ticker] = { value: 0, profitLoss: 0, cost: 0 };
       }
@@ -3219,11 +5967,11 @@ export default function App() {
     return Object.entries(grouped)
       .map(([name, data]) => ({ name, value: data.value, profitLoss: data.profitLoss, cost: data.cost }))
       .sort((a, b) => b.value - a.value);
-  }, [portfolioStats.enrichedHoldings]);
+  }, [sortedHoldings]);
 
   const sectorData = useMemo(() => {
     const grouped: Record<string, { value: number, cost: number, profitLoss: number }> = {};
-    portfolioStats.enrichedHoldings.forEach(h => {
+    sortedHoldings.forEach(h => {
       const sector = h.ticker === 'CASH' ? 'Cash' : (metadata[h.ticker]?.sector || 'Unknown');
       if (!grouped[sector]) {
         grouped[sector] = { value: 0, cost: 0, profitLoss: 0 };
@@ -3236,7 +5984,101 @@ export default function App() {
     return Object.entries(grouped)
       .map(([name, data]) => ({ name, value: data.value, cost: data.cost, profitLoss: data.profitLoss }))
       .sort((a, b) => b.value - a.value);
-  }, [portfolioStats.enrichedHoldings, metadata]);
+  }, [sortedHoldings, metadata]);
+
+  const { minScatterCost, maxScatterCost, minScatterValue, maxScatterValue } = useMemo(() => {
+    const data = chartView === 'asset' ? chartData : sectorData;
+    const costs = data.map(d => d.cost).filter(c => c > 0);
+    const values = data.map(d => d.value).filter(v => v > 0);
+    return {
+      minScatterCost: costs.length > 0 ? Math.min(...costs) : 0,
+      maxScatterCost: costs.length > 0 ? Math.max(...costs) : 10000,
+      minScatterValue: values.length > 0 ? Math.min(...values) : 0,
+      maxScatterValue: values.length > 0 ? Math.max(...values) : 10000,
+    };
+  }, [chartView, chartData, sectorData]);
+
+  const maxScatterProfit = useMemo(() => {
+    const data = chartView === 'asset' ? chartData : sectorData;
+    const profits = data.map(d => d.profitLoss).filter(p => p > 0);
+    return profits.length > 0 ? Math.max(...profits) : 1000;
+  }, [chartView, chartData, sectorData]);
+
+  const maxScatterLoss = useMemo(() => {
+    const data = chartView === 'asset' ? chartData : sectorData;
+    const losses = data.map(d => Math.abs(d.profitLoss)).filter((_, i) => data[i].profitLoss < 0);
+    return losses.length > 0 ? Math.max(...losses) : 1000;
+  }, [chartView, chartData, sectorData]);
+
+  const scatterPlotData = useMemo(() => {
+    const rawData = chartView === 'asset' ? chartData : sectorData;
+    // Always sort descending by value so larger bubbles render first (at bottom of SVG stack)
+    const sorted = [...rawData].sort((a, b) => b.value - a.value);
+
+    if (!deconflictScatter || sorted.length <= 1) {
+      return sorted.map(d => ({ ...d, offsetX: 0, offsetY: 0 }));
+    }
+
+    const costs = sorted.map(d => d.cost);
+    const values = sorted.map(d => d.value);
+    const minCost = Math.min(...costs);
+    const maxCost = Math.max(...costs);
+    const minValue = Math.min(...values);
+    const maxValue = Math.max(...values);
+    const costRange = maxCost - minCost || 1;
+    const valueRange = maxValue - minValue || 1;
+
+    // Approximate screen dimensions of chart plot area
+    const plotWidth = 720;
+    const plotHeight = 320;
+
+    const points = sorted.map(d => ({
+      ...d,
+      px: ((d.cost - minCost) / costRange) * plotWidth,
+      py: plotHeight - ((d.value - minValue) / valueRange) * plotHeight,
+      offsetX: 0,
+      offsetY: 0,
+    }));
+
+    // Find overlapping clusters (distance < 36px)
+    const threshold = 36;
+    const visited = new Set<number>();
+    const clusters: number[][] = [];
+
+    for (let i = 0; i < points.length; i++) {
+      if (visited.has(i)) continue;
+      const cluster = [i];
+      visited.add(i);
+
+      for (let j = i + 1; j < points.length; j++) {
+        if (visited.has(j)) continue;
+        const dx = points[i].px - points[j].px;
+        const dy = points[i].py - points[j].py;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < threshold) {
+          cluster.push(j);
+          visited.add(j);
+        }
+      }
+
+      if (cluster.length > 1) {
+        clusters.push(cluster);
+      }
+    }
+
+    // Spread each cluster around its center
+    clusters.forEach(clusterIndices => {
+      const count = clusterIndices.length;
+      const radius = Math.min(30, 14 + count * 4.5);
+      clusterIndices.forEach((idx, k) => {
+        const angle = (2 * Math.PI * k) / count - Math.PI / 2;
+        points[idx].offsetX = Math.round(Math.cos(angle) * radius);
+        points[idx].offsetY = Math.round(Math.sin(angle) * radius);
+      });
+    });
+
+    return points;
+  }, [chartView, chartData, sectorData, deconflictScatter]);
 
   const getMarketStateBadge = (state?: string) => {
     if (!state || state === 'REGULAR') return null;
@@ -3300,7 +6142,7 @@ export default function App() {
 
   const getMarketStatus = (tabId: string) => {
     // Check the benchmark ticker's market state as a proxy for the general market
-    const tabBenchmark = tabSettings[tabId]?.benchmark || (tabId === 'india' ? '^NSEI' : tabId === 'australia' ? '^AXJO' : 'SPY');
+    const tabBenchmark = tabSettings[tabId]?.benchmark || (tabId === 'australia' ? '^AXJO' : 'SPY');
     const benchmarkQuote = quotes[tabBenchmark] as any;
     if (!benchmarkQuote) return null;
     
@@ -3346,24 +6188,72 @@ export default function App() {
 
   const COLUMNS = [
     { id: 'ticker', label: 'Asset', align: 'left' as const, sortKey: 'ticker' as SortKey },
+    { id: 'fearGreed', label: 'Fear/Greed', align: 'center' as const, sortKey: 'ticker' as SortKey },
     { id: 'shares', label: 'Shares', align: 'right' as const, sortKey: 'shares' as SortKey },
     { id: 'displayAvgPrice', label: `Avg Cost (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'displayAvgPrice' as SortKey },
     { id: 'costBasis', label: `Investment Cost (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'costBasis' as SortKey },
     { id: 'currentPrice', label: `Price (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'currentPrice' as SortKey },
     { id: 'dayChange', label: `Day Change (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'dayChange' as SortKey },
     { id: 'currentValue', label: `Total Value (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'currentValue' as SortKey },
+    { id: 'allocation', label: 'Allocation', align: 'right' as const, sortKey: 'currentValue' as SortKey },
     { id: 'profitLoss', label: `Total Return (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'profitLoss' as SortKey },
+    { id: 'growthMultiple', label: 'Growth Multiple', align: 'right' as const, sortKey: 'growthMultiple' as SortKey },
+    { id: 'realizedProfitLoss', label: `Realized P&L (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'realizedProfitLoss' as SortKey },
     { id: 'marketCap', label: `Market Cap (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'marketCap' as SortKey },
   ];
 
-  const handleDragEndColumns = (event: DragEndEvent) => {
+  const handleHoldingsTableDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    if (over && active.id !== over.id) {
-      setColumnOrder((items) => {
-        const oldIndex = items.indexOf(active.id as string);
-        const newIndex = items.indexOf(over.id as string);
-        return arrayMove(items, oldIndex, newIndex);
-      });
+    if (!over) return;
+
+    if (active.id !== over.id) {
+      const activeId = active.id as string;
+      const overId = over.id as string;
+
+      // Check if it's a column reorder
+      if (columnOrder.includes(activeId)) {
+        setColumnOrder((items) => {
+          const oldIndex = items.indexOf(activeId);
+          const newIndex = items.indexOf(overId);
+          const newOrder = arrayMove(items, oldIndex, newIndex);
+          saveTableLayout({ columnOrder: newOrder });
+          return newOrder;
+        });
+      } else {
+        // It's a holding reorder
+        const oldIndex = allHoldings.findIndex(h => h.id === activeId);
+        const newIndex = allHoldings.findIndex(h => h.id === overId);
+        
+        if (oldIndex !== -1 && newIndex !== -1) {
+          const newHoldings = arrayMove([...allHoldings], oldIndex, newIndex);
+          
+          // Assign sequential order values to all holdings of the active tab
+          let orderCounter = 0;
+          const updatedHoldings = newHoldings.map((h) => {
+            if ((h.portfolioType || 'global') === activeTab) {
+              return { ...h, order: orderCounter++ };
+            }
+            return h;
+          });
+
+          setAllHoldings(updatedHoldings);
+          
+          // Set sort to manual when user starts reordering
+          const newSortConfig = { key: 'manual' as SortKey, direction: 'asc' as const };
+          setSortConfig(newSortConfig);
+          saveTableLayout({ sortConfig: newSortConfig });
+          
+          // Persist the new order of active tab holdings to Firestore
+          const activeTabHoldings = updatedHoldings.filter(h => (h.portfolioType || 'global') === activeTab);
+          activeTabHoldings.forEach(async (h) => {
+            try {
+              await updateDoc(doc(db, 'holdings', h.id), { order: h.order });
+            } catch (err) {
+              console.error('Error updating holding order:', err);
+            }
+          });
+        }
+      }
     }
   };
 
@@ -3371,41 +6261,118 @@ export default function App() {
     switch (colId) {
       case 'ticker':
         return (
-          <td key={colId} className="px-6 py-4" onClick={(e) => { e.stopPropagation(); handleEditClick(holding, 'ticker'); }}>
+          <td key={colId} className="px-6 py-4" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
             <div className="flex items-center gap-3">
               <CompanyLogo ticker={holding.ticker} logo={metadata[holding.ticker]?.logo} />
               {editingId === holding.id ? (
-                <input
-                  type="text"
-                  value={editTicker}
-                  onChange={(e) => setEditTicker(e.target.value)}
-                  className="w-24 px-2 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 uppercase"
-                  placeholder="Ticker"
-                  autoFocus={editField === 'ticker'}
-                />
+                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="text"
+                    value={editTicker}
+                    onChange={(e) => setEditTicker(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveEdit(holding.id);
+                      if (e.key === 'Escape') handleCancelEdit();
+                    }}
+                    className="w-24 px-2 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 uppercase text-xs font-mono font-bold"
+                    placeholder="Ticker"
+                    autoFocus={editField === 'ticker'}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleSaveEdit(holding.id)}
+                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
+                    title="Save"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelEdit}
+                    className="p-1 text-zinc-400 hover:bg-zinc-100 rounded"
+                    title="Cancel"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ) : (
-                <div className="font-semibold text-zinc-900 group-hover/row:text-indigo-600 transition-colors">{holding.ticker}</div>
+                <div className="font-semibold text-zinc-900 group-hover/row:text-indigo-600 transition-colors flex items-center gap-1.5">
+                  <span>{holding.ticker}</span>
+                  {(holding.avg_price < 0 || holding.shares < 0) && (
+                    <span className="px-1.5 py-0.5 text-[10px] bg-rose-100 text-rose-700 font-bold rounded">
+                      Negative
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </td>
         );
+      case 'fearGreed':
+        const hFg = fearGreedData?.details?.find((d: any) => d.symbol === holding.ticker);
+        return (
+          <td key={colId} className="px-6 py-4 text-center">
+            {hFg ? (
+              <div 
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-bold uppercase transition-all shadow-sm border",
+                  hFg.score <= 25 ? "text-rose-600 bg-rose-50 border-rose-100" :
+                  hFg.score <= 45 ? "text-orange-600 bg-orange-50 border-orange-100" :
+                  hFg.score <= 55 ? "text-zinc-600 bg-zinc-50 border-zinc-100" :
+                  hFg.score <= 75 ? "text-emerald-600 bg-emerald-50 border-emerald-100" :
+                  "text-blue-600 bg-blue-50 border-blue-100"
+                )}
+                title={`RSI: ${Math.round(hFg.rsi)} | Momentum: ${hFg.momentum > 0 ? '+' : ''}${hFg.momentum.toFixed(1)}%`}
+              >
+                <Activity size={10} />
+                {Math.round(hFg.score)}
+              </div>
+            ) : (
+              <span className="text-zinc-300 text-[10px] font-bold">--</span>
+            )}
+          </td>
+        );
       case 'shares':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); handleEditClick(holding, 'shares'); }}>
+          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'shares'); }}>
             {editingId === holding.id ? (
-              <input
-                type="text"
-                inputMode="decimal"
-                value={editShares}
-                onChange={(e) => setEditShares(e.target.value)}
-                className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
-                min="0.00001"
-                step="any"
-                autoFocus={editField === 'shares'}
-              />
+              <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={editShares}
+                  onChange={(e) => setEditShares(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveEdit(holding.id);
+                    if (e.key === 'Escape') handleCancelEdit();
+                  }}
+                  className="w-20 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900 text-xs font-mono"
+                  min="0"
+                  step="any"
+                  autoFocus={editField === 'shares'}
+                />
+                <button
+                  type="button"
+                  onClick={() => handleSaveEdit(holding.id)}
+                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
+                  title="Save"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="p-1 text-zinc-400 hover:bg-zinc-100 rounded"
+                  title="Cancel"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             ) : (
               <div className="flex items-center justify-end gap-2 group/shares">
-                <span>{holding.shares.toLocaleString()}</span>
+                <span className={holding.shares < 0 ? "text-rose-600 font-bold" : ""}>
+                  {holding.shares.toLocaleString()}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -3422,13 +6389,13 @@ export default function App() {
         );
       case 'displayAvgPrice':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); handleEditClick(holding, 'displayAvgPrice'); }}>
+          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'displayAvgPrice'); }}>
             {editingId === holding.id ? (
-              <div className="flex items-center justify-end gap-1">
+              <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                 <select
                   value={editAvgPriceCurrency}
                   onChange={(e) => setEditAvgPriceCurrency(e.target.value)}
-                  className="px-1 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 bg-white"
+                  className="px-1 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 bg-white text-xs"
                 >
                   <option value="USD">USD</option>
                   <option value="EUR">EUR</option>
@@ -3443,14 +6410,36 @@ export default function App() {
                   inputMode="decimal"
                   value={editAvgPrice}
                   onChange={(e) => setEditAvgPrice(e.target.value)}
-                  className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
-                  min="0.01"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveEdit(holding.id);
+                    if (e.key === 'Escape') handleCancelEdit();
+                  }}
+                  className="w-20 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900 text-xs font-mono"
+                  min="0"
                   step="any"
                   autoFocus={editField === 'displayAvgPrice'}
                 />
+                <button
+                  type="button"
+                  onClick={() => handleSaveEdit(holding.id)}
+                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
+                  title="Save"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="p-1 text-zinc-400 hover:bg-zinc-100 rounded"
+                  title="Cancel"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             ) : (
-              formatCurrency(holding.displayAvgPrice, activeCurrency)
+              <span className={holding.avg_price < 0 ? "text-rose-600 font-bold bg-rose-50 px-1 py-0.5 rounded" : ""}>
+                {formatCurrency(holding.displayAvgPrice, activeCurrency)}
+              </span>
             )}
           </td>
         );
@@ -3472,19 +6461,21 @@ export default function App() {
       case 'dayChange':
         return (
           <td key={colId} className="px-6 py-4 text-right">
-            <div className={cn(
-              "inline-flex items-center gap-1 font-medium text-sm",
-              holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
-            )}>
-              {holding.dayChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-              {holding.dayChange >= 0 ? '+' : '-'}{Math.abs(holding.dayChangePercent).toFixed(2)}%
-            </div>
-            <div className={cn(
-              "text-xs mt-0.5 font-mono",
-              holding.dayChange >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
-            )}>
-              {formatCurrency(holding.dayChange, activeCurrency, true)}
-            </div>
+            <PulseCell value={holding.dayChange} className="items-end">
+              <div className={cn(
+                "inline-flex items-center gap-1 font-medium text-sm",
+                holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
+              )}>
+                {holding.dayChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                {holding.dayChange >= 0 ? '+' : '-'}{Math.abs(holding.dayChangePercent).toFixed(2)}%
+              </div>
+              <div className={cn(
+                "text-xs mt-0.5 font-mono",
+                holding.dayChange >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
+              )}>
+                {formatCurrency(holding.dayChange, activeCurrency, true)}
+              </div>
+            </PulseCell>
           </td>
         );
       case 'currentValue':
@@ -3493,21 +6484,92 @@ export default function App() {
             {formatCurrency(holding.currentValue, activeCurrency)}
           </td>
         );
-      case 'profitLoss':
+      case 'allocation':
+        const allocationPercent = portfolioStats.totalValue > 0 
+          ? (holding.currentValue / portfolioStats.totalValue) * 100 
+          : 0;
+        return (
+          <td key={colId} className="px-6 py-4 text-right font-mono text-sm">
+            <div className="font-medium text-zinc-900">{allocationPercent.toFixed(1)}%</div>
+            <div className="w-16 h-1 bg-zinc-100 rounded-full mt-1.5 ml-auto overflow-hidden">
+              <div 
+                className="h-full bg-indigo-500 rounded-full" 
+                style={{ width: `${Math.min(allocationPercent, 100)}%` }}
+              />
+            </div>
+          </td>
+        );
+      case 'profitLoss': {
+        const multiple = holding.costBasis > 0 
+          ? (holding.currentValue / holding.costBasis) 
+          : (holding.currentValue > 0 ? 1 : 0);
+        return (
+          <td key={colId} className="px-6 py-4 text-right">
+            <PulseCell value={holding.profitLoss} className="items-end">
+              <div className="flex items-center justify-end gap-1.5">
+                <div className={cn(
+                  "inline-flex items-center gap-1 font-medium text-sm",
+                  holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
+                )}>
+                  {holding.profitLoss >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                  {holding.profitLoss >= 0 ? '+' : '-'}{Math.abs(holding.profitLossPercent).toFixed(2)}%
+                </div>
+                {holding.costBasis > 0 && (
+                  <span 
+                    className={cn(
+                      "px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border shadow-2xs",
+                      multiple >= 2 ? "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800" :
+                      multiple >= 1 ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-900" :
+                      "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/30 dark:text-rose-400 dark:border-rose-900"
+                    )}
+                    title={`Growth multiple: ${multiple.toFixed(2)}x initial cost`}
+                  >
+                    {multiple.toFixed(2)}x
+                  </span>
+                )}
+              </div>
+              <div className={cn(
+                "text-xs mt-0.5 font-mono",
+                holding.profitLoss >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
+              )}>
+                {formatCurrency(holding.profitLoss, activeCurrency, true)}
+              </div>
+            </PulseCell>
+          </td>
+        );
+      }
+      case 'growthMultiple': {
+        const multiple = holding.costBasis > 0 
+          ? (holding.currentValue / holding.costBasis) 
+          : (holding.currentValue > 0 ? 1 : 0);
+        const isGain = multiple >= 1;
+        return (
+          <td key={colId} className="px-6 py-4 text-right">
+            <div className="flex items-center justify-end">
+              <span 
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold border shadow-2xs transition-all hover:scale-105",
+                  multiple >= 2 ? "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800" :
+                  multiple >= 1 ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-900" :
+                  "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/30 dark:text-rose-400 dark:border-rose-900"
+                )}
+                title={`Investment has grown ${multiple.toFixed(2)}x (${((multiple - 1) * 100).toFixed(1)}% gain)`}
+              >
+                {isGain ? <TrendingUp className="w-3.5 h-3.5 text-emerald-600" /> : <TrendingDown className="w-3.5 h-3.5 text-rose-600" />}
+                {multiple.toFixed(2)}x
+              </span>
+            </div>
+          </td>
+        );
+      }
+      case 'realizedProfitLoss':
         return (
           <td key={colId} className="px-6 py-4 text-right">
             <div className={cn(
-              "inline-flex items-center gap-1 font-medium text-sm",
-              holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
+              "text-sm font-semibold font-mono",
+              holding.realizedProfitLoss > 0 ? "text-emerald-600" : holding.realizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
             )}>
-              {holding.profitLoss >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-              {holding.profitLoss >= 0 ? '+' : '-'}{Math.abs(holding.profitLossPercent).toFixed(2)}%
-            </div>
-            <div className={cn(
-              "text-xs mt-0.5 font-mono",
-              holding.profitLoss >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
-            )}>
-              {formatCurrency(holding.profitLoss, activeCurrency, true)}
+              {holding.realizedProfitLoss > 0 ? '+' : ''}{formatCurrency(holding.realizedProfitLoss, activeCurrency, true)}
             </div>
           </td>
         );
@@ -3540,7 +6602,7 @@ export default function App() {
         isSaving={isSavingSettings}
       />
       {/* Header */}
-      <header className="bg-white border-b border-zinc-200 sticky top-0 z-10">
+      <header className="bg-white border-b border-zinc-200 sticky top-0 z-[100]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-zinc-900 p-2 rounded-lg">
@@ -3573,6 +6635,13 @@ export default function App() {
               <span className="hidden sm:inline text-sm font-semibold">Saved Notes</span>
             </button>
             <button
+              onClick={toggleDarkMode}
+              className="p-2 text-zinc-500 hover:text-indigo-600 hover:bg-zinc-100 rounded-xl transition-all"
+              title={userSettings.darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {userSettings.darkMode ? <Sun size={20} className="text-amber-500 fill-amber-500/20" /> : <Moon size={20} />}
+            </button>
+            <button
               onClick={() => setShowSettings(true)}
               className="p-2 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-xl transition-all"
               title="Settings"
@@ -3589,12 +6658,12 @@ export default function App() {
         </div>
         {userSettings.showCombinedSummary && (() => {
           return (
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-4">
-              <div className="flex flex-col gap-6 bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-0">
+              <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden">
                 <div className="overflow-x-auto no-scrollbar">
-                  <div className="p-6 md:p-8 flex flex-row items-center gap-8 lg:gap-16 min-w-max">
+                  <div className="p-4 flex flex-row items-center gap-6 lg:gap-10 min-w-max">
                     <div className="flex flex-col min-w-max">
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Combined Value</span>
                         <select 
                           value={userSettings.combinedCurrency || 'USD'}
@@ -3621,33 +6690,109 @@ export default function App() {
                           <option value="SGD">SGD</option>
                         </select>
                       </div>
-                      <span className="text-4xl font-semibold tracking-tight text-zinc-900">{formatCurrency(combinedStats.totalValue, userSettings.combinedCurrency || 'USD')}</span>
+                      <span className="text-2xl font-semibold tracking-tight text-zinc-900">
+                        <AnimatedCountUp value={combinedStats.totalValue} currency={userSettings.combinedCurrency || 'USD'} />
+                      </span>
                     </div>
 
-                    <div className="flex flex-row gap-8 lg:gap-16 ml-auto min-w-max">
-                      <div className="space-y-1">
-                        <div className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
+                    <div className="flex flex-row gap-6 lg:gap-8 ml-auto min-w-max">
+                      <div className="space-y-0.5">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Combined Return
                         </div>
-                        <div className={cn("text-2xl md:text-3xl font-medium flex items-center gap-2", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                          {formatCurrency(combinedStats.totalProfitLoss, userSettings.combinedCurrency || 'USD', true)}
+                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          <AnimatedCountUp value={combinedStats.totalProfitLoss} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
-                        <div className={cn("text-sm font-medium flex items-center gap-1", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                          {combinedStats.totalProfitLossPercent >= 0 ? <TrendingUp size={16} /> : <TrendingUp size={16} className="rotate-180" />}
-                          {Math.abs(combinedStats.totalProfitLossPercent).toFixed(2)}% All Time
+                        <div className={cn("text-xs font-medium flex items-center gap-1", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedStats.totalProfitLossPercent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
+                          <AnimatedCountUp value={Math.abs(combinedStats.totalProfitLossPercent)} suffix="% All Time" />
                         </div>
                       </div>
 
-                      <div className="space-y-1">
-                        <div className="text-sm font-medium text-zinc-500 uppercase tracking-wider">
+                      <div className="space-y-0.5">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                          Realized Return
+                        </div>
+                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.allTimeRealized >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          <AnimatedCountUp value={combinedPeriodStats.allTimeRealized} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
+                        </div>
+                        <div className="text-xs font-medium text-zinc-400">
+                          Closed Positions
+                        </div>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Combined Day Change
                         </div>
-                        <div className={cn("text-2xl md:text-3xl font-medium flex items-center gap-2", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                          {formatCurrency(combinedStats.totalDayChange, userSettings.combinedCurrency || 'USD', true)}
+                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          <AnimatedCountUp value={combinedStats.totalDayChange} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
-                        <div className={cn("text-sm font-medium flex items-center gap-1", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                          {combinedStats.totalDayChangePercent >= 0 ? <TrendingUp size={16} /> : <TrendingUp size={16} className="rotate-180" />}
-                          {Math.abs(combinedStats.totalDayChangePercent).toFixed(2)}% Today
+                        <div className={cn("text-xs font-medium flex items-center gap-1", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedStats.totalDayChangePercent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
+                          <AnimatedCountUp value={Math.abs(combinedStats.totalDayChangePercent)} suffix="% Today" />
+                        </div>
+                      </div>
+
+                      <div className="h-10 w-px bg-zinc-200 self-center shrink-0 hidden md:block" />
+
+                      <div className="space-y-0.5">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                          Total Gain 6M
+                        </div>
+                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.sixMonths.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          <AnimatedCountUp value={combinedPeriodStats.sixMonths.total} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
+                        </div>
+                        <div className={cn("text-xs font-medium flex items-center gap-1", combinedPeriodStats.sixMonths.percent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedPeriodStats.sixMonths.percent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
+                          <AnimatedCountUp value={Math.abs(combinedPeriodStats.sixMonths.percent)} suffix="% 6M" />
+                        </div>
+                        <div className="text-[10px] text-zinc-500 font-medium flex items-center gap-1 pt-0.5">
+                          <span>Realized:</span>
+                          <span className={cn("font-semibold font-mono", combinedPeriodStats.sixMonths.realized >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                            {combinedPeriodStats.sixMonths.realized >= 0 ? '+' : ''}
+                            {formatCurrency(combinedPeriodStats.sixMonths.realized, userSettings.combinedCurrency || 'USD', true)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                          Total Gain YTD
+                        </div>
+                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.ytd.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          <AnimatedCountUp value={combinedPeriodStats.ytd.total} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
+                        </div>
+                        <div className={cn("text-xs font-medium flex items-center gap-1", combinedPeriodStats.ytd.percent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedPeriodStats.ytd.percent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
+                          <AnimatedCountUp value={Math.abs(combinedPeriodStats.ytd.percent)} suffix="% YTD" />
+                        </div>
+                        <div className="text-[10px] text-zinc-500 font-medium flex items-center gap-1 pt-0.5">
+                          <span>Realized:</span>
+                          <span className={cn("font-semibold font-mono", combinedPeriodStats.ytd.realized >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                            {combinedPeriodStats.ytd.realized >= 0 ? '+' : ''}
+                            {formatCurrency(combinedPeriodStats.ytd.realized, userSettings.combinedCurrency || 'USD', true)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-0.5 font-sans">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+                          Total Gain 1Y
+                        </div>
+                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.oneYear.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          <AnimatedCountUp value={combinedPeriodStats.oneYear.total} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
+                        </div>
+                        <div className={cn("text-xs font-medium flex items-center gap-1", combinedPeriodStats.oneYear.percent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedPeriodStats.oneYear.percent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
+                          <AnimatedCountUp value={Math.abs(combinedPeriodStats.oneYear.percent)} suffix="% 1Y" />
+                        </div>
+                        <div className="text-[10px] text-zinc-500 font-medium flex items-center gap-1 pt-0.5">
+                          <span>Realized:</span>
+                          <span className={cn("font-semibold font-mono", combinedPeriodStats.oneYear.realized >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                            {combinedPeriodStats.oneYear.realized >= 0 ? '+' : ''}
+                            {formatCurrency(combinedPeriodStats.oneYear.realized, userSettings.combinedCurrency || 'USD', true)}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -3657,34 +6802,28 @@ export default function App() {
             </div>
           );
         })()}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center gap-6">
-          <button
-            onClick={() => setActiveTab('global')}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
-          >
-            Global Portfolio
-            {getMarketStatus('global')}
-          </button>
-          <button
-            onClick={() => setActiveTab('india')}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'india' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
-          >
-            India Investment
-            {getMarketStatus('india')}
-          </button>
-          <button
-            onClick={() => setActiveTab('australia')}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
-          >
-            Australia Investment
-            {getMarketStatus('australia')}
-          </button>
-        </div>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between border-t border-zinc-100">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-start md:items-center justify-between mt-2">
+          <div className="flex items-center gap-6 min-w-max pb-2 md:pb-0 overflow-x-auto hide-scrollbar">
+            <button
+              onClick={() => setActiveTab('global')}
+              className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+            >
+              Global Portfolio
+              {getMarketStatus('global')}
+            </button>
+            <button
+              onClick={() => setActiveTab('australia')}
+              className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
+            >
+              Australia Investment
+              {getMarketStatus('australia')}
+            </button>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-2 pb-2 md:pb-0 w-full md:w-auto mt-2 md:mt-0 justify-start md:justify-end">
             {saveMessage && (
               <span className={cn(
-                "text-sm font-medium",
+                "text-sm font-medium whitespace-nowrap",
                 saveMessage.type === 'success' ? "text-emerald-600" : "text-rose-600"
               )}>
                 {saveMessage.text}
@@ -3693,44 +6832,61 @@ export default function App() {
             <button
               onClick={() => promptAnalysisStrategy()}
               disabled={isAnalyzing || holdings.length === 0}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap text-sm"
             >
-              {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
               Analyze
             </button>
             <button
               onClick={handleRefresh}
               disabled={isRefreshing || holdings.length === 0}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm whitespace-nowrap text-sm"
               title="Refresh market data"
             >
-              <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+              <RefreshCw className={cn("w-3.5 h-3.5", isRefreshing && "animate-spin")} />
               <span className="hidden sm:inline">Refresh</span>
             </button>
-            <div className="flex bg-zinc-100 p-1 rounded-lg">
+            <div className="flex bg-zinc-100 p-0.5 rounded-lg shrink-0">
               <button
                 onClick={handleDownload}
-                className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all"
+                className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all"
                 title="Download Portfolio JSON"
               >
-                <Download className="w-4 h-4" />
+                <Download className="w-3.5 h-3.5" />
               </button>
-              <label className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Portfolio JSON">
-                <Upload className="w-4 h-4" />
+              <button
+                onClick={handleExportCSV}
+                className="p-1.5 text-zinc-600 hover:text-emerald-700 hover:bg-white hover:shadow-sm rounded-md transition-all flex items-center gap-1 text-xs font-semibold"
+                title="Export Portfolio as CSV File"
+              >
+                <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                <span className="hidden md:inline">CSV</span>
+              </button>
+              <label className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Portfolio JSON">
+                <Upload className="w-3.5 h-3.5" />
                 <input type="file" accept=".json" className="hidden" onChange={handleImport} />
               </label>
 
               <div className="w-[1px] bg-zinc-200 mx-1 my-1" />
 
               <button
-                onClick={handleDownloadTransactions}
-                className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all"
-                title="Download Transactions History"
+                onClick={() => handleDownloadTransactions('csv', 'all')}
+                className="p-1.5 text-zinc-600 hover:text-emerald-700 hover:bg-white hover:shadow-sm rounded-md transition-all flex items-center gap-1 text-xs font-semibold"
+                title="Export Whole Transaction History (CSV)"
               >
-                <History className="w-4 h-4 text-emerald-600" />
+                <History className="w-3.5 h-3.5 text-emerald-600" />
+                <span className="hidden lg:inline text-[11px]">Tx CSV</span>
               </button>
-              <label className="p-2 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Transactions History (JSON/CSV)">
-                <FileText className="w-4 h-4 text-emerald-600" />
+              <button
+                onClick={() => handleDownloadTransactions('json', 'all')}
+                className="p-1.5 text-zinc-600 hover:text-indigo-700 hover:bg-white hover:shadow-sm rounded-md transition-all flex items-center gap-1 text-xs font-semibold"
+                title="Export Whole Transaction History (JSON)"
+              >
+                <Download className="w-3.5 h-3.5 text-indigo-600" />
+                <span className="hidden lg:inline text-[11px]">Tx JSON</span>
+              </button>
+              <label className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Transactions History (JSON/CSV)">
+                <FileText className="w-3.5 h-3.5 text-emerald-600" />
                 <input type="file" accept=".json,.csv" className="hidden" onChange={handleImportTransactions} />
               </label>
 
@@ -3739,32 +6895,36 @@ export default function App() {
               <button
                 onClick={() => setShowResetConfirm(true)}
                 disabled={isResetting || holdings.length === 0}
-                className="p-2 text-zinc-600 hover:text-rose-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="p-1.5 text-zinc-600 hover:text-rose-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Reset Portfolio"
               >
-                {isResetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {isResetting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
               </button>
               {hasBackup && (
                 <button
                   onClick={() => setShowRestoreConfirm(true)}
                   disabled={isRestoring}
-                  className="p-2 text-zinc-600 hover:text-emerald-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="p-1.5 text-zinc-600 hover:text-emerald-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Restore Last Reset"
                 >
-                  {isRestoring ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
+                  {isRestoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Undo2 className="w-3.5 h-3.5" />}
                 </button>
               )}
             </div>
-            <div className="relative" ref={addWidgetRef}>
+            <div className="relative shrink-0">
               <button
+                ref={addWidgetBtnRef}
                 onClick={() => setShowAddWidget(!showAddWidget)}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors text-sm"
               >
-                <Plus className="w-4 h-4" />
-                Add Widget
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Add Widget</span>
               </button>
               {showAddWidget && (
-                <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-zinc-200 py-2 z-50">
+                <div ref={addWidgetRef} className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-zinc-200 py-2 z-[150] animate-in fade-in zoom-in duration-200">
+                  <div className="px-4 py-2 border-b border-zinc-100 mb-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Add Widget</span>
+                  </div>
                   {ALL_WIDGETS.filter(w => !widgetOrder.includes(w.id)).length === 0 ? (
                     <div className="px-4 py-2 text-sm text-zinc-500">All widgets added</div>
                   ) : (
@@ -3802,6 +6962,7 @@ export default function App() {
           benchmarkTicker={benchmarkTicker}
           benchmarkDayChangePercent={portfolioStats.benchmarkDayChangePercent}
           benchmarkYtdReturn={portfolioStats.benchmarkYtdReturn}
+          periodStats={tabPeriodStats}
           onBenchmarkChange={(ticker) => {
             const newTabSettings = {
               ...tabSettings,
@@ -3822,6 +6983,9 @@ export default function App() {
           activeCurrency={activeCurrency}
           riskProfile={tabSettings[activeTab]?.riskProfile}
           targetReturn={tabSettings[activeTab]?.targetReturn}
+          fearGreed={fearGreedData}
+          holdings={sortedHoldings}
+          metadata={metadata}
         />
 
         <DndContext
@@ -3870,7 +7034,8 @@ export default function App() {
                   );
                 }
 
-                if (widgetId === 'allocation' && (chartData.length > 0 || sectorData.length > 0)) {
+                if (widgetId === 'allocation') {
+                  const hasData = chartData.length > 0 || sectorData.length > 0;
                   return (
                     <SortableWidget key="allocation" id="allocation" className={cn("p-8", getWidgetClass('allocation'))} onDoubleClick={() => toggleWidgetSize('allocation')}>
                       <div className="flex justify-end mb-2 relative z-20">
@@ -3881,6 +7046,13 @@ export default function App() {
                           <X className="w-4 h-4" />
                         </button>
                       </div>
+                      {!hasData ? (
+                        <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-zinc-400">
+                          <PieChartIcon className="w-12 h-12 mb-3 opacity-20" />
+                          <p>No allocation data available</p>
+                        </div>
+                      ) : (
+                        <>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
                   <div>
                     <h2 className="text-xl font-bold text-zinc-900 flex items-center gap-2">
@@ -3954,30 +7126,112 @@ export default function App() {
                 <div className="flex flex-col gap-8">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
                     {chartType === 'scatter' ? (
-                      <div className="h-96 w-full relative col-span-1 lg:col-span-2">
-                        <h3 className="text-center text-sm font-semibold text-zinc-700 mb-2">Market Value vs Investment Cost</h3>
-                        <div className="flex justify-center gap-6 mb-4 text-[10px] uppercase tracking-widest font-bold text-zinc-400">
+                      <div className="h-[440px] w-full relative col-span-1 lg:col-span-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                          <div>
+                            <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Market Value vs Investment Cost</h3>
+                            <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                              Position shows Cost (X) vs Value (Y). Hover over any bubble to isolate it.
+                            </p>
+                          </div>
                           <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-indigo-500" />
-                            <span>Correlation</span>
+                            <button
+                              type="button"
+                              onClick={() => setDeconflictScatter(prev => !prev)}
+                              className={cn(
+                                "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors shadow-2xs",
+                                deconflictScatter 
+                                  ? "bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-950/40 dark:border-indigo-800/60 dark:text-indigo-300"
+                                  : "bg-zinc-50 border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400"
+                              )}
+                              title={deconflictScatter ? "Overlapping points are fanned out for visibility" : "Points placed strictly at exact coordinates"}
+                            >
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>Disperse Overlaps: {deconflictScatter ? 'ON' : 'OFF'}</span>
+                            </button>
+                            {hoveredScatterTicker && (
+                              <button
+                                type="button"
+                                onClick={() => setHoveredScatterTicker(null)}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                              >
+                                <span>Focus: {hoveredScatterTicker}</span>
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap justify-center items-center gap-4 sm:gap-6 mb-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-3.5 h-3.5 rounded-full border-[2.5px] border-emerald-300 bg-emerald-400/40 inline-block shrink-0" />
+                            <span className="font-semibold text-zinc-700 dark:text-zinc-200">In Profit (Green ring = Profit)</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-3.5 h-3.5 rounded-full border-[2.5px] border-rose-300 bg-rose-400/40 inline-block shrink-0" />
+                            <span className="font-semibold text-zinc-700 dark:text-zinc-200">In Loss</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-zinc-400 text-[10px]">
+                            <span>• Icon size ∝ Investment Cost | Icon + Green ring ∝ Market Value</span>
                           </div>
                         </div>
                         <ResponsiveContainer width="100%" height="100%">
-                          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                          <ScatterChart margin={{ top: 20, right: 35, bottom: 30, left: 20 }}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
-                            <XAxis type="number" dataKey="cost" name="Investment Cost" tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
-                            <YAxis type="number" dataKey="value" name="Market Value" tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} tick={{ fontSize: 12, fill: '#71717a' }} axisLine={false} tickLine={false} />
-                            <ZAxis type="number" dataKey="value" range={[60, 400]} name="Size" />
+                            <XAxis 
+                              type="number" 
+                              dataKey="cost" 
+                              name="Investment Cost" 
+                              tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} 
+                              tick={{ fontSize: 12, fill: '#71717a' }} 
+                              axisLine={false} 
+                              tickLine={false} 
+                            />
+                            <YAxis 
+                              type="number" 
+                              dataKey="value" 
+                              name="Market Value" 
+                              tickFormatter={(value) => `${getCurrencySymbol(activeCurrency)}${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`} 
+                              tick={{ fontSize: 12, fill: '#71717a' }} 
+                              axisLine={false} 
+                              tickLine={false} 
+                            />
+                            <ZAxis type="number" dataKey="value" range={[100, 1600]} name="Market Value" />
                             <RechartsTooltip 
                               cursor={{ strokeDasharray: '3 3' }} 
-                              content={<CustomTooltip activeCurrency={activeCurrency} />} 
+                              content={<CustomTooltip activeCurrency={activeCurrency} metadata={metadata} />} 
                             />
                             <Scatter 
                               name="Assets" 
-                              data={chartView === 'asset' ? chartData : sectorData} 
+                              data={scatterPlotData} 
                               fill="#8b5cf6" 
-                              animationDuration={1000} 
+                              shape={(props: any) => {
+                                const pointName = props?.payload?.name;
+                                const isHovered = hoveredScatterTicker === pointName;
+                                const isDimmed = !!hoveredScatterTicker && hoveredScatterTicker !== pointName;
+                                return (
+                                  <CorporateLogoScatterPoint 
+                                    {...props} 
+                                    metadata={metadata} 
+                                    maxValue={maxScatterValue}
+                                    minValue={minScatterValue}
+                                    maxCost={maxScatterCost}
+                                    minCost={minScatterCost}
+                                    maxProfit={maxScatterProfit}
+                                    maxLoss={maxScatterLoss}
+                                    activeCurrency={activeCurrency}
+                                    isSelected={filterGroup === pointName}
+                                    isHovered={isHovered}
+                                    isDimmed={isDimmed}
+                                    onHover={setHoveredScatterTicker}
+                                    offsetX={props?.payload?.offsetX}
+                                    offsetY={props?.payload?.offsetY}
+                                  />
+                                );
+                              }}
+                              animationDuration={800} 
                               animationEasing="ease-out"
+                              onMouseLeave={() => setHoveredScatterTicker(null)}
                               onClick={(data) => {
                                 if (data && (data as any).name) {
                                   const name = String((data as any).name);
@@ -3986,7 +7240,7 @@ export default function App() {
                               }}
                               style={{ cursor: 'pointer' }}
                             >
-                              {(chartView === 'asset' ? chartData : sectorData).map((entry, index) => (
+                              {scatterPlotData.map((entry, index) => (
                                 <Cell key={`cell-${index}`} fill={COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} fillOpacity={0.7} stroke={COLORS[(index + (chartView === 'industry' ? 2 : 0)) % COLORS.length]} strokeWidth={1.5} />
                               ))}
                             </Scatter>
@@ -4083,7 +7337,7 @@ export default function App() {
                               tickCount={8}
                             />
                             <RechartsTooltip 
-                              content={<CustomTooltip activeCurrency={activeCurrency} />}
+                              content={<CustomTooltip activeCurrency={activeCurrency} metadata={metadata} />}
                               cursor={{ fill: '#f4f4f5', opacity: 0.4 }}
                             />
                             <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
@@ -4204,7 +7458,7 @@ export default function App() {
                               tickCount={8}
                             />
                             <RechartsTooltip 
-                              content={<CustomTooltip activeCurrency={activeCurrency} />}
+                              content={<CustomTooltip activeCurrency={activeCurrency} metadata={metadata} />}
                               cursor={{ fill: '#f4f4f5', opacity: 0.4 }}
                             />
                             <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
@@ -4292,6 +7546,8 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                </>
+                )}
                     </SortableWidget>
                   );
                 }
@@ -4300,14 +7556,20 @@ export default function App() {
                   return (
                     <SortableWidget key="calendar" id="calendar" className={getWidgetClass('calendar')} onDoubleClick={() => toggleWidgetSize('calendar')}>
                       <FinancialCalendar 
-                        earningsEvents={earningsEvents} 
-                        economicEvents={economicEvents}
+                        earningsEvents={filteredEarningsEvents} 
                         metadata={metadata} 
                         onResize={() => toggleWidgetSize('calendar')}
                         onRemove={() => removeWidget('calendar')}
                         size={widgetSizes.calendar}
                         activeCurrency={activeCurrency}
                         onEarningsClick={promptEarningsAnalysisStrategy}
+                        onRemoveEvent={handleRemoveCalendarEvent}
+                        onEditEvent={(event) => {
+                          setEditingEarningsEvent(event);
+                          setShowEditEarningsModal(true);
+                        }}
+                        hasHiddenEvents={hiddenCalendarEvents.length > 0}
+                        onRestoreEvents={handleRestoreCalendarEvents}
                       />
                     </SortableWidget>
                   );
@@ -4315,8 +7577,8 @@ export default function App() {
 
                 if (widgetId === 'holdings') {
                   return (
-                    <SortableWidget key="holdings" id="holdings" className={cn("overflow-hidden", getWidgetClass('holdings'))} onDoubleClick={() => toggleWidgetSize('holdings')}>
-                      <div className="px-6 py-5 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/50">
+                    <SortableWidget key="holdings" id="holdings" className={cn(getWidgetClass('holdings'))} onDoubleClick={() => toggleWidgetSize('holdings')}>
+                      <div className="px-6 py-5 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/50 rounded-t-2xl">
                         <div className="flex items-center gap-4 relative z-20">
                           <h2 className="text-lg font-semibold flex items-center gap-2">
                             Current Holdings
@@ -4332,16 +7594,103 @@ export default function App() {
                               </span>
                             )}
                           </h2>
-                          <button onClick={() => toggleWidgetSize('holdings')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
+                          <div className="text-xs text-zinc-500 font-medium">
+                            {sortedHoldings.length} {sortedHoldings.length === 1 ? 'Asset' : 'Assets'}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 relative z-20">
+                          <StockSearch onSelect={(ticker) => setSelectedChartTicker(ticker)} />
+                          
+                          {layoutSaveStatus !== 'idle' && (
+                            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-xs font-medium select-none transition-all">
+                              {layoutSaveStatus === 'saving' && (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 text-indigo-500 animate-spin" />
+                                  <span className="text-zinc-500 dark:text-zinc-400 text-[11px]">Saving layout...</span>
+                                </>
+                              )}
+                              {layoutSaveStatus === 'saved' && (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">Layout synced</span>
+                                </>
+                              )}
+                              {layoutSaveStatus === 'error' && (
+                                <>
+                                  <X className="w-3.5 h-3.5 text-rose-500" />
+                                  <span className="text-rose-600 dark:text-rose-400 text-[11px]">Sync failed</span>
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          <button
+                            onClick={handleExportCSV}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 border text-xs font-medium border-zinc-200 text-zinc-700 rounded-lg focus:outline-none hover:bg-zinc-50 dark:hover:bg-zinc-700 hover:border-zinc-300 transition-colors cursor-pointer mr-2 relative z-20 shadow-sm"
+                            title="Export current portfolio as CSV file"
+                          >
+                            <Download className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Export CSV</span>
+                          </button>
+
+                          <select 
+                            className="bg-white dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 border text-xs font-medium border-zinc-200 text-zinc-700 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-zinc-300 transition-colors cursor-pointer mr-2 relative z-20"
+                            value={tableGrouping}
+                            onChange={(e) => {
+                              const val = e.target.value as any;
+                              setTableGrouping(val);
+                              saveTableLayout({ tableGrouping: val });
+                            }}
+                          >
+                            <option value="none">No Grouping</option>
+                            <option value="theme">Group by Investing Theme (AI, Crypto, Defense, Clean Energy, etc.)</option>
+                            <option value="assetType">Group by Asset Type (Stocks vs Cash)</option>
+                            <option value="sector">Group by Business Area (Sector)</option>
+                            <option value="industry">Group by Specific Industry (e.g., Semiconductors)</option>
+                            <option value="marketCap">Group by Market Cap</option>
+                          </select>
+                          <button onClick={() => toggleWidgetSize('holdings')} className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
                             {widgetSizes.holdings === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                           </button>
-                          <button onClick={() => removeWidget('holdings')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
+                          <button onClick={() => removeWidget('holdings')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
                             <X className="w-4 h-4" />
                           </button>
                         </div>
-                <StockSearch onSelect={(ticker) => setSelectedChartTicker(ticker)} />
-                <span className="text-sm text-zinc-500 font-medium">{holdings.length} Positions</span>
-              </div>
+                      </div>
+
+              {(() => {
+                const corruptedInView = holdings.filter(h => h.avg_price < 0 || h.shares < 0);
+                if (corruptedInView.length === 0) return null;
+                return (
+                  <div className="mx-6 my-4 p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-rose-900 text-xs shadow-sm">
+                    <div className="flex items-center gap-2.5">
+                      <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+                      <div>
+                        <span className="font-bold text-rose-950">Data Inconsistency Detected: </span>
+                        <span className="text-rose-800">
+                          {corruptedInView.map(h => `${h.ticker} (${h.shares} shares @ $${h.avg_price?.toFixed(2)})`).join(', ')}.
+                          Negative values cause distorted returns.
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => handleRepairCorruptedHoldings(corruptedInView)}
+                        className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-medium rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1.5"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Repair from Ledger
+                      </button>
+                      <button
+                        onClick={() => setEditModalHolding(corruptedInView[0])}
+                        className="px-3 py-1.5 bg-white border border-rose-200 hover:bg-rose-100 text-rose-900 font-medium rounded-lg text-xs transition-colors"
+                      >
+                        Manual Edit
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
               
               {holdings.length === 0 ? (
                 <div className="p-12 text-center text-zinc-500">
@@ -4354,11 +7703,12 @@ export default function App() {
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
-                    onDragEnd={handleDragEndColumns}
+                    onDragEnd={handleHoldingsTableDragEnd}
                   >
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="border-b border-zinc-200 text-xs uppercase tracking-wider text-zinc-500 bg-zinc-50/50">
+                          {tableGrouping === 'none' && <th className="w-8 px-2 py-4"></th>}
                           <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
                             {columnOrder.map((colId) => {
                               const col = COLUMNS.find(c => c.id === colId);
@@ -4380,88 +7730,512 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-100">
-                        {sortedHoldings.map((holding) => (
-                          <tr 
-                            key={holding.id} 
-                            className={cn(
-                              "hover:bg-zinc-100/50 hover:shadow-sm transition-all duration-200 group/row",
-                              editingId === holding.id ? "cursor-default" : "cursor-pointer"
-                            )}
-                            onClick={() => {
-                              if (editingId !== holding.id) {
-                                setSelectedChartTicker(holding.ticker);
-                              }
-                            }}
+                        {tableGrouping !== 'none' ? (
+                          <>
+                            {(() => {
+                              const getMarketCapGroup = (mc: number | undefined, currency: string) => {
+                                if (mc === undefined || mc === null || mc <= 0) return 'Unknown / Cash';
+                                let usdToTargetRate = 1;
+                                if (currency !== 'USD') {
+                                  usdToTargetRate = getExchangeRate('USD', currency, quotes) || 1;
+                                }
+                                const megaThreshold = 200e9 * usdToTargetRate;
+                                const largeThreshold = 10e9 * usdToTargetRate;
+                                const midThreshold = 2e9 * usdToTargetRate;
+                                if (mc >= megaThreshold) return 'Mega Cap (>$200B)';
+                                if (mc >= largeThreshold) return 'Large Cap ($10B - $200B)';
+                                if (mc >= midThreshold) return 'Mid Cap ($2B - $10B)';
+                                return 'Small/Micro Cap (<$2B)';
+                              };
+
+                              const groupedMap = sortedHoldings.reduce((acc, holding) => {
+                                let groupKey = 'Unknown';
+                                if (tableGrouping === 'theme') {
+                                  groupKey = getInvestingTheme(holding, metadata);
+                                } else if (tableGrouping === 'assetType') {
+                                  if (holding.ticker === 'CASH') {
+                                    groupKey = 'Cash & Liquid Assets';
+                                  } else if (
+                                    (holding as any).isCrypto || 
+                                    holding.ticker?.endsWith('-USD') || 
+                                    metadata[holding.ticker]?.sector === 'Cryptocurrency' || 
+                                    ['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE'].includes(holding.ticker?.toUpperCase())
+                                  ) {
+                                    groupKey = 'Cryptocurrency';
+                                  } else if (
+                                    metadata[holding.ticker]?.industry?.toLowerCase().includes('etf') || 
+                                    metadata[holding.ticker]?.sector?.toLowerCase().includes('etf') || 
+                                    ['SPY', 'QQQ', 'IVV', 'VOO', 'VTI', 'IWM', 'EFA', 'VEA', 'VWO'].includes(holding.ticker?.toUpperCase())
+                                  ) {
+                                    groupKey = 'ETFs & Index Funds';
+                                  } else {
+                                    groupKey = 'Stocks & Equities';
+                                  }
+                                } else if (tableGrouping === 'sector') {
+                                  groupKey = holding.ticker === 'CASH' ? 'Cash' : (metadata[holding.ticker]?.sector || 'Unknown');
+                                } else if (tableGrouping === 'industry') {
+                                  const mag7Tickers = ['MSFT', 'AAPL', 'NVDA', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA'];
+                                  const cryptoTickers = ['BMNR', 'COIN'];
+                                  if (holding.ticker && mag7Tickers.includes(holding.ticker.toUpperCase())) {
+                                    groupKey = 'mag7';
+                                  } else if (holding.ticker && cryptoTickers.includes(holding.ticker.toUpperCase())) {
+                                    groupKey = 'crypto_proxies';
+                                  } else {
+                                    groupKey = holding.ticker === 'CASH' ? 'Cash' : (metadata[holding.ticker]?.industry || 'Unknown');
+                                  }
+                                } else if (tableGrouping === 'marketCap') {
+                                  groupKey = holding.ticker === 'CASH' ? 'Cash' : getMarketCapGroup(holding.marketCap, activeCurrency);
+                                }
+                                if (!acc[groupKey]) {
+                                  acc[groupKey] = {
+                                    holdings: [],
+                                    value: 0,
+                                    totalCost: 0,
+                                    totalProfit: 0,
+                                    totalDayChange: 0,
+                                    totalRealizedProfitLoss: 0,
+                                  };
+                                }
+                                acc[groupKey].holdings.push(holding);
+                                acc[groupKey].value += holding.currentValue;
+                                acc[groupKey].totalCost += holding.costBasis || 0;
+                                acc[groupKey].totalProfit += holding.profitLoss || 0;
+                                acc[groupKey].totalDayChange += holding.dayChange || 0;
+                                acc[groupKey].totalRealizedProfitLoss += holding.realizedProfitLoss || 0;
+                                return acc;
+                              }, {} as Record<string, {
+                                holdings: typeof sortedHoldings,
+                                value: number,
+                                totalCost: number,
+                                totalProfit: number,
+                                totalDayChange: number,
+                                totalRealizedProfitLoss: number,
+                              }>);
+
+                              return Object.entries(groupedMap).sort((a, b) => {
+                                if (tableGrouping === 'theme') {
+                                  const order = [
+                                    'Artificial Intelligence & Big Tech',
+                                    'Semiconductors & AI Hardware',
+                                    'Crypto & Web3 Ecosystem',
+                                    'Clean Energy & Autonomous Mobility',
+                                    'Defense, Aerospace & Security',
+                                    'ETFs & Index Funds',
+                                    'Healthcare, Biotech & Longevity',
+                                    'Banking, Payments & Fintech',
+                                    'Energy & Hard Assets',
+                                    'Consumer Brands & Retail',
+                                    'Real Estate & Infrastructure',
+                                    'Global Growth & Diversified',
+                                    'Cash & Liquid Reserves',
+                                  ];
+                                  const idxA = order.indexOf(a[0]);
+                                  const idxB = order.indexOf(b[0]);
+                                  const finalIdxA = idxA === -1 ? 999 : idxA;
+                                  const finalIdxB = idxB === -1 ? 999 : idxB;
+                                  if (finalIdxA !== finalIdxB) return finalIdxA - finalIdxB;
+                                }
+                                if (tableGrouping === 'assetType') {
+                                  const order = ['Stocks & Equities', 'ETFs & Index Funds', 'Cryptocurrency', 'Cash & Liquid Assets'];
+                                  const idxA = order.indexOf(a[0]);
+                                  const idxB = order.indexOf(b[0]);
+                                  const finalIdxA = idxA === -1 ? 999 : idxA;
+                                  const finalIdxB = idxB === -1 ? 999 : idxB;
+                                  return finalIdxA - finalIdxB;
+                                }
+                                if (tableGrouping === 'marketCap') {
+                                  const order = ['Mega Cap (>$200B)', 'Large Cap ($10B - $200B)', 'Mid Cap ($2B - $10B)', 'Small/Micro Cap (<$2B)', 'Cash', 'Unknown / Cash'];
+                                  const idxA = order.indexOf(a[0]);
+                                  const idxB = order.indexOf(b[0]);
+                                  const finalIdxA = idxA === -1 ? 999 : idxA;
+                                  const finalIdxB = idxB === -1 ? 999 : idxB;
+                                  return finalIdxA - finalIdxB;
+                                }
+                                return b[1].value - a[1].value;
+                              }).map(([groupName, groupData]) => {
+                                const groupFg = calculateGroupFearGreed(groupData.holdings, fearGreedData);
+                                return (
+                                <React.Fragment key={groupName}>
+                                <tr className="bg-zinc-50 border-y border-zinc-200 group/header">
+                                  <td colSpan={columnOrder.length + 1} className="px-6 py-2.5 bg-zinc-100/30">
+                                    <div className="flex justify-between items-center w-full">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold uppercase tracking-wider text-zinc-800">{groupName === 'mag7' ? 'Magnificent Seven (Mag7)' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName}</span>
+                                        {groupFg && (
+                                          <span 
+                                            className={cn(
+                                              "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-tight border shadow-2xs transition-all",
+                                              groupFg.badgeBgClass,
+                                              groupFg.colorClass,
+                                              groupFg.borderClass
+                                            )}
+                                            title={`Group Fear & Greed: ${groupFg.rating} (${groupFg.score})`}
+                                          >
+                                            <Activity size={10} />
+                                            {groupFg.rating} ({groupFg.score})
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span className="text-xs font-medium text-zinc-600 bg-white px-2 py-0.5 rounded shadow-sm border border-zinc-200 flex items-center gap-2">
+                                        <span>{formatCurrency(groupData.value, activeCurrency)}</span>
+                                        <span className="text-zinc-400 font-normal">({(groupData.value / portfolioStats.totalValue * 100).toFixed(1)}%)</span>
+                                      </span>
+                                    </div>
+                                  </td>
+                                </tr>
+                                {groupData.holdings.map((holding) => (
+                                  <SortableHoldingRow
+                                    key={holding.id}
+                                    holding={holding}
+                                    columnOrder={columnOrder}
+                                    renderCell={renderCell}
+                                    editingId={editingId}
+                                    setSelectedChartTicker={setSelectedChartTicker}
+                                    handleSaveEdit={handleSaveEdit}
+                                    handleCancelEdit={handleCancelEdit}
+                                    promptAnalysisStrategy={promptAnalysisStrategy}
+                                    handleEditClick={handleEditClick}
+                                    handleViewHistory={handleViewHistory}
+                                    handleDelete={handleDelete}
+                                    isSortable={false}
+                                  />
+                                ))}
+                                {/* Group Totals Summary Row */}
+                                <tr className="bg-zinc-100/35 border-t border-b border-zinc-200/80 font-semibold text-zinc-700 text-xs">
+                                  {columnOrder.map((colId) => {
+                                    switch (colId) {
+                                      case 'ticker':
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-left font-sans font-bold text-zinc-500 uppercase tracking-wider text-[10px]">
+                                            Total {groupName === 'mag7' ? 'Mag7' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName === 'Cash' ? 'Cash' : groupName}
+                                          </td>
+                                        );
+                                      case 'fearGreed':
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-center">
+                                            {groupFg ? (
+                                              <div 
+                                                className={cn(
+                                                  "inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all shadow-2xs border",
+                                                  groupFg.badgeBgClass,
+                                                  groupFg.colorClass,
+                                                  groupFg.borderClass
+                                                )}
+                                                title={`Group Fear & Greed: ${groupFg.rating} (${groupFg.score})`}
+                                              >
+                                                <Activity size={10} />
+                                                {groupFg.score} ({groupFg.rating})
+                                              </div>
+                                            ) : (
+                                              <span className="text-zinc-300 text-[10px] font-bold">--</span>
+                                            )}
+                                          </td>
+                                        );
+                                      case 'costBasis':
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right text-zinc-900 font-bold font-mono">
+                                            {formatCurrency(groupData.totalCost, activeCurrency)}
+                                          </td>
+                                        );
+                                      case 'currentValue':
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right text-zinc-900 font-bold font-mono">
+                                            {formatCurrency(groupData.value, activeCurrency)}
+                                          </td>
+                                        );
+                                      case 'allocation':
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right text-zinc-500 font-medium font-mono">
+                                            {((groupData.value / (portfolioStats.totalValue || 1)) * 100).toFixed(1)}%
+                                          </td>
+                                        );
+                                      case 'profitLoss': {
+                                        const profitPercent = groupData.totalCost > 0 ? (groupData.totalProfit / groupData.totalCost) * 100 : 0;
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right">
+                                            <div className={cn(
+                                              "font-bold font-mono text-sm",
+                                              groupData.totalProfit >= 0 ? "text-emerald-600" : "text-rose-600"
+                                            )}>
+                                              {groupData.totalProfit >= 0 ? '+' : ''}{formatCurrency(groupData.totalProfit, activeCurrency, true)}
+                                            </div>
+                                            <div className={cn(
+                                              "text-[10px] mt-0.5 font-mono font-medium",
+                                              groupData.totalProfit >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
+                                            )}>
+                                              {groupData.totalProfit >= 0 ? '+' : ''}{profitPercent.toFixed(2)}%
+                                            </div>
+                                          </td>
+                                        );
+                                      }
+                                      case 'dayChange': {
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right">
+                                            <div className={cn(
+                                              "font-bold font-mono text-sm",
+                                              groupData.totalDayChange >= 0 ? "text-emerald-600" : "text-rose-600"
+                                            )}>
+                                              {groupData.totalDayChange >= 0 ? '+' : ''}{formatCurrency(groupData.totalDayChange, activeCurrency, true)}
+                                            </div>
+                                          </td>
+                                        );
+                                      }
+                                      case 'growthMultiple': {
+                                        const groupMultiple = groupData.totalCost > 0 ? (groupData.value / groupData.totalCost) : 1;
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right">
+                                            <span 
+                                              className={cn(
+                                                "inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-bold border shadow-2xs",
+                                                groupMultiple >= 2 ? "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-300" :
+                                                groupMultiple >= 1 ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400" :
+                                                "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/30 dark:text-rose-400"
+                                              )}
+                                              title={`Group Growth Multiple: ${groupMultiple.toFixed(2)}x initial cost`}
+                                            >
+                                              {groupMultiple.toFixed(2)}x
+                                            </span>
+                                          </td>
+                                        );
+                                      }
+                                      case 'realizedProfitLoss': {
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right">
+                                            <div className={cn(
+                                              "font-bold font-mono text-sm",
+                                              groupData.totalRealizedProfitLoss > 0 ? "text-emerald-600" : groupData.totalRealizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
+                                            )}>
+                                              {groupData.totalRealizedProfitLoss > 0 ? '+' : ''}{formatCurrency(groupData.totalRealizedProfitLoss, activeCurrency, true)}
+                                            </div>
+                                          </td>
+                                        );
+                                      }
+                                      default:
+                                        return (
+                                          <td key={colId} className="px-6 py-3 text-right text-zinc-400/60 font-normal font-mono">
+                                            -
+                                          </td>
+                                        );
+                                    }
+                                  })}
+                                  <td className="px-6 py-3"></td>
+                                </tr>
+                                </React.Fragment>
+                            )})})()}
+                          </>
+                        ) : (
+                          <SortableContext 
+                            items={sortedHoldings.map(h => h.id)} 
+                            strategy={verticalListSortingStrategy}
                           >
-                            {columnOrder.map((colId) => renderCell(colId, holding))}
-                            <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
-                              {editingId === holding.id ? (
-                                <div className="flex items-center justify-center gap-1">
-                                  <button
-                                    onClick={() => handleSaveEdit(holding.id)}
-                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                                    title="Save changes"
-                                  >
-                                    <Check className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={handleCancelEdit}
-                                    className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
-                                    title="Cancel edit"
-                                  >
-                                    <X className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex items-center justify-center gap-1">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      promptAnalysisStrategy(holding.ticker);
-                                    }}
-                                    className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                                    title="Analyze Stock"
-                                  >
-                                    <Zap className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleEditClick(holding)}
-                                    className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
-                                    title="Edit holding"
-                                  >
-                                    <Edit2 className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={() => setSelectedChartTicker(holding.ticker)}
-                                    className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                                    title="View Chart"
-                                  >
-                                    <LineChart className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleViewHistory(holding)}
-                                    className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                    title="View History"
-                                  >
-                                    <FileText className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleDelete(holding.id)}
-                                    className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                                    title="Remove holding"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                            {sortedHoldings.map((holding) => (
+                              <SortableHoldingRow
+                                key={holding.id}
+                                holding={holding}
+                                columnOrder={columnOrder}
+                                renderCell={renderCell}
+                                editingId={editingId}
+                                setSelectedChartTicker={setSelectedChartTicker}
+                                handleSaveEdit={handleSaveEdit}
+                                handleCancelEdit={handleCancelEdit}
+                                promptAnalysisStrategy={promptAnalysisStrategy}
+                                handleEditClick={handleEditClick}
+                                handleViewHistory={handleViewHistory}
+                                handleDelete={handleDelete}
+                              />
+                            ))}
+                          </SortableContext>
+                        )}
                       </tbody>
                     </table>
                   </DndContext>
                 </div>
               )}
+                    </SortableWidget>
+                  );
+                }
+
+                if (widgetId === 'watchlist') {
+                  return (
+                    <SortableWidget key="watchlist" id="watchlist" className={cn(getWidgetClass('watchlist'))} onDoubleClick={() => toggleWidgetSize('watchlist')}>
+                      <div className="px-6 py-5 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/50 rounded-t-2xl">
+                        <div className="flex items-center gap-4 relative z-20">
+                          <h2 className="text-lg font-semibold flex items-center gap-2">
+                            <Eye className="w-5 h-5 text-indigo-500" />
+                            Watchlist
+                          </h2>
+                          <div className="text-xs text-zinc-500 font-medium">
+                            {sortedWatchlist.length} {sortedWatchlist.length === 1 ? 'Asset' : 'Assets'}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 relative z-20">
+                          <button onClick={() => toggleWidgetSize('watchlist')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all" title="Resize Widget">
+                            {(widgetSizes.watchlist || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button onClick={() => removeWidget('watchlist')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all" title="Remove Widget">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Watchlist Quick Add Search */}
+                      <div className="px-6 py-4 border-b border-zinc-150 bg-white flex flex-col sm:flex-row items-start sm:items-center gap-3 relative z-30">
+                        <div className="w-full sm:w-72">
+                          <StockSearch 
+                            activeTab={activeTab}
+                            onSelect={handleAddToWatchlist}
+                            clearOnSelect={true}
+                          />
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed">
+                          Search and select a stock or crypto to add it directly to your watchlist.
+                        </p>
+                      </div>
+                      
+                      {sortedWatchlist.length === 0 ? (
+                        <div className="p-12 text-center text-zinc-500">
+                          <Eye className="w-12 h-12 mx-auto text-zinc-300 mb-3" />
+                          <p>Your watchlist is empty.</p>
+                          <p className="text-sm mt-1">Search above or sell all shares of a position to add here.</p>
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-zinc-200 text-xs uppercase tracking-wider text-zinc-500 bg-zinc-50/50">
+                                <th className="px-6 py-4 font-medium">Asset</th>
+                                <th className="px-6 py-4 font-medium text-right">Price</th>
+                                <th className="px-6 py-4 font-medium text-right">Today's Change</th>
+                                <th className="px-6 py-4 font-medium text-right">Booked P&L</th>
+                                <th className="px-6 py-4 font-medium text-center">Trend (30D)</th>
+                                <th className="px-6 py-4 font-medium text-center">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-zinc-100">
+                              {sortedWatchlist.map((holding) => {
+                                const isPositive = holding.dayChangePercent >= 0;
+                                return (
+                                  <tr 
+                                    key={holding.id} 
+                                    className="hover:bg-zinc-100/50 hover:shadow-sm transition-all duration-200 cursor-pointer group/row"
+                                    onClick={() => setSelectedChartTicker(holding.ticker)}
+                                  >
+                                    <td className="px-6 py-4">
+                                      <div className="flex items-center gap-3">
+                                        <CompanyLogo ticker={holding.ticker} logo={metadata[holding.ticker]?.logo} />
+                                        <div>
+                                          <div className="font-bold text-zinc-900">{holding.ticker}</div>
+                                          <div className="text-xs text-zinc-500 truncate max-w-[150px]">{metadata[holding.ticker]?.sector || 'Asset'}</div>
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td className="px-6 py-4 text-right">
+                                      <div className="font-medium text-zinc-900">{formatCurrency(holding.currentPrice, holding.avgPriceCurrency || activeCurrency)}</div>
+                                    </td>
+                                    <td className="px-6 py-4 text-right">
+                                      <div className={cn("inline-flex items-center gap-1 font-medium px-2 py-0.5 rounded text-sm", isPositive ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50")}>
+                                        {isPositive ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
+                                        {isPositive ? '+' : ''}{holding.dayChangePercent.toFixed(2)}%
+                                      </div>
+                                    </td>
+                                    <td className="px-6 py-4 text-right">
+                                      <div className={cn(
+                                        "font-semibold font-mono text-sm",
+                                        holding.realizedProfitLoss > 0 ? "text-emerald-600" : holding.realizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
+                                      )}>
+                                        {holding.realizedProfitLoss > 0 ? '+' : ''}{formatCurrency(holding.realizedProfitLoss, holding.avgPriceCurrency || activeCurrency, true)}
+                                      </div>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                      <div className="flex justify-center">
+                                        <WatchlistSparkline ticker={holding.ticker} />
+                                      </div>
+                                    </td>
+                                    <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
+                                      <div className="flex items-center justify-center gap-1 relative z-20">
+                                        {holding.shares > 0 && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleViewHistory(holding);
+                                            }}
+                                            className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                                            title="Sell Specific Lot"
+                                          >
+                                            <TrendingDown className="w-4 h-4" />
+                                          </button>
+                                        )}
+                                        <button
+                                          onClick={() => handleViewHistory(holding)}
+                                          className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                          title="View History"
+                                        >
+                                          <FileText className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDelete(holding.id)}
+                                          className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                                          title="Remove from watchlist"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </SortableWidget>
+                  );
+                }
+
+                if (widgetId === 'beta') {
+                  const betaValue = portfolioStats.portfolioBeta;
+                  return (
+                    <SortableWidget key="beta" id="beta" className={cn("p-6 flex flex-col", getWidgetClass('beta'))} onDoubleClick={() => toggleWidgetSize('beta')}>
+                      <div className="flex items-center justify-between mb-4 relative z-20">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                          <Activity className="w-5 h-5 text-zinc-400 dark:text-zinc-500" />
+                          Portfolio Beta
+                        </h2>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => toggleWidgetSize('beta')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-all" title="Resize Widget">
+                            {(widgetSizes.beta || 1) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button onClick={() => removeWidget('beta')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg transition-all" title="Remove Widget">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex-1 flex flex-col justify-center relative z-20 min-h-[160px]">
+                        {betaValue != null ? (
+                          <div className="text-center">
+                            <div className="text-5xl font-bold text-zinc-900 dark:text-zinc-50 mb-3 font-mono tracking-tight">
+                              {betaValue.toFixed(2)}
+                            </div>
+                            <div className="text-sm font-medium mb-4">
+                              {betaValue > 1.2 ? (
+                                <span className="text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> High Volatility</span>
+                              ) : betaValue < 0.8 ? (
+                                <span className="text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"><TrendingDown className="w-3.5 h-3.5" /> Low Volatility</span>
+                              ) : (
+                                <span className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"><Activity className="w-3.5 h-3.5" /> Market Volatility</span>
+                              )}
+                            </div>
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-[200px] mx-auto leading-relaxed">
+                              Measures risk relative to <strong className="text-zinc-700 dark:text-zinc-300">{portfolioStats.benchmarkTicker || 'Benchmark'}</strong>.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center h-full text-zinc-400 dark:text-zinc-500 space-y-3">
+                            <Activity className="w-8 h-8 opacity-20" />
+                            <p className="text-sm">Not enough data</p>
+                          </div>
+                        )}
+                      </div>
                     </SortableWidget>
                   );
                 }
@@ -4560,43 +8334,69 @@ export default function App() {
                 <div className="flex bg-zinc-100 p-1 rounded-lg">
                   <button
                     type="button"
-                    onClick={() => setTransactionType('buy')}
+                    onClick={() => { setTransactionType('buy'); if((ticker || '').toUpperCase() === 'CASH') setTicker(''); }}
                     className={cn(
                       "flex-1 py-1.5 text-sm font-medium rounded-md transition-all",
-                      transactionType === 'buy' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                      transactionType === 'buy' && (ticker || '').toUpperCase() !== 'CASH' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
                     )}
                   >
                     Buy
                   </button>
                   <button
                     type="button"
-                    onClick={() => setTransactionType('sell')}
+                    onClick={() => { setTransactionType('sell'); if((ticker || '').toUpperCase() === 'CASH') setTicker(''); }}
                     className={cn(
                       "flex-1 py-1.5 text-sm font-medium rounded-md transition-all",
-                      transactionType === 'sell' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                      transactionType === 'sell' && (ticker || '').toUpperCase() !== 'CASH' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
                     )}
                   >
                     Sell
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => { setTicker('CASH'); setTransactionType('buy'); }}
+                    className={cn(
+                      "flex-1 py-1.5 text-sm font-medium rounded-md transition-all",
+                      transactionType === 'buy' && (ticker || '').toUpperCase() === 'CASH' ? "bg-white text-emerald-700 shadow-sm" : "text-emerald-600/70 hover:text-emerald-700"
+                    )}
+                  >
+                    Deposit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setTicker('CASH'); setTransactionType('sell'); }}
+                    className={cn(
+                      "flex-1 py-1.5 text-sm font-medium rounded-md transition-all",
+                      transactionType === 'sell' && (ticker || '').toUpperCase() === 'CASH' ? "bg-white text-emerald-700 shadow-sm" : "text-emerald-600/70 hover:text-emerald-700"
+                    )}
+                  >
+                    Withdraw
+                  </button>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label htmlFor="ticker" className="block text-sm font-medium text-zinc-700 mb-1">Ticker Symbol</label>
-                    <div className="relative">
-                      <input
-                        id="ticker"
-                        type="text"
-                        required
-                        placeholder="e.g. AAPL or CASH"
-                        className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent uppercase placeholder:normal-case"
-                        value={ticker}
-                        onChange={(e) => setTicker(e.target.value)}
-                      />
-                      {ticker.toUpperCase() === 'CASH' && (
-                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                          <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase">Cash Mode</span>
-                        </div>
-                      )}
+                    <label htmlFor="ticker" className="block text-sm font-medium text-zinc-700 mb-1">
+                      {(ticker || '').toUpperCase() === 'CASH' ? 'Asset Type' : 'Ticker Symbol'}
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 relative">
+                        <input
+                          id="ticker"
+                          type="text"
+                          required
+                          readOnly={(ticker || '').toUpperCase() === 'CASH'}
+                          placeholder={(ticker || '').toUpperCase() === 'CASH' ? "CASH" : "e.g. AAPL"}
+                          className={cn("w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent uppercase placeholder:normal-case", (ticker || '').toUpperCase() === 'CASH' && "bg-zinc-50 text-zinc-500 cursor-default")}
+                          value={ticker}
+                          onChange={(e) => setTicker(e.target.value)}
+                        />
+                        {(ticker || '').toUpperCase() === 'CASH' && (
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                            <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase">Cash Mode</span>
+                          </div>
+                        )}
+                      </div>
+                      {(ticker || '').toUpperCase() !== 'CASH' && <CompanyLogo ticker={ticker || 'AAPL'} logo={metadata[ticker]?.logo} />}
                     </div>
                   </div>
                   <div>
@@ -4613,7 +8413,7 @@ export default function App() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label htmlFor="shares" className="block text-sm font-medium text-zinc-700 mb-1">{ticker.toUpperCase() === 'CASH' ? 'Amount' : 'Shares'}</label>
+                    <label htmlFor="shares" className="block text-sm font-medium text-zinc-700 mb-1">{(ticker || '').toUpperCase() === 'CASH' ? 'Amount' : 'Shares'}</label>
                     <input
                       id="shares"
                       type="text"
@@ -4629,13 +8429,13 @@ export default function App() {
                   </div>
                   <div>
                     <label htmlFor="avgPrice" className="block text-sm font-medium text-zinc-700 mb-1">
-                      {ticker.toUpperCase() === 'CASH' ? 'Currency' : (transactionType === 'buy' ? 'Avg Cost' : 'Sell Price')}
+                      {(ticker || '').toUpperCase() === 'CASH' ? 'Currency' : (transactionType === 'buy' ? 'Avg Cost' : 'Sell Price')}
                     </label>
                     <div className="flex">
                       <select
                         className={cn(
                           "px-2 py-2 border border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent bg-zinc-50 text-zinc-700",
-                          ticker.toUpperCase() === 'CASH' ? "w-full rounded-lg" : "rounded-l-lg border-r-0"
+                          (ticker || '').toUpperCase() === 'CASH' ? "w-full rounded-lg" : "rounded-l-lg border-r-0"
                         )}
                         value={formCurrency || activeCurrency}
                         onChange={(e) => setFormCurrency(e.target.value)}
@@ -4648,7 +8448,7 @@ export default function App() {
                         <option value="CAD">CAD</option>
                         <option value="SGD">SGD</option>
                       </select>
-                      {ticker.toUpperCase() !== 'CASH' && (
+                      {(ticker || '').toUpperCase() !== 'CASH' && (
                         <input
                           id="avgPrice"
                           type="text"
@@ -4673,9 +8473,60 @@ export default function App() {
                     transactionType === 'buy' ? "bg-zinc-900 hover:bg-zinc-800 focus:ring-zinc-900" : "bg-rose-600 hover:bg-rose-700 focus:ring-rose-600"
                   )}
                 >
-                  {isSubmitting ? (transactionType === 'buy' ? 'Adding...' : 'Selling...') : (transactionType === 'buy' ? 'Add Position' : 'Sell Position')}
+                  {isSubmitting ? (transactionType === 'buy' ? ((ticker || '').toUpperCase() === 'CASH' ? 'Depositing...' : 'Adding...') : ((ticker || '').toUpperCase() === 'CASH' ? 'Withdrawing...' : 'Selling...')) : (transactionType === 'buy' ? ((ticker || '').toUpperCase() === 'CASH' ? 'Deposit Cash' : 'Add Position') : ((ticker || '').toUpperCase() === 'CASH' ? 'Withdraw Cash' : 'Sell Position'))}
                 </button>
               </form>
+                    </SortableWidget>
+                  );
+                }
+
+                if (widgetId === 'transactions') {
+                  return (
+                    <SortableWidget key="transactions" id="transactions" className={cn("p-0 overflow-hidden", getWidgetClass('transactions'))} onDoubleClick={() => toggleWidgetSize('transactions')}>
+                      <div className="absolute top-5 right-6 flex items-center gap-2 z-30">
+                        <button onClick={() => toggleWidgetSize('transactions')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all" title="Resize Widget">
+                          {(widgetSizes.transactions || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                        </button>
+                        <button onClick={() => removeWidget('transactions')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all" title="Remove Widget">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <TransactionsWidget
+                        user={user}
+                        allHoldings={allHoldings}
+                        allTransactions={allTransactions}
+                        quotes={quotes}
+                        activeTab={activeTab}
+                        activeCurrency={activeCurrency}
+                        onToastSuccess={(msg) => toast.success(msg)}
+                        onToastError={(msg) => toast.error(msg)}
+                      />
+                    </SortableWidget>
+                  );
+                }
+
+                if (widgetId === 'priceAlerts') {
+                  return (
+                    <SortableWidget key="priceAlerts" id="priceAlerts" className={cn("p-6", getWidgetClass('priceAlerts'))} onDoubleClick={() => toggleWidgetSize('priceAlerts')}>
+                      <div className="flex items-center justify-between mb-4 relative z-20">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                          <Bell className="w-5 h-5 text-zinc-400" />
+                          Price Alerts
+                        </h2>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => toggleWidgetSize('priceAlerts')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all relative z-20" title="Resize Widget">
+                            {(widgetSizes.priceAlerts || 1) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button
+                            onClick={() => removeWidget('priceAlerts')}
+                            className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                            title="Remove widget"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <PriceAlertsWidget alerts={alerts} quotes={quotes} user={user} activeCurrency={activeCurrency} />
                     </SortableWidget>
                   );
                 }
@@ -4696,7 +8547,7 @@ export default function App() {
                         </button>
                       </div>
               <p className="text-sm text-zinc-500 mb-4">
-                Upload a brokerage statement (PDF) or Interactive Brokers Flex Query / ICICI Direct / CommSec (CSV) to automatically extract your holdings.
+                Upload a brokerage statement (PDF) or CSV (IBKR, CommSec, Stake) to automatically extract your holdings.
               </p>
               
               <div className="flex bg-zinc-100 p-1 rounded-lg mb-4">
@@ -4713,7 +8564,7 @@ export default function App() {
                   onClick={() => setImportMode('merge')}
                   className={cn(
                     "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                    importMode === 'merge' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                    importMode === 'merge' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-550 hover:text-zinc-700"
                   )}
                 >
                   Merge
@@ -4760,6 +8611,62 @@ export default function App() {
                     </SortableWidget>
                   );
                 }
+
+                if (widgetId === 'sectorHeatmap') {
+                  return (
+                    <SortableWidget key="sectorHeatmap" id="sectorHeatmap" className={cn("p-6 flex flex-col", getWidgetClass('sectorHeatmap'))} onDoubleClick={() => toggleWidgetSize('sectorHeatmap')}>
+                      <div className="flex items-center justify-between mb-4 relative z-20">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                          <Grid className="w-5 h-5 text-zinc-400" />
+                          Sector Heatmap
+                        </h2>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => toggleWidgetSize('sectorHeatmap')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all relative z-20" title="Resize Widget">
+                            {(widgetSizes.sectorHeatmap || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button
+                            onClick={() => removeWidget('sectorHeatmap')}
+                            className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-neutral-100 rounded-md transition-colors"
+                            title="Remove widget"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <SectorHeatmapWidget
+                        holdings={sortedHoldings}
+                        quotes={quotes}
+                        metadata={metadata}
+                        activeCurrency={activeCurrency}
+                        activeTab={activeTab}
+                        fearGreedData={fearGreedData}
+                      />
+                    </SortableWidget>
+                  );
+                }
+                if (widgetId === 'twrCalculator') {
+                  return (
+                    <SortableWidget key="twrCalculator" id="twrCalculator" className={cn("p-0 overflow-hidden border-none shadow-none bg-transparent", getWidgetClass('twrCalculator'))} onDoubleClick={() => toggleWidgetSize('twrCalculator')}>
+                      <div className="relative">
+                        <div className="absolute top-4 right-4 flex items-center gap-2 z-30">
+                          <button onClick={() => toggleWidgetSize('twrCalculator')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all" title="Resize Widget">
+                            {(widgetSizes.twrCalculator || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button onClick={() => removeWidget('twrCalculator')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all" title="Remove Widget">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <TwrCalculatorWidget
+                          user={user}
+                          allHoldings={allHoldings}
+                          allTransactions={allTransactions}
+                          quotes={quotes}
+                          activeCurrency={activeCurrency}
+                        />
+                      </div>
+                    </SortableWidget>
+                  );
+                }
                 return null;
               })}
             </div>
@@ -4767,14 +8674,16 @@ export default function App() {
         </DndContext>
       </main>
 
+      <Toaster position="top-right" richColors />
+
       {/* TradingView Chart Modal */}
       {selectedChartTicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl h-[80vh] flex flex-col overflow-hidden">
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
             <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <h3 className="text-lg font-semibold flex items-center gap-2">
-                  <LineChart className="w-5 h-5 text-indigo-600" />
+                  <CompanyLogo ticker={selectedChartTicker} logo={metadata[selectedChartTicker]?.logo} size="sm" />
                   {selectedChartTicker}
                 </h3>
                 <div className="flex items-center bg-zinc-100 p-1 rounded-lg">
@@ -4799,6 +8708,24 @@ export default function App() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {chartModalTab === 'chart' && !['CASH', 'USD', 'EUR', 'GBP'].includes((selectedChartTicker || '').toUpperCase()) && (
+                  <button
+                    id="rsi-toggle-btn"
+                    onClick={() => setShowRsi(prev => !prev)}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-1.5 border rounded-lg font-medium transition-all text-sm select-none",
+                      showRsi 
+                        ? "bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 shadow-sm" 
+                        : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-2 h-2 rounded-full transition-all duration-300",
+                      showRsi ? "bg-indigo-600 scale-110 animate-pulse" : "bg-zinc-300"
+                    )} />
+                    Show RSI
+                  </button>
+                )}
                 <button
                   onClick={() => promptAnalysisStrategy(selectedChartTicker)}
                   disabled={isAnalyzing}
@@ -4820,28 +8747,21 @@ export default function App() {
             </div>
             <div className="flex-1 w-full h-full bg-zinc-50 relative">
               {chartModalTab === 'chart' ? (
-                ['CASH', 'USD', 'EUR', 'GBP'].includes(selectedChartTicker.toUpperCase()) ? (
+                ['CASH', 'USD', 'EUR', 'GBP'].includes((selectedChartTicker || '').toUpperCase()) ? (
                   <div className="flex flex-col items-center justify-center h-full text-zinc-500">
                     <LineChart className="w-12 h-12 mb-4 text-zinc-300" />
                     <p>Chart data is not available for cash positions.</p>
                   </div>
                 ) : (
-                  <>
-                    <AdvancedRealTimeChart 
-                      key={selectedChartTicker}
-                      symbol={selectedChartTicker.includes('-') ? `CRYPTO:${selectedChartTicker.replace('-', '')}` : selectedChartTicker}
-                      theme="light"
-                      autosize
-                      hide_side_toolbar={false}
-                      studies={TRADINGVIEW_STUDIES}
-                    />
-                    {/^[A-Z]{4}X$/.test(selectedChartTicker) && (
-                      <div className="absolute bottom-4 left-4 right-4 bg-white/90 backdrop-blur-sm p-3 rounded-lg border border-amber-200 shadow-sm text-sm text-amber-800 flex items-start gap-2 z-10">
-                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-                        <p><strong>Note:</strong> Mutual funds ({selectedChartTicker}) may not have intraday chart data available on TradingView. Try changing the timeframe to Daily (D) or Weekly (W) if the chart doesn't load.</p>
-                      </div>
-                    )}
-                  </>
+                  <TradingViewChartWithSkeleton 
+                    symbol={selectedChartTicker}
+                    showRsi={showRsi}
+                    theme="light"
+                    autosize
+                    hide_side_toolbar={false}
+                    studies={(showRsi ? [...TRADINGVIEW_STUDIES, "RSI@tv-basicstudies"] : TRADINGVIEW_STUDIES) as any}
+                    isMutualFund={/^[A-Z]{4}X$/.test(selectedChartTicker)}
+                  />
                 )
               ) : chartModalTab === 'history' ? (
                 <HistoricalPriceChart ticker={selectedChartTicker} activeCurrency={activeCurrency} />
@@ -5001,21 +8921,69 @@ export default function App() {
 
       {/* History Modal */}
       {historyHolding && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
             <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold flex items-center gap-2">
                 <FileText className="w-5 h-5 text-blue-600" />
                 {historyHolding.ticker} Transaction History
               </h3>
-              <button
-                onClick={() => setHistoryHolding(null)}
-                className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const h = holdings.find(item => item.id === historyHolding.id) || historyHolding;
+                    setEditModalHolding(h);
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-medium text-zinc-700 bg-zinc-100 hover:bg-zinc-200 rounded-lg flex items-center gap-1.5 transition-colors"
+                  title="Edit Position"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                  Edit Position
+                </button>
+                <button
+                  onClick={() => { setHistoryHolding(null); setSellingLot(null); }}
+                  className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-auto p-6 bg-zinc-50">
+              {/* Ledger Summary & Reconciliation Banner */}
+              {(() => {
+                const computed = computeHoldingFromTransactions(historyTransactions);
+                const isCorrupted = historyHolding.avg_price < 0 || historyHolding.shares < 0;
+                const hasDiff = computed.totalBuys > 0 && (
+                  isCorrupted ||
+                  Math.abs(historyHolding.shares - computed.shares) > 0.001 ||
+                  Math.abs(historyHolding.avg_price - computed.avg_price) > 0.01
+                );
+
+                if (!hasDiff) return null;
+
+                return (
+                  <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between text-xs text-amber-900 shadow-sm">
+                    <div className="flex items-center gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <div>
+                        <div className="font-semibold">Transaction Ledger Discrepancy</div>
+                        <div className="text-[11px] text-amber-800 mt-0.5">
+                          Ledger computes to <strong>{computed.shares} shares</strong> @ <strong>{formatCurrency(computed.avg_price, historyHolding.avgPriceCurrency || activeCurrency)}</strong>, while saved holding is <strong>{historyHolding.shares} shares</strong> @ <strong>{formatCurrency(historyHolding.avg_price, historyHolding.avgPriceCurrency || activeCurrency)}</strong>.
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSyncHoldingWithLedger(historyHolding, computed)}
+                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg text-xs transition-colors flex items-center gap-1 flex-shrink-0 shadow-sm"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Sync with Ledger
+                    </button>
+                  </div>
+                );
+              })()}
               {undoError && (
                 <div className="mb-4 p-3 bg-rose-50 border border-rose-100 rounded-lg flex items-center gap-2 text-rose-700 text-sm">
                   <AlertCircle className="w-4 h-4" />
@@ -5025,6 +8993,89 @@ export default function App() {
                   </button>
                 </div>
               )}
+
+              {/* Sell from Specific Lot Form */}
+              {sellingLot && (
+                <div className="bg-white border border-zinc-200 rounded-xl p-5 mb-6 shadow-sm animate-in fade-in zoom-in-95 duration-200">
+                  <h4 className="font-semibold text-zinc-900 text-sm mb-3 flex items-center gap-1.5">
+                    <TrendingDown className="w-4 h-4 text-rose-500" />
+                    Sell from Lot (Purchased {new Date(sellingLot.date).toLocaleDateString()} @ {formatCurrency(sellingLot.price, activeCurrency)})
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">
+                        Shares to Sell
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="any"
+                          max={getRemainingSharesForLots(historyTransactions)[sellingLot.id] || 0}
+                          min="0.0001"
+                          value={sellLotShares}
+                          onChange={(e) => setSellLotShares(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-white text-sm font-medium border border-zinc-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setSellLotShares(getRemainingSharesForLots(historyTransactions)[sellingLot.id] || 0)}
+                          className="absolute right-2 top-1.5 px-2 py-0.5 text-[10px] font-bold bg-zinc-100 hover:bg-zinc-200 text-zinc-600 rounded"
+                        >
+                          MAX
+                        </button>
+                      </div>
+                      <span className="text-[11px] text-zinc-400 mt-1 block">
+                        Available in Lot: {(getRemainingSharesForLots(historyTransactions)[sellingLot.id] || 0).toLocaleString(undefined, { maximumFractionDigits: 5 })} shares
+                      </span>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">
+                        Sell Price per Share
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={sellLotPrice}
+                        onChange={(e) => setSellLotPrice(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-white text-sm font-medium border border-zinc-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      />
+                      <span className="text-[11px] text-zinc-400 mt-1 block">
+                        Current Price: {formatCurrency(quotes[historyHolding.ticker]?.price ?? historyHolding.avg_price, activeCurrency)}
+                      </span>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1">
+                        Sale Date
+                      </label>
+                      <input
+                        type="date"
+                        value={sellLotDate}
+                        onChange={(e) => setSellLotDate(e.target.value)}
+                        className="w-full bg-white text-sm font-medium border border-zinc-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-end gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setSellingLot(null)}
+                      className="px-3.5 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors border border-zinc-200"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSellLot(sellLotShares, sellLotPrice, sellLotDate, sellingLot)}
+                      disabled={sellLotShares <= 0 || sellLotShares > (getRemainingSharesForLots(historyTransactions)[sellingLot.id] || 0) || sellLotPrice <= 0}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-1 shadow-sm"
+                    >
+                      Confirm Sale
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {isHistoryLoading ? (
                 <div className="flex items-center justify-center h-40">
                   <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
@@ -5044,62 +9095,137 @@ export default function App() {
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Shares</th>
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Price</th>
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Total</th>
+                        <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-right">Profit / Loss</th>
                         <th className="px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider text-center">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
-                      {historyTransactions.map((tx, index) => (
-                        <tr key={tx.id} className="hover:bg-zinc-100/50 transition-all duration-200 group/row">
-                          <td className="px-4 py-3 text-sm text-zinc-900">
-                            {new Date(tx.date).toLocaleDateString()} {new Date(tx.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </td>
-                          <td className="px-4 py-3 text-sm">
-                            <span className={cn(
-                              "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium uppercase tracking-wider",
-                              tx.type === 'buy' ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
-                            )}>
-                              {tx.type}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-right font-mono text-zinc-900">
-                            {tx.shares.toLocaleString(undefined, { maximumFractionDigits: 5 })}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-right font-mono text-zinc-900">
-                            {formatCurrency(tx.price, activeCurrency)}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-right font-mono font-medium text-zinc-900">
-                            {formatCurrency(tx.shares * tx.price, activeCurrency)}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            {confirmUndoId === tx.id ? (
-                              <div className="flex items-center justify-center gap-2">
-                                <button
-                                  onClick={() => handleUndoTransaction(tx)}
-                                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
-                                  title="Confirm Undo"
-                                >
-                                  <Check className="w-4 h-4" />
-                                </button>
-                                <button
-                                  onClick={() => setConfirmUndoId(null)}
-                                  className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
-                                  title="Cancel Undo"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
+                      {historyTransactions.map((tx, index) => {
+                        const lotRemainingMap = getRemainingSharesForLots(historyTransactions);
+                        const rem = lotRemainingMap[tx.id] ?? 0;
+
+                        const curPrice = quotes[historyHolding.ticker]?.price ?? historyHolding.avg_price ?? 0;
+                        let txPl = 0;
+                        let txPlPct = 0;
+                        let isRealized = false;
+
+                        if (tx.type === 'buy') {
+                          if (curPrice > 0 && tx.price > 0) {
+                            txPl = (curPrice - tx.price) * tx.shares;
+                            txPlPct = ((curPrice - tx.price) / tx.price) * 100;
+                          }
+                        } else if (tx.type === 'sell') {
+                          isRealized = true;
+                          let buyCost = historyHolding.avg_price || 0;
+                          if (tx.lotId) {
+                            const buyLot = historyTransactions.find(t => t.id === tx.lotId);
+                            if (buyLot && buyLot.price > 0) {
+                              buyCost = buyLot.price;
+                            }
+                          }
+                          if (buyCost > 0 && tx.price > 0) {
+                            txPl = (tx.price - buyCost) * tx.shares;
+                            txPlPct = ((tx.price - buyCost) / buyCost) * 100;
+                          }
+                        }
+                        const isPlPos = txPl >= 0;
+
+                        return (
+                          <tr key={tx.id} className="hover:bg-zinc-100/50 transition-all duration-200 group/row">
+                            <td className="px-4 py-3 text-sm text-zinc-900">
+                              {new Date(tx.date).toLocaleDateString()} {new Date(tx.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                            <td className="px-4 py-3 text-sm">
+                              <span className={cn(
+                                "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium uppercase tracking-wider",
+                                tx.type === 'buy' ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+                              )}>
+                                {tx.type}
+                                {tx.type === 'sell' && tx.lotId && (
+                                  <span className="text-[10px] font-sans text-rose-500 font-normal normal-case ml-1" title="Specifically matched to buy lot">
+                                    (SpecID)
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-sm text-right font-mono text-zinc-900">
+                              <div>{tx.shares.toLocaleString(undefined, { maximumFractionDigits: 5 })}</div>
+                              {tx.type === 'buy' && (
+                                rem === tx.shares ? (
+                                  <div className="text-[10px] text-zinc-400 font-sans mt-0.5">Full Lot ({rem.toLocaleString(undefined, { maximumFractionDigits: 3 })} avail)</div>
+                                ) : rem > 0 ? (
+                                  <div className="text-[10px] text-amber-600 font-semibold font-sans mt-0.5">{rem.toLocaleString(undefined, { maximumFractionDigits: 3 })} left</div>
+                                ) : (
+                                  <div className="text-[10px] text-zinc-300 font-sans mt-0.5 line-through">Sold out</div>
+                                )
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-right font-mono text-zinc-900">
+                              {formatCurrency(tx.price, activeCurrency)}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-right font-mono font-medium text-zinc-900">
+                              {formatCurrency(tx.shares * tx.price, activeCurrency)}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-right font-mono">
+                              <div className={cn("font-semibold inline-flex items-center gap-1", isPlPos ? "text-emerald-600" : "text-rose-600")}>
+                                {isPlPos ? <TrendingUp className="w-3.5 h-3.5 stroke-[2.5px]" /> : <TrendingDown className="w-3.5 h-3.5 stroke-[2.5px]" />}
+                                <span>{isPlPos ? '+' : '-'}{formatCurrency(Math.abs(txPl), activeCurrency)}</span>
                               </div>
-                            ) : (
-                              <button
-                                onClick={() => setConfirmUndoId(tx.id)}
-                                className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                                title="Undo Transaction"
-                              >
-                                <Undo2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                              <div className="flex items-center justify-end gap-1 text-[10px] mt-0.5">
+                                <span className="text-zinc-400 font-sans">{isRealized ? 'Realized' : 'Unrealized'}</span>
+                                <span className={cn("font-medium", isPlPos ? "text-emerald-600" : "text-rose-600")}>
+                                  ({isPlPos ? '+' : ''}{txPlPct.toFixed(2)}%)
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {confirmUndoId === tx.id ? (
+                                <div className="flex items-center justify-center gap-2">
+                                  <button
+                                    onClick={() => handleUndoTransaction(tx)}
+                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
+                                    title="Confirm Undo"
+                                  >
+                                    <Check className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => setConfirmUndoId(null)}
+                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                    title="Cancel Undo"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-center gap-1.5">
+                                  {tx.type === 'buy' && rem > 0 && (
+                                    <button
+                                      onClick={() => {
+                                        setSellingLot(tx);
+                                        setSellLotShares(rem);
+                                        setSellLotPrice(quotes[historyHolding.ticker]?.price ?? historyHolding.avg_price ?? tx.price);
+                                        setSellLotDate(format(new Date(), 'yyyy-MM-dd'));
+                                      }}
+                                      className="px-2.5 py-1 text-xs font-semibold text-rose-600 hover:text-white bg-rose-50 hover:bg-rose-600 border border-rose-200 hover:border-rose-600 rounded-md transition-all flex items-center gap-1 shadow-sm"
+                                      title="Sell from this Lot"
+                                    >
+                                      <TrendingDown className="w-3.5 h-3.5" />
+                                      <span>Sell</span>
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => setConfirmUndoId(tx.id)}
+                                    className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                    title="Undo Transaction"
+                                  >
+                                    <Undo2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -5112,7 +9238,7 @@ export default function App() {
       {/* Analysis Modal */}
       {/* Reset Confirmation Modal */}
       {showResetConfirm && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[300] p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-rose-50/50">
               <div className="flex items-center gap-3">
@@ -5131,7 +9257,7 @@ export default function App() {
             
             <div className="p-6 space-y-4">
               <p className="text-zinc-600">
-                Are you sure you want to completely reset the <strong>{activeTab === 'global' ? 'Global Portfolio' : activeTab === 'india' ? 'India Investment' : 'Australia Investment'}</strong>?
+                Are you sure you want to completely reset the <strong>{activeTab === 'global' ? 'Global Portfolio' : 'Australia Investment'}</strong>?
               </p>
               <p className="text-sm text-rose-600 font-medium bg-rose-50 p-3 rounded-lg border border-rose-100">
                 This action cannot be undone. All holdings and associated transactions in this tab will be permanently deleted.
@@ -5161,7 +9287,7 @@ export default function App() {
 
       {/* Restore Confirmation Modal */}
       {showRestoreConfirm && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[300] p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-emerald-50/50">
               <div className="flex items-center gap-3">
@@ -5210,7 +9336,7 @@ export default function App() {
 
       {/* Quick Add Modal */}
       {showQuickAddModal && quickAddHolding && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold flex items-center gap-2">
@@ -5282,30 +9408,44 @@ export default function App() {
       )}
 
       {showAnalysisModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
-            <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between bg-white sticky top-0 z-10">
+        <div 
+          className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm cursor-pointer"
+          onClick={() => setShowAnalysisModal(false)}
+        >
+          <div 
+            className="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-3xl max-h-[95vh] sm:max-h-[90vh] flex flex-col overflow-hidden cursor-default border border-zinc-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-white dark:bg-zinc-900 sticky top-0 z-10">
               <div className="flex items-center gap-3">
                 <div className={cn(
-                  "p-2 rounded-lg",
-                  analysisTicker && analysisSentiment === 'bullish' ? "bg-emerald-100 text-emerald-600" :
-                  analysisTicker && analysisSentiment === 'bearish' ? "bg-rose-100 text-rose-600" :
-                  analysisTicker && analysisSentiment === 'neutral' ? "bg-amber-100 text-amber-600" :
-                  "bg-indigo-100 text-indigo-600"
+                  "p-2.5 rounded-xl",
+                  analysisTicker && analysisSentiment === 'bullish' ? "bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400" :
+                  analysisTicker && analysisSentiment === 'bearish' ? "bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400" :
+                  analysisTicker && analysisSentiment === 'neutral' ? "bg-amber-100 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400" :
+                  "bg-indigo-100 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400"
                 )}>
                   <Zap className="w-5 h-5 fill-current" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-zinc-900">
-                    {analysisTicker ? `AI Analysis: ${analysisTicker}` : 'AI Portfolio Analysis'}
-                  </h3>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                      {analysisTicker ? `AI Analysis: ${analysisTicker}` : 'AI Portfolio Analysis'}
+                    </h3>
+                    {analysisModelName && (
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-indigo-500" />
+                        {POPULAR_AI_MODELS.find(m => m.id === analysisModelName)?.name || analysisModelName}
+                      </span>
+                    )}
+                  </div>
                   {analysisTicker && !isAnalyzing && (
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className={cn(
                         "text-[10px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded",
-                        analysisSentiment === 'bullish' ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
-                        analysisSentiment === 'bearish' ? "bg-rose-50 text-rose-700 border border-rose-200" :
-                        "bg-zinc-100 text-zinc-700 border border-zinc-200"
+                        analysisSentiment === 'bullish' ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800" :
+                        analysisSentiment === 'bearish' ? "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border border-rose-200 dark:border-rose-800" :
+                        "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700"
                       )}>
                         {analysisSentiment} Sentiment
                       </span>
@@ -5313,35 +9453,127 @@ export default function App() {
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => setShowAnalysisModal(false)}
-                className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setSettingsInitialTab('ai');
+                    setShowSettings(true);
+                  }}
+                  className="p-2 text-zinc-400 hover:text-indigo-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+                  title="Configure AI Models & Keys"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowAnalysisModal(false)}
+                  className="p-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
-            <div className="flex-1 overflow-auto p-6 bg-zinc-50">
+            <div className="flex-1 overflow-auto p-6 bg-zinc-50 dark:bg-zinc-950 min-h-0 min-w-0">
               {isAnalyzing ? (
                 <div className="flex flex-col items-center justify-center h-64">
                   <div className="relative">
-                    <Loader2 className="w-12 h-12 text-indigo-600 animate-spin" />
+                    <Loader2 className="w-12 h-12 text-indigo-600 dark:text-indigo-400 animate-spin" />
                     <Zap className={cn(
                       "w-5 h-5 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse",
                       analysisTicker ? "text-amber-500" : "text-indigo-500"
                     )} />
                   </div>
-                  <p className="text-zinc-500 mt-4 font-medium animate-pulse">
-                    {analysisTicker ? `Analyzing ${analysisTicker}...` : 'Gemini is analyzing your portfolio strategy...'}
+                  <p className="text-zinc-700 dark:text-zinc-300 mt-4 font-semibold animate-pulse">
+                    {analysisTicker ? `Analyzing ${analysisTicker}...` : 'Analyzing your portfolio strategy...'}
                   </p>
-                  {analysisTicker && (
-                    <p className="text-xs text-zinc-400 mt-1 italic">Scanning news, earnings, and market sentiment</p>
-                  )}
+                  <p className="text-xs text-zinc-400 mt-1 italic">
+                    Running with {POPULAR_AI_MODELS.find(m => m.id === analysisModelName)?.name || analysisModelName || 'AI Intelligence'}
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-6">
-                  <div className="bg-white border border-zinc-200 rounded-xl p-6 shadow-sm">
-                    <div className="prose prose-indigo prose-sm max-w-none">
-                      <Markdown>{analysisResult}</Markdown>
+                  {analysisFallbackNotice && (
+                    <div className="bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/70 rounded-xl p-3.5 flex items-start gap-3 text-indigo-900 dark:text-indigo-200 text-xs">
+                      <Zap className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <span className="font-semibold">{analysisFallbackNotice}</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setSettingsInitialTab('ai');
+                          setShowSettings(true);
+                        }}
+                        className="underline text-indigo-700 dark:text-indigo-300 font-semibold hover:text-indigo-900 shrink-0 text-xs"
+                      >
+                        AI Settings
+                      </button>
+                    </div>
+                  )}
+
+                  {analysisErrorCode ? (
+                    <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-2xl p-6 text-center space-y-4">
+                      <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center mx-auto text-amber-600 dark:text-amber-400">
+                        {analysisErrorCode === 'MISSING_API_KEY' ? <Key className="w-6 h-6" /> : <AlertTriangle className="w-6 h-6" />}
+                      </div>
+                      <div>
+                        <h4 className="text-base font-bold text-amber-900 dark:text-amber-200">
+                          {analysisErrorCode === 'MISSING_API_KEY' ? 'API Key Required' :
+                           analysisErrorCode === 'QUOTA_EXCEEDED' ? 'Provider Quota Exceeded' :
+                           analysisErrorCode === 'INSUFFICIENT_BALANCE' ? 'Insufficient Provider Balance' :
+                           'AI Provider Error'}
+                        </h4>
+                        <p className="text-sm text-amber-800 dark:text-amber-300/90 mt-1.5 max-w-md mx-auto leading-relaxed">
+                          {analysisResult}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                        <button
+                          onClick={() => handleAnalyze(analysisTicker || undefined, 'gemini-3.1-pro-preview')}
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm hover:shadow inline-flex items-center gap-2"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          Analyze with Gemini 3.1 Pro
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSettingsInitialTab('ai');
+                            setShowSettings(true);
+                          }}
+                          className="px-5 py-2.5 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-300 dark:border-zinc-700 text-sm font-bold rounded-xl transition-all inline-flex items-center gap-2"
+                        >
+                          <Settings className="w-4 h-4" />
+                          Configure Keys in Settings
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm overflow-x-auto">
+                      <div className="prose prose-indigo dark:prose-invert prose-sm max-w-none break-words">
+                        <Markdown>{analysisResult}</Markdown>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Switch Model & Re-run Bar */}
+                  <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      <span className="text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider">Re-analyze with:</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {POPULAR_AI_MODELS.slice(0, 4).map(m => (
+                        <button
+                          key={m.id}
+                          onClick={() => handleAnalyze(analysisTicker || undefined, m.id)}
+                          className={cn(
+                            "px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all",
+                            analysisModelName === m.id
+                              ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800"
+                              : "bg-zinc-50 dark:bg-zinc-800/60 text-zinc-700 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                          )}
+                        >
+                          {m.name}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
@@ -5358,9 +9590,9 @@ export default function App() {
                             href={source.uri}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="flex items-center justify-between p-3 bg-white border border-zinc-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50/30 transition-all group"
+                            className="flex items-center justify-between p-3 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg hover:border-indigo-300 hover:bg-indigo-50/30 transition-all group"
                           >
-                            <span className="text-sm text-zinc-700 font-medium truncate pr-4 group-hover:text-indigo-700">
+                            <span className="text-sm text-zinc-700 dark:text-zinc-300 font-medium truncate pr-4 group-hover:text-indigo-600">
                               {source.title || source.uri}
                             </span>
                             <ExternalLink className="w-3 h-3 text-zinc-400 group-hover:text-indigo-500 flex-shrink-0" />
@@ -5372,30 +9604,30 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-zinc-200 bg-white flex justify-between items-center">
+            <div className="px-6 py-4 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex justify-between items-center">
               <p className="text-[10px] text-zinc-400 italic">
                 AI-generated insights. Verify with official sources.
               </p>
               <div className="flex items-center gap-2">
-                {!isAnalyzing && analysisResult && !analysisSaved && (
+                {!isAnalyzing && analysisResult && !analysisSaved && analysisErrorCode !== 'MISSING_API_KEY' && (
                   <button
                     onClick={handleSaveAnalysis}
                     disabled={isSavingAnalysis}
-                    className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-semibold shadow-sm flex items-center justify-center gap-2"
+                    className="px-4 py-2 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-semibold shadow-sm flex items-center justify-center gap-2"
                   >
                     {isSavingAnalysis ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                     Save Note
                   </button>
                 )}
                 {analysisSaved && (
-                  <div className="px-4 py-2 text-emerald-600 bg-emerald-50 rounded-lg text-sm font-semibold flex items-center gap-2">
+                  <div className="px-4 py-2 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50 rounded-lg text-sm font-semibold flex items-center gap-2">
                     <Check className="w-4 h-4" />
                     Saved
                   </div>
                 )}
                 <button
                   onClick={() => setShowAnalysisModal(false)}
-                  className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
+                  className="px-6 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors text-sm font-semibold shadow-sm"
                 >
                   Close
                 </button>
@@ -5406,75 +9638,191 @@ export default function App() {
       )}
 
       {showEarningsAnalysisModal && selectedEarningsEvent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
-            <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between bg-white sticky top-0 z-10">
+        <div 
+          className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm cursor-pointer"
+          onClick={() => setShowEarningsAnalysisModal(false)}
+        >
+          <div 
+            className="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-3xl max-h-[95vh] sm:max-h-[90vh] flex flex-col overflow-hidden cursor-default border border-zinc-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-white dark:bg-zinc-900 sticky top-0 z-10">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600">
+                <div className="p-2 rounded-lg bg-indigo-100 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
                   <CalendarIcon className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-zinc-900">
-                    Earnings Analysis: {selectedEarningsEvent.symbol}
-                  </h3>
-                  <div className="text-sm text-zinc-500">
-                    {format(parseISO(selectedEarningsEvent.date), 'MMMM d, yyyy')}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+                      Earnings Analysis: {selectedEarningsEvent.symbol}
+                    </h3>
+                    {earningsAnalysisModelName && (
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-indigo-500" />
+                        {POPULAR_AI_MODELS.find(m => m.id === earningsAnalysisModelName)?.name || earningsAnalysisModelName}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-zinc-500 flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <span>{format(parseISO(selectedEarningsEvent.date), 'MMMM d, yyyy')}</span>
+                    {hasExactTime(selectedEarningsEvent.date) && (
+                      <>
+                        <span className="text-zinc-300">•</span>
+                        <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                          {formatEarningsTime(selectedEarningsEvent.date)}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => setShowEarningsAnalysisModal(false)}
-                className="p-2 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setSettingsInitialTab('ai');
+                    setShowSettings(true);
+                  }}
+                  className="p-2 text-zinc-400 hover:text-indigo-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+                  title="Configure AI Models & Keys"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowEarningsAnalysisModal(false)}
+                  className="p-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
-            <div className="flex-1 overflow-auto p-6 bg-zinc-50">
+            <div className="flex-1 overflow-auto p-6 bg-zinc-50 dark:bg-zinc-950 min-h-0 min-w-0">
               {isAnalyzingEarnings ? (
                 <div className="flex flex-col items-center justify-center h-64">
                   <div className="relative">
-                    <Loader2 className="w-12 h-12 text-indigo-600 animate-spin" />
+                    <Loader2 className="w-12 h-12 text-indigo-600 dark:text-indigo-400 animate-spin" />
                     <Zap className="w-5 h-5 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-500 animate-pulse" />
                   </div>
-                  <p className="text-zinc-500 mt-4 font-medium animate-pulse">
+                  <p className="text-zinc-700 dark:text-zinc-300 mt-4 font-semibold animate-pulse">
                     Analyzing earnings for {selectedEarningsEvent.symbol}...
                   </p>
-                  <p className="text-xs text-zinc-400 mt-1 italic">Scanning earnings data, analyst expectations, and recent news</p>
+                  <p className="text-xs text-zinc-400 mt-1 italic">
+                    Running with {POPULAR_AI_MODELS.find(m => m.id === earningsAnalysisModelName)?.name || earningsAnalysisModelName || 'AI Intelligence'}
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-6">
-                  <div className="bg-white border border-zinc-200 rounded-xl p-6 shadow-sm">
-                    <div className="prose prose-indigo prose-sm max-w-none">
-                      <Markdown>{earningsAnalysisResult}</Markdown>
+                  {earningsAnalysisFallbackNotice && (
+                    <div className="bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/70 rounded-xl p-3.5 flex items-start gap-3 text-indigo-900 dark:text-indigo-200 text-xs">
+                      <Zap className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <span className="font-semibold">{earningsAnalysisFallbackNotice}</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setSettingsInitialTab('ai');
+                          setShowSettings(true);
+                        }}
+                        className="underline text-indigo-700 dark:text-indigo-300 font-semibold hover:text-indigo-900 shrink-0 text-xs"
+                      >
+                        AI Settings
+                      </button>
+                    </div>
+                  )}
+
+                  {earningsAnalysisErrorCode ? (
+                    <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-2xl p-6 text-center space-y-4">
+                      <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center mx-auto text-amber-600 dark:text-amber-400">
+                        {earningsAnalysisErrorCode === 'MISSING_API_KEY' ? <Key className="w-6 h-6" /> : <AlertTriangle className="w-6 h-6" />}
+                      </div>
+                      <div>
+                        <h4 className="text-base font-bold text-amber-900 dark:text-amber-200">
+                          {earningsAnalysisErrorCode === 'MISSING_API_KEY' ? 'API Key Required' :
+                           earningsAnalysisErrorCode === 'QUOTA_EXCEEDED' ? 'Provider Quota Exceeded' :
+                           earningsAnalysisErrorCode === 'INSUFFICIENT_BALANCE' ? 'Insufficient Provider Balance' :
+                           'AI Provider Error'}
+                        </h4>
+                        <p className="text-sm text-amber-800 dark:text-amber-300/90 mt-1.5 max-w-md mx-auto leading-relaxed">
+                          {earningsAnalysisResult}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                        <button
+                          onClick={() => handleAnalyzeEarnings(selectedEarningsEvent, 'gemini-3.1-pro-preview')}
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm hover:shadow inline-flex items-center gap-2"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          Analyze with Gemini 3.1 Pro
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSettingsInitialTab('ai');
+                            setShowSettings(true);
+                          }}
+                          className="px-5 py-2.5 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-300 dark:border-zinc-700 text-sm font-bold rounded-xl transition-all inline-flex items-center gap-2"
+                        >
+                          <Settings className="w-4 h-4" />
+                          Configure Keys in Settings
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm overflow-x-auto">
+                      <div className="prose prose-indigo dark:prose-invert prose-sm max-w-none break-words">
+                        <Markdown>{earningsAnalysisResult}</Markdown>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Switch Model & Re-run Bar */}
+                  <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      <span className="text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider">Re-analyze with:</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {POPULAR_AI_MODELS.slice(0, 4).map(m => (
+                        <button
+                          key={m.id}
+                          onClick={() => handleAnalyzeEarnings(selectedEarningsEvent, m.id)}
+                          className={cn(
+                            "px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all",
+                            earningsAnalysisModelName === m.id
+                              ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800"
+                              : "bg-zinc-50 dark:bg-zinc-800/60 text-zinc-700 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                          )}
+                        >
+                          {m.name}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-zinc-200 bg-white flex justify-between items-center">
+            <div className="px-6 py-4 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex justify-between items-center">
               <p className="text-[10px] text-zinc-400 italic">
                 AI-generated insights. Verify with official sources.
               </p>
               <div className="flex items-center gap-2">
-                {!isAnalyzingEarnings && earningsAnalysisResult && !earningsAnalysisSaved && (
+                {!isAnalyzingEarnings && earningsAnalysisResult && !earningsAnalysisSaved && earningsAnalysisErrorCode !== 'MISSING_API_KEY' && (
                   <button
                     onClick={handleSaveEarningsAnalysis}
                     disabled={isSavingEarningsAnalysis}
-                    className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-semibold shadow-sm flex items-center justify-center gap-2"
+                    className="px-4 py-2 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 rounded-lg hover:bg-indigo-100 transition-colors text-sm font-semibold shadow-sm flex items-center justify-center gap-2"
                   >
                     {isSavingEarningsAnalysis ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                     Save Note
                   </button>
                 )}
                 {earningsAnalysisSaved && (
-                  <div className="px-4 py-2 text-emerald-600 bg-emerald-50 rounded-lg text-sm font-semibold flex items-center gap-2">
+                  <div className="px-4 py-2 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50 rounded-lg text-sm font-semibold flex items-center gap-2">
                     <Check className="w-4 h-4" />
                     Saved
                   </div>
                 )}
                 <button
                   onClick={() => setShowEarningsAnalysisModal(false)}
-                  className="px-6 py-2 bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 transition-colors text-sm font-semibold shadow-sm"
+                  className="px-6 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors text-sm font-semibold shadow-sm"
                 >
                   Close
                 </button>
@@ -5485,20 +9833,50 @@ export default function App() {
       )}
 
       {showAnalysisStrategyModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden p-6 text-center border border-zinc-100">
-            <div className="mx-auto w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center mb-4">
-              <Zap className="w-6 h-6 text-indigo-600" />
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden p-6 text-center border border-zinc-100 dark:border-zinc-800">
+            <div className="mx-auto w-12 h-12 bg-indigo-100 dark:bg-indigo-950/50 rounded-2xl flex items-center justify-center mb-4">
+              <Zap className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
             </div>
-            <h3 className="text-xl font-bold text-zinc-900 mb-2">AI Insights</h3>
-            <p className="text-sm text-zinc-500 mb-6 font-medium">How would you like to proceed with the analysis for {strategyTicker || 'your portfolio'}?</p>
+            <h3 className="text-xl font-bold text-zinc-900 dark:text-zinc-100 mb-1">AI Investment Insights</h3>
+            <p className="text-sm text-zinc-500 mb-4 font-medium">Select model and choose how to proceed for {strategyTicker || 'your portfolio'}:</p>
+
+            {/* Model Selector in Strategy Modal */}
+            <div className="bg-zinc-50 dark:bg-zinc-800/60 p-3 rounded-2xl border border-zinc-200 dark:border-zinc-700/60 text-left mb-5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-zinc-500 uppercase tracking-wider">AI Model</span>
+                <button
+                  onClick={() => {
+                    setShowAnalysisStrategyModal(false);
+                    setSettingsInitialTab('ai');
+                    setShowSettings(true);
+                  }}
+                  className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                >
+                  <Settings className="w-3 h-3" />
+                  Configure Keys
+                </button>
+              </div>
+              <select
+                value={selectedStrategyModel || userSettings.aiConfig?.model || 'claude-3-7-sonnet-20250219'}
+                onChange={(e) => setSelectedStrategyModel(e.target.value)}
+                className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+              >
+                {POPULAR_AI_MODELS.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} ({m.provider.toUpperCase()})
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex flex-col gap-3">
               <button
                 onClick={() => {
                   setShowAnalysisStrategyModal(false);
-                  handleAnalyze(strategyTicker || undefined);
+                  handleAnalyze(strategyTicker || undefined, selectedStrategyModel || userSettings.aiConfig?.model);
                 }}
-                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 <Zap className="w-5 h-5" />
                 Generate Fresh Analysis
@@ -5509,7 +9887,7 @@ export default function App() {
                   setShowSavedAnalysesModal(true);
                   fetchSavedAnalyses(strategyTicker || 'portfolio');
                 }}
-                className="w-full py-3 bg-white text-zinc-700 border border-zinc-200 rounded-xl font-semibold hover:bg-zinc-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                className="w-full py-3 bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 <FileText className="w-5 h-5" />
                 View Saved Notes
@@ -5517,7 +9895,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setShowAnalysisStrategyModal(false)}
-              className="mt-6 text-sm font-semibold text-zinc-400 hover:text-zinc-600 transition-colors"
+              className="mt-5 text-sm font-semibold text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
             >
               Cancel
             </button>
@@ -5526,20 +9904,58 @@ export default function App() {
       )}
 
       {showEarningsAnalysisStrategyModal && strategyEarningsEvent && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden p-6 text-center border border-zinc-100">
-            <div className="mx-auto w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center mb-4">
-              <CalendarIcon className="w-6 h-6 text-indigo-600" />
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden p-6 text-center border border-zinc-100 dark:border-zinc-800">
+            <div className="mx-auto w-12 h-12 bg-indigo-100 dark:bg-indigo-950/50 rounded-2xl flex items-center justify-center mb-4">
+              <CalendarIcon className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
             </div>
-            <h3 className="text-xl font-bold text-zinc-900 mb-2">Earnings Insights</h3>
-            <p className="text-sm text-zinc-500 mb-6 font-medium">How would you like to proceed with the analysis for {strategyEarningsEvent.symbol}?</p>
+            <h3 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Earnings Insights</h3>
+            <div className="text-xs text-zinc-400 mt-1 mb-3 flex flex-col items-center gap-0.5">
+              <span>Date: {formatEventDateStr(strategyEarningsEvent.date)}</span>
+              {hasExactTime(strategyEarningsEvent.date) && (
+                <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                  Time: {formatEarningsTime(strategyEarningsEvent.date)}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-zinc-500 mb-4 font-medium">Select model and choose how to proceed for {strategyEarningsEvent.symbol}:</p>
+
+            {/* Model Selector in Earnings Strategy Modal */}
+            <div className="bg-zinc-50 dark:bg-zinc-800/60 p-3 rounded-2xl border border-zinc-200 dark:border-zinc-700/60 text-left mb-5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-zinc-500 uppercase tracking-wider">AI Model</span>
+                <button
+                  onClick={() => {
+                    setShowEarningsAnalysisStrategyModal(false);
+                    setSettingsInitialTab('ai');
+                    setShowSettings(true);
+                  }}
+                  className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                >
+                  <Settings className="w-3 h-3" />
+                  Configure Keys
+                </button>
+              </div>
+              <select
+                value={selectedEarningsStrategyModel || userSettings.aiConfig?.model || 'claude-3-7-sonnet-20250219'}
+                onChange={(e) => setSelectedEarningsStrategyModel(e.target.value)}
+                className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+              >
+                {POPULAR_AI_MODELS.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} ({m.provider.toUpperCase()})
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex flex-col gap-3">
               <button
                 onClick={() => {
                   setShowEarningsAnalysisStrategyModal(false);
-                  handleAnalyzeEarnings(strategyEarningsEvent);
+                  handleAnalyzeEarnings(strategyEarningsEvent, selectedEarningsStrategyModel || userSettings.aiConfig?.model);
                 }}
-                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 <Zap className="w-5 h-5" />
                 Generate Fresh Analysis
@@ -5550,7 +9966,7 @@ export default function App() {
                   setShowSavedAnalysesModal(true);
                   fetchSavedAnalyses(strategyEarningsEvent.symbol);
                 }}
-                className="w-full py-3 bg-white text-zinc-700 border border-zinc-200 rounded-xl font-semibold hover:bg-zinc-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+                className="w-full py-3 bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 rounded-xl font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
                 <FileText className="w-5 h-5" />
                 View Saved Notes
@@ -5558,7 +9974,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setShowEarningsAnalysisStrategyModal(false)}
-              className="mt-6 text-sm font-semibold text-zinc-400 hover:text-zinc-600 transition-colors"
+              className="mt-5 text-sm font-semibold text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
             >
               Cancel
             </button>
@@ -5567,8 +9983,14 @@ export default function App() {
       )}
 
       {showSavedAnalysesModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div 
+          className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm cursor-pointer"
+          onClick={() => setShowSavedAnalysesModal(false)}
+        >
+          <div 
+            className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[95vh] sm:max-h-[90vh] flex flex-col overflow-hidden cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between bg-white sticky top-0 z-10">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600">
@@ -5585,7 +10007,7 @@ export default function App() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex-1 overflow-auto p-6 bg-zinc-50 relative">
+            <div className="flex-1 overflow-auto p-6 bg-zinc-50 relative min-h-0 min-w-0">
               {isFetchingAnalyses ? (
                 <div className="flex flex-col items-center justify-center h-64">
                   <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mb-4" />
@@ -5636,7 +10058,7 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      <div className="prose prose-indigo prose-sm max-w-none">
+                      <div className="prose prose-indigo prose-sm max-w-none break-words overflow-x-auto">
                         <Markdown>{analysis.result}</Markdown>
                       </div>
                     </div>
@@ -5646,6 +10068,32 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showEditEarningsModal && (
+        <EditEarningsEventModal
+          isOpen={showEditEarningsModal}
+          onClose={() => {
+            setShowEditEarningsModal(false);
+            setEditingEarningsEvent(null);
+          }}
+          initialEvent={editingEarningsEvent}
+          holdings={holdings}
+          onSave={handleSaveCustomCalendarEvent}
+          onReset={handleResetCustomCalendarEvent}
+        />
+      )}
+
+      {editModalHolding && (
+        <EditHoldingModal
+          isOpen={!!editModalHolding}
+          onClose={() => setEditModalHolding(null)}
+          holding={editModalHolding}
+          transactions={allTransactions}
+          activeCurrency={activeCurrency}
+          onSave={handleSaveModalEdit}
+          onSyncWithLedger={handleSyncHoldingWithLedger}
+        />
       )}
 
     </div>
