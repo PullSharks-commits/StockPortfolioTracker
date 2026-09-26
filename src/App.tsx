@@ -2479,6 +2479,14 @@ export default function App() {
   const [showImportMenu, setShowImportMenu] = useState(false);
   const importMenuRef = useRef<HTMLDivElement>(null);
   const importBtnRef = useRef<HTMLButtonElement>(null);
+  const holdingsImportRef = useRef<HTMLInputElement>(null);
+  const transactionsImportRef = useRef<HTMLInputElement>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const exportBtnRef = useRef<HTMLButtonElement>(null);
+  const [exportWhat, setExportWhat] = useState<'holdings' | 'transactions'>('holdings');
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
+  const [exportScope, setExportScope] = useState<'all' | 'activeTab'>('all');
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -2497,6 +2505,14 @@ export default function App() {
         !importBtnRef.current.contains(event.target as Node)
       ) {
         setShowImportMenu(false);
+      }
+      if (
+        exportMenuRef.current &&
+        !exportMenuRef.current.contains(event.target as Node) &&
+        exportBtnRef.current &&
+        !exportBtnRef.current.contains(event.target as Node)
+      ) {
+        setShowExportMenu(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -6984,130 +7000,127 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             <div className="relative shrink-0">
               <button
                 ref={importBtnRef}
-                onClick={() => setShowImportMenu(!showImportMenu)}
+                onClick={() => { setShowImportMenu(!showImportMenu); setShowExportMenu(false); }}
                 className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors shadow-sm"
-                title="Import holdings from a brokerage statement (PDF or CSV)"
+                title="Import holdings, transaction history or a brokerage statement"
               >
-                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+                {isUploading || isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                 <span className="hidden sm:inline">Import</span>
               </button>
+              {/* File pickers stay mounted so an import keeps its file if the menu closes. */}
+              <input ref={holdingsImportRef} type="file" accept=".json" className="hidden" onChange={(e) => { setShowImportMenu(false); handleImport(e); }} />
+              <input ref={transactionsImportRef} type="file" accept=".json,.csv" className="hidden" onChange={(e) => { setShowImportMenu(false); handleImportTransactions(e); }} />
+              <input ref={fileInputRef} type="file" accept="application/pdf,text/csv" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
               {showImportMenu && (
-                <div ref={importMenuRef} className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-zinc-200 p-4 z-[150] animate-in fade-in zoom-in duration-200">
-                  <div className="flex items-center gap-2 mb-3">
-                    <UploadCloud className="w-4 h-4 text-zinc-400" />
-                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Import Portfolio</span>
-                  </div>
-                  <p className="text-sm text-zinc-500 mb-4">
-                    Upload a brokerage statement (PDF) or CSV (IBKR, CommSec, Stake) to automatically extract your holdings.
-                  </p>
-                  
-                  <div className="flex bg-zinc-100 p-1 rounded-lg mb-4">
-                    <button
-                      onClick={() => setImportMode('replace')}
-                      className={cn(
-                        "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                        importMode === 'replace' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
-                      )}
-                    >
-                      Replace All
+                <div ref={importMenuRef} className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-zinc-200 p-2 z-[150] animate-in fade-in zoom-in duration-200">
+                  <div className="px-2 pt-1 pb-2 text-xs font-bold text-zinc-400 uppercase tracking-widest">What are you importing?</div>
+                  <button onClick={() => holdingsImportRef.current?.click()} className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-50 flex items-start gap-3">
+                    <Briefcase className="w-4 h-4 mt-0.5 text-zinc-500 shrink-0" />
+                    <span>
+                      <span className="block text-sm font-medium text-zinc-900">Holdings file <span className="text-zinc-400 font-normal">· JSON</span></span>
+                      <span className="block text-xs text-zinc-500">A holdings export from this app. Replaces this tab's holdings.</span>
+                    </span>
+                  </button>
+                  <button onClick={() => transactionsImportRef.current?.click()} className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-50 flex items-start gap-3">
+                    <History className="w-4 h-4 mt-0.5 text-emerald-600 shrink-0" />
+                    <span>
+                      <span className="block text-sm font-medium text-zinc-900">Transaction history <span className="text-zinc-400 font-normal">· JSON or CSV</span></span>
+                      <span className="block text-xs text-zinc-500">Rebuilds holdings from trades; each row goes to its portfolio tab.</span>
+                    </span>
+                  </button>
+                  <div className="px-3 py-2.5 rounded-lg hover:bg-zinc-50">
+                    <button onClick={() => !isUploading && fileInputRef.current?.click()} disabled={isUploading} className="w-full text-left flex items-start gap-3 disabled:cursor-wait">
+                      {isUploading ? <Loader2 className="w-4 h-4 mt-0.5 text-indigo-500 animate-spin shrink-0" /> : <UploadCloud className="w-4 h-4 mt-0.5 text-indigo-500 shrink-0" />}
+                      <span>
+                        <span className="block text-sm font-medium text-zinc-900">Brokerage statement <span className="text-zinc-400 font-normal">· PDF or CSV</span></span>
+                        <span className="block text-xs text-zinc-500">{isUploading ? 'Analyzing with AI... this may take a few seconds.' : 'AI extracts your holdings (IBKR, CommSec, Stake, Schwab...).'}</span>
+                      </span>
                     </button>
-                    <button
-                      onClick={() => setImportMode('merge')}
-                      className={cn(
-                        "flex-1 py-1.5 text-xs font-semibold rounded-md transition-all",
-                        importMode === 'merge' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-550 hover:text-zinc-700"
-                      )}
-                    >
-                      Merge
-                    </button>
-                  </div>
-
-                  <div 
-                    className={cn(
-                      "border-2 border-dashed rounded-xl p-6 text-center transition-colors",
-                      isUploading ? "border-zinc-300 bg-zinc-50" : "border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 cursor-pointer"
-                    )}
-                    onClick={() => !isUploading && fileInputRef.current?.click()}
-                  >
-                    <input
-                      type="file"
-                      accept="application/pdf,text/csv"
-                      className="hidden"
-                      ref={fileInputRef}
-                      onChange={handleFileUpload}
-                      disabled={isUploading}
-                    />
-                    
-                    {isUploading ? (
-                      <div className="flex flex-col items-center">
-                        <Loader2 className="w-8 h-8 text-zinc-400 animate-spin mb-2" />
-                        <p className="text-sm font-medium text-zinc-700">Analyzing with AI...</p>
-                        <p className="text-xs text-zinc-500 mt-1">This may take a few seconds</p>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center">
-                        <FileText className="w-8 h-8 text-zinc-400 mb-2" />
-                        <p className="text-sm font-medium text-zinc-700">Click to upload PDF or CSV</p>
-                        <p className="text-xs text-zinc-500 mt-1">Supports IBKR, Schwab, etc.</p>
+                    <div className="mt-2 ml-7 flex bg-zinc-100 p-0.5 rounded-md w-fit">
+                      {(['replace', 'merge'] as const).map(mode => (
+                        <button
+                          key={mode}
+                          onClick={() => setImportMode(mode)}
+                          className={cn("px-2.5 py-1 text-[11px] font-semibold rounded transition-all", importMode === mode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}
+                        >
+                          {mode === 'replace' ? 'Replace all' : 'Merge'}
+                        </button>
+                      ))}
+                    </div>
+                    {uploadError && (
+                      <div className="mt-2 ml-7 text-xs text-rose-600 flex items-start gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <p>{uploadError}</p>
                       </div>
                     )}
                   </div>
-                  
-                  {uploadError && (
-                    <div className="mt-3 text-sm text-rose-600 flex items-start gap-1.5">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <p>{uploadError}</p>
+                </div>
+              )}
+            </div>
+            <div className="relative shrink-0">
+              <button
+                ref={exportBtnRef}
+                onClick={() => { setShowExportMenu(!showExportMenu); setShowImportMenu(false); }}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors shadow-sm"
+                title="Export holdings or transaction history"
+              >
+                <Download className="w-4 h-4" />
+                <span className="hidden sm:inline">Export</span>
+              </button>
+              {showExportMenu && (
+                <div ref={exportMenuRef} className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-zinc-200 p-4 z-[150] space-y-4 animate-in fade-in zoom-in duration-200">
+                  <div>
+                    <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Export</div>
+                    <div className="flex bg-zinc-100 p-0.5 rounded-md">
+                      {([['holdings', 'Holdings'], ['transactions', 'Transactions']] as const).map(([value, label]) => (
+                        <button key={value} onClick={() => setExportWhat(value)} className={cn("flex-1 py-1.5 text-xs font-semibold rounded transition-all", exportWhat === value ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}>{label}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Format</div>
+                    <div className="flex bg-zinc-100 p-0.5 rounded-md">
+                      {(['csv', 'json'] as const).map(value => (
+                        <button key={value} onClick={() => setExportFormat(value)} className={cn("flex-1 py-1.5 text-xs font-semibold rounded uppercase transition-all", exportFormat === value ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}>{value}</button>
+                      ))}
+                    </div>
+                  </div>
+                  {exportWhat === 'transactions' && (
+                    <div>
+                      <div className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Include</div>
+                      <div className="flex bg-zinc-100 p-0.5 rounded-md">
+                        {([['all', 'All tabs'], ['activeTab', 'This tab']] as const).map(([value, label]) => (
+                          <button key={value} onClick={() => setExportScope(value)} className={cn("flex-1 py-1.5 text-xs font-semibold rounded transition-all", exportScope === value ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}>{label}</button>
+                        ))}
+                      </div>
                     </div>
                   )}
+                  <p className="text-xs text-zinc-500">
+                    {exportWhat === 'holdings'
+                      ? exportFormat === 'csv'
+                        ? "This tab's holdings with live prices, returns and allocation, for spreadsheets."
+                        : "This tab's holdings as a backup you can import again."
+                      : exportFormat === 'csv'
+                        ? 'Every buy and sell, for spreadsheets. Can be imported again.'
+                        : 'Every buy and sell as a backup you can import again.'}
+                  </p>
+                  <button
+                    onClick={() => {
+                      setShowExportMenu(false);
+                      if (exportWhat === 'holdings') {
+                        if (exportFormat === 'csv') handleExportCSV(); else handleDownload();
+                      } else {
+                        handleDownloadTransactions(exportFormat, exportScope);
+                      }
+                    }}
+                    className="w-full py-2 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" /> Export
+                  </button>
                 </div>
               )}
             </div>
             <div className="flex bg-zinc-100 p-0.5 rounded-lg shrink-0">
-              <button
-                onClick={handleDownload}
-                className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all"
-                title="Download Portfolio JSON"
-              >
-                <Download className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={handleExportCSV}
-                className="p-1.5 text-zinc-600 hover:text-emerald-700 hover:bg-white hover:shadow-sm rounded-md transition-all flex items-center gap-1 text-xs font-semibold"
-                title="Export Portfolio as CSV File"
-              >
-                <FileText className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="hidden md:inline">CSV</span>
-              </button>
-              <label className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Portfolio JSON">
-                <Upload className="w-3.5 h-3.5" />
-                <input type="file" accept=".json" className="hidden" onChange={handleImport} />
-              </label>
-
-              <div className="w-[1px] bg-zinc-200 mx-1 my-1" />
-
-              <button
-                onClick={() => handleDownloadTransactions('csv', 'all')}
-                className="p-1.5 text-zinc-600 hover:text-emerald-700 hover:bg-white hover:shadow-sm rounded-md transition-all flex items-center gap-1 text-xs font-semibold"
-                title="Export Whole Transaction History (CSV)"
-              >
-                <History className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="hidden lg:inline text-[11px]">Tx CSV</span>
-              </button>
-              <button
-                onClick={() => handleDownloadTransactions('json', 'all')}
-                className="p-1.5 text-zinc-600 hover:text-indigo-700 hover:bg-white hover:shadow-sm rounded-md transition-all flex items-center gap-1 text-xs font-semibold"
-                title="Export Whole Transaction History (JSON)"
-              >
-                <Download className="w-3.5 h-3.5 text-indigo-600" />
-                <span className="hidden lg:inline text-[11px]">Tx JSON</span>
-              </button>
-              <label className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-white hover:shadow-sm rounded-md transition-all cursor-pointer" title="Import Transactions History (JSON/CSV)">
-                <FileText className="w-3.5 h-3.5 text-emerald-600" />
-                <input type="file" accept=".json,.csv" className="hidden" onChange={handleImportTransactions} />
-              </label>
-
-              <div className="w-[1px] bg-zinc-200 mx-1 my-1" />
-
               <button
                 onClick={() => setShowResetConfirm(true)}
                 disabled={isResetting || holdings.length === 0}
