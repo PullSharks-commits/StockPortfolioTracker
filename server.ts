@@ -660,36 +660,6 @@ async function startServer() {
     }
   }
 
-  app.get(['/api/bot/portfolio', '/api/portfolio/bot'], async (req, res) => {
-    try {
-      const asOf = new Date().toISOString();
-      if (req.query.download === 'true') {
-        res.setHeader('Content-Disposition', 'attachment; filename="bot_portfolio_export.json"');
-      }
-      res.json({
-        as_of: asOf,
-        market_open: true,
-        cash_usd: 4085.63,
-        position_value_usd: 6136.29,
-        total_value_usd: 10221.92,
-        positions: [
-          {
-            symbol: 'AMD',
-            qty: 3,
-            avg_cost: 617.85,
-            price: 629.26,
-            market_value: 1887.78,
-            unrealized_pnl: 34.23,
-            entry_date: '2026-09-22',
-            stale_price: false
-          }
-        ]
-      });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch bot portfolio' });
-    }
-  });
-
   app.get('/api/bot/openapi.json', (req, res) => {
     const specPath = path.resolve('tradingbot-portfolio-openapi.json');
     if (fs.existsSync(specPath)) {

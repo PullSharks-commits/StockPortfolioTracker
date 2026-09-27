@@ -285,8 +285,7 @@ table.
   logic; changes there are high-risk and slow to review.
 - **Legacy server routes from the AI Studio era:** `/api/portfolio*` (a
   separate SQLite portfolio unrelated to the Neon data), `/api/auth/url`,
-  `/auth/callback` and `express-session` (an unused Google OAuth flow), and
-  `/api/bot/portfolio` (hard-coded sample data, unauthenticated).
+  `/auth/callback` and `express-session` (an unused Google OAuth flow).
 - **User-supplied AI API keys** are saved in plain text in the user's
   `settings` document and sent from the browser with each AI request.
 - **No live sync between browsers:** `onSnapshot` only refreshes on this tab's
