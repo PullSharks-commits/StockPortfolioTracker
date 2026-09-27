@@ -23,6 +23,7 @@ import { registerBotRoutes } from './server-bot';
 import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
 import { registerPortfolioFundamentalsRoutes } from './server-portfolio-fundamentals';
+import { registerThesisTrackerRoutes } from './server-thesis-tracker';
 import { authedUser, createRequireUser } from './server-auth';
 import { Resend } from 'resend';
 
@@ -443,6 +444,7 @@ async function startServer() {
   const loadFundamentals = registerFundamentalsRoutes(app);
   registerPortfolioFundamentalsRoutes(app, loadFundamentals, loadCompanyMarketData, loadFxToUsd);
   registerSegmentRoutes(app);
+  registerThesisTrackerRoutes(app);
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.set('trust proxy', true);

@@ -5,7 +5,7 @@
 // Neon Auth user in the bearer JWT; that scoping replaces firestore.rules.
 //
 // Two kinds of collection:
-// - row collections (holdings, transactions, alerts, theses, thesisHistory): many typed rows per user,
+// - row collections (holdings, transactions, alerts): many typed rows per user,
 //   keyed by a uuid `id`, with a fixed field -> column mapping.
 // - document collections (settings, backups): one JSON document per user, keyed by
 //   the user id, stored whole in a `data` jsonb column.
@@ -14,7 +14,7 @@ import type { Express, Request, Response } from 'express';
 import pg from 'pg';
 import { authedUser, createRequireUser } from './server-auth';
 
-type FieldKind = 'text' | 'number' | 'boolean' | 'timestamp' | 'uuid' | 'json';
+type FieldKind = 'text' | 'number' | 'boolean' | 'timestamp' | 'uuid';
 
 interface RowCollection {
   kind: 'rows';
@@ -72,32 +72,6 @@ const COLLECTIONS: Record<string, CollectionDef> = {
     },
     createdField: ['createdAt', 'created_at'],
   },
-  theses: {
-    kind: 'rows',
-    table: 'theses',
-    fields: {
-      ticker: ['ticker', 'text'],
-      portfolioType: ['portfolio_type', 'text'],
-      summary: ['summary', 'text'],
-      rules: ['rules', 'json'],
-      manualStatus: ['manual_status', 'text'],
-      lastStatus: ['last_status', 'text'],
-      statusChangedAt: ['status_changed_at', 'timestamp'],
-      lastLoggedAt: ['last_logged_at', 'timestamp'],
-    },
-    updatedField: ['updatedAt', 'updated_at'],
-  },
-  thesisHistory: {
-    kind: 'rows',
-    table: 'thesis_history',
-    fields: {
-      thesisId: ['thesis_id', 'uuid'],
-      ticker: ['ticker', 'text'],
-      status: ['status', 'text'],
-      results: ['results', 'json'],
-    },
-    createdField: ['evaluatedAt', 'evaluated_at'],
-  },
   settings: { kind: 'doc', table: 'settings', updatedColumn: 'updated_at' },
   backups: { kind: 'doc', table: 'backups', updatedColumn: 'created_at' },
 };
@@ -119,11 +93,6 @@ function encode(kind: FieldKind, value: unknown) {
   }
   if (kind === 'boolean') return value === true || value === 'true';
   if (kind === 'uuid' && !UUID_RE.test(String(value))) throw new HttpError(400, `Invalid id: ${value}`);
-  if (kind === 'json') {
-    const text = JSON.stringify(value);
-    if (text.length > 100_000) throw new HttpError(400, 'Value too large');
-    return text;
-  }
   return value;
 }
 

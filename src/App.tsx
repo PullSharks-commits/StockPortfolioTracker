@@ -65,8 +65,8 @@ import { HoldingActions } from './components/HoldingActions';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
-import { evaluateRules, formatRuleValue, historySnapshot, isSegmentMetric, isWorse, shouldLog, ruleLabel, ruleUnit, STATUS_LABEL, thesisStatus, type MetricInputs, type RuleResult, type SegmentSeriesLite, type Thesis, type ThesisStatus } from './lib/thesis';
-import { ThesisEditor } from './components/ThesisEditor';
+import { RATING_EMOJI, RATING_LABEL, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
+import { ThesisPanel } from './components/ThesisPanel';
 import { ThesisBadge, THESIS_ROW_EDGE } from './components/ThesisBadge';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
@@ -1171,8 +1171,8 @@ const SortableHoldingRow = ({
               ticker={holding.ticker}
               onChart={() => setSelectedChartTicker(holding.ticker)}
               onAnalyze={holding.ticker !== 'CASH' ? () => promptAnalysisStrategy(holding.ticker) : undefined}
-              onThesis={holding.ticker !== 'CASH' && handleThesis ? () => handleThesis(holding.ticker) : undefined}
-              thesisLabel={hasThesis?.(holding.ticker) ? 'Edit thesis' : 'Add thesis'}
+              onThesis={handleThesis && hasThesis?.(holding.ticker) ? () => handleThesis(holding.ticker) : undefined}
+              thesisLabel="View thesis"
               onEdit={() => handleEditClick(holding)}
               onHistory={() => handleViewHistory(holding)}
               historyLabel={holding.ticker !== 'CASH' && holding.shares > 0 ? 'History & sell lots' : 'History'}
@@ -1999,8 +1999,10 @@ export default function App() {
     return { transactionsByHolding: byHolding, sortedTransactionsByHolding: sorted };
   }, [allTransactions]);
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
-  const [theses, setTheses] = useState<Thesis[]>([]);
-  const [thesisEditorTicker, setThesisEditorTicker] = useState<string | null>(null);
+  // Thesis Tracker (~/Code/ThesisTracker) ratings, read by the server; null when
+  // unavailable (not the owner, or no tracker on this machine).
+  const [thesisTracker, setThesisTracker] = useState<TrackerSnapshot | null>(null);
+  const [thesisPanelTicker, setThesisPanelTicker] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'global' | 'australia' | 'bot'>('global');
   
   const holdings = useMemo(() => {
@@ -3598,13 +3600,6 @@ export default function App() {
     });
 
     const alertsQ = query(collection(db, 'alerts'), where('userId', '==', user.uid));
-    const thesesUnsubscribe = onSnapshot(query(collection(db, 'theses'), where('userId', '==', user.uid)), (snapshot) => {
-      setTheses(snapshot.docs.map(d => {
-        const data = d.data() as any;
-        return { ...data, id: d.id, rules: Array.isArray(data.rules) ? data.rules : [], portfolioType: data.portfolioType || 'global' } as Thesis;
-      }));
-    });
-
     const alertsUnsubscribe = onSnapshot(alertsQ, (snapshot) => {
       const data = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -3637,7 +3632,6 @@ export default function App() {
       txUnsubscribe();
       backupUnsubscribe();
       alertsUnsubscribe();
-      thesesUnsubscribe();
       settingsUnsubscribe();
     };
   }, [user]);
@@ -5910,119 +5904,37 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     return out;
   }, [fundamentalsInputs]);
 
-  // Investment theses for the active tab, evaluated against the latest filings.
-  const activeTheses = useMemo(() => theses.filter(t => t.portfolioType === activeTab), [theses, activeTab]);
-  const thesisByTicker = useMemo(() => new Map(activeTheses.map(t => [t.ticker.toUpperCase(), t])), [activeTheses]);
-  const hasThesis = React.useCallback((ticker: string) => thesisByTicker.has(ticker.toUpperCase()), [thesisByTicker]);
-
-  // Segment series, fetched only for theses with segment rules.
-  const [thesisSegments, setThesisSegments] = useState<Record<string, SegmentSeriesLite[]>>({});
-  const segmentTickers = useMemo(
-    () => activeTheses.filter(t => t.rules.some(r => isSegmentMetric(r.metric))).map(t => t.ticker.toUpperCase()).sort().join(','),
-    [activeTheses]
-  );
+  // Thesis Tracker: load on sign-in, then every 10 minutes and whenever the window
+  // regains focus, so a new tracker run shows up without a reload.
   useEffect(() => {
-    if (!user || !segmentTickers) return;
-    const missing = segmentTickers.split(',').filter(t => !thesisSegments[t]);
+    if (!user) return;
     let cancelled = false;
-    (async () => {
-      for (const t of missing) {
-        try {
-          const res = await authedFetch('GET', `/api/company-segments/${encodeURIComponent(t)}`);
-          if (!cancelled) setThesisSegments(prev => ({ ...prev, [t]: res.series ?? [] }));
-        } catch { if (!cancelled) setThesisSegments(prev => ({ ...prev, [t]: [] })); }
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, segmentTickers]);
+    const load = () => authedFetch('GET', '/api/thesis-tracker')
+      .then((snap: TrackerSnapshot) => { if (!cancelled) setThesisTracker(snap.available ? snap : null); })
+      .catch(() => { if (!cancelled) setThesisTracker(null); });
+    load();
+    const timer = setInterval(load, 10 * 60_000);
+    const onFocus = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onFocus);
+    return () => { cancelled = true; clearInterval(timer); document.removeEventListener('visibilitychange', onFocus); };
+  }, [user]);
+  const trackerHoldings = thesisTracker?.holdings;
+  const hasThesis = React.useCallback((ticker: string) => !!trackerHoldings?.[ticker.toUpperCase()], [trackerHoldings]);
 
-  const thesisInputsFor = React.useCallback((ticker: string): MetricInputs => {
-    const t = ticker.toUpperCase();
-    const input = fundamentalsInputs.find(h => h.ticker.toUpperCase() === t);
-    const m = input ? holdingMultiples(input) : { ps: null, pe: null, fcfYield: null };
-    return { fundamentals: holdingFundamentals[t], ps: m.ps, pe: m.pe, fcfYield: m.fcfYield, segments: thesisSegments[t] };
-  }, [fundamentalsInputs, holdingFundamentals, thesisSegments]);
-
-  const thesisEvaluations = useMemo(() => {
-    const out = new Map<string, { thesis: Thesis; status: ThesisStatus | null; results: RuleResult[]; ready: boolean }>();
-    for (const thesis of activeTheses) {
-      const t = thesis.ticker.toUpperCase();
-      const inputs = thesisInputsFor(t);
-      const results = evaluateRules(thesis.rules, inputs);
-      // Only act on a status once the data it depends on has loaded.
-      const needsFundamentals = thesis.rules.some(r => !isSegmentMetric(r.metric));
-      const needsSegments = thesis.rules.some(r => isSegmentMetric(r.metric));
-      const ready = (!needsFundamentals || !!holdingFundamentals[t]) && (!needsSegments || !!thesisSegments[t]);
-      out.set(t, { thesis, status: thesisStatus(thesis, results), results, ready });
-    }
-    return out;
-  }, [activeTheses, thesisInputsFor, holdingFundamentals, thesisSegments]);
-
-  // After each check: alert once when a thesis gets worse (e.g. a new filing breaks a
-  // rule), remember the status, and log the check to the thesis history when the
-  // status changed or nothing was logged today.
-  const thesisStatusWrites = useRef(new Set<string>());
-  // What this browser just wrote, until the reloaded thesis reflects it.
-  const thesisWritten = useRef(new Map<string, Pick<Thesis, 'lastStatus' | 'lastLoggedAt'>>());
+  // Announce each new tracker run once per browser, with its rating changes.
   useEffect(() => {
-    if (!user) return;
-    for (const [ticker, ev] of thesisEvaluations) {
-      const { status, results, ready } = ev;
-      const thesis = { ...ev.thesis, ...thesisWritten.current.get(ev.thesis.id) };
-      if (!ready || !status || thesisStatusWrites.current.has(thesis.id) || !shouldLog(thesis, status)) continue;
-      thesisStatusWrites.current.add(thesis.id);
-      const now = new Date().toISOString();
-      const changed = status !== thesis.lastStatus;
-      if (isWorse(status, thesis.lastStatus)) {
-        const failing = results.filter(r => r.pass === false).map(r => {
-          const unit = ruleUnit(r.rule);
-          return `${ruleLabel(r.rule, thesisSegments[ticker])} is ${formatRuleValue(r.value!, unit)} (needs ${r.rule.op === '>=' ? 'at least' : 'at most'} ${formatRuleValue(r.rule.value, unit)})`;
-        });
-        toast.warning(`${ticker} thesis: ${STATUS_LABEL[status]}`, { description: failing.join('; '), duration: 15000 });
-        if (user.email) {
-          authedFetch('POST', '/api/send-email', {
-            subject: `${ticker} thesis is now ${STATUS_LABEL[status]}`,
-            text: `Your investment thesis for ${ticker} changed from ${STATUS_LABEL[thesis.lastStatus!]} to ${STATUS_LABEL[status]}.\n\n${failing.join('\n')}\n\nYour thesis: ${thesis.summary || '(no summary)'}`,
-          }).catch(err => console.error('Failed to send thesis alert email:', err));
-        }
-      }
-      thesisWritten.current.set(thesis.id, { lastStatus: status, lastLoggedAt: now });
-      Promise.all([
-        addDoc(collection(db, 'thesisHistory'), { thesisId: thesis.id, ticker, status, results: historySnapshot(results, thesisSegments[ticker]), userId: user.uid }),
-        updateDoc(doc(db, 'theses', thesis.id), { lastStatus: status, lastLoggedAt: now, ...(changed ? { statusChangedAt: now } : {}) }),
-      ])
-        .catch(err => { console.error('Failed to log thesis check', err); thesisWritten.current.delete(thesis.id); })
-        .finally(() => thesisStatusWrites.current.delete(thesis.id));
-    }
-  }, [thesisEvaluations, user, thesisSegments]);
-
-  const saveThesis = async (ticker: string, data: Pick<Thesis, 'summary' | 'rules' | 'manualStatus'>) => {
-    if (!user) return;
-    const t = ticker.toUpperCase();
-    // Store the status as of saving, so saving never triggers an alert by itself.
-    const status = thesisStatus(data, evaluateRules(data.rules, thesisInputsFor(t)));
-    // lastLoggedAt: null makes the next check log the edited rules to the history.
-    const payload = { ...data, lastStatus: status, statusChangedAt: new Date().toISOString(), lastLoggedAt: null };
-    const existing = thesisByTicker.get(t);
-    if (existing) thesisWritten.current.delete(existing.id);
-    try {
-      if (existing) await updateDoc(doc(db, 'theses', existing.id), payload);
-      else await addDoc(collection(db, 'theses'), { ...payload, ticker: t, portfolioType: activeTab, userId: user.uid });
-      toast.success(`Saved thesis for ${t}`);
-    } catch (err) {
-      toast.error(`Couldn't save the thesis: ${err instanceof Error ? err.message : err}`);
-      throw err;
-    }
-  };
-  const deleteThesis = async (ticker: string) => {
-    const existing = thesisByTicker.get(ticker.toUpperCase());
-    if (!existing) return false;
-    if (!(await confirmDialog({ title: `Delete the ${ticker} thesis?`, message: 'Its rules and summary will be removed.', confirmLabel: 'Delete', danger: true }))) return false;
-    await deleteDoc(doc(db, 'theses', existing.id));
-    toast.success(`Deleted thesis for ${ticker}`);
-    return true;
-  };
+    const latest = thesisTracker?.latestReport;
+    if (!latest) return;
+    let seen: string | null = null;
+    try { seen = localStorage.getItem('thesisTrackerSeen'); } catch { /* ignore */ }
+    if (seen === latest.date) return;
+    try { localStorage.setItem('thesisTrackerSeen', latest.date); } catch { /* ignore */ }
+    if (!seen || seen > latest.date) return; // first visit: nothing to announce
+    const changes = latest.changes.map(c => `${c.ticker} ${c.from ? RATING_EMOJI[c.from] : ''}→${c.to ? RATING_EMOJI[c.to] : ''}`);
+    const title = `Thesis Tracker ran (${fmtDay(latest.date)})`;
+    if (changes.length) toast.warning(title, { description: `Rating changes: ${changes.join(', ')}`, duration: 20000 });
+    else toast.info(title, { description: 'No rating changes.', duration: 8000 });
+  }, [thesisTracker?.latestReport]);
 
   const sortedHoldings = useMemo(() => {
     let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0).map(h => ({ ...h, ...fundamentalsByTicker[h.ticker] }));
@@ -6380,10 +6292,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
   const renderCell = (colId: string, holding: any) => {
     switch (colId) {
       case 'ticker': {
-        const thesisEval = thesisEvaluations.get(holding.ticker.toUpperCase());
-        const thesisState = thesisEval?.status ?? null;
-        const thesisTitle = thesisEval
-          ? [thesisEval.thesis.summary, thesisEval.thesis.lastLoggedAt ? `Last logged ${new Date(thesisEval.thesis.lastLoggedAt).toLocaleString()}` : '', ...thesisEval.results.map(r => `${r.pass === true ? '✓' : r.pass === false ? '✗' : '?'} ${ruleLabel(r.rule, thesisSegments[holding.ticker.toUpperCase()])} ${r.rule.op === '>=' ? '≥' : '≤'} ${formatRuleValue(r.rule.value, ruleUnit(r.rule))}${r.value != null ? ` (now ${formatRuleValue(r.value, ruleUnit(r.rule))})` : ''}`)].filter(Boolean).join('\n')
+        const tracked = trackerHoldings?.[holding.ticker.toUpperCase()];
+        const thesisState = tracked?.rating ?? null;
+        const thesisTitle = tracked
+          ? [`${thesisState ? RATING_EMOJI[thesisState] + ' ' + RATING_LABEL[thesisState] : ''}${tracked.reportDate ? ` · Thesis Tracker ${fmtDay(tracked.reportDate)}` : ''}`, tracked.reason?.replace(/\*\*/g, ''), 'Click for the full thesis'].filter(Boolean).join('\n')
           : undefined;
         return (
           <td key={colId} className={cn("px-3 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800", thesisState ? THESIS_ROW_EDGE[thesisState] : "shadow-[1px_0_0_0_rgb(228_228_231)]")} onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
@@ -6424,7 +6336,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 <div className="font-semibold text-zinc-900 group-hover/row:text-indigo-600 transition-colors flex items-center gap-1.5">
                   <span>{holding.ticker}</span>
                   {thesisState && (
-                    <ThesisBadge status={thesisState} title={thesisTitle} onClick={(e) => { e.stopPropagation(); setThesisEditorTicker(holding.ticker.toUpperCase()); }} />
+                    <ThesisBadge rating={thesisState} title={thesisTitle} onClick={(e) => { e.stopPropagation(); setThesisPanelTicker(holding.ticker.toUpperCase()); }} />
                   )}
                   {(holding.avg_price < 0 || holding.shares < 0) && (
                     <span className="px-1.5 py-0.5 text-[10px] bg-rose-100 text-rose-700 font-bold rounded">
@@ -7835,6 +7747,18 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           <div className="text-xs text-zinc-500 font-medium">
                             {sortedHoldings.length} {sortedHoldings.length === 1 ? 'Asset' : 'Assets'}
                           </div>
+                          {thesisTracker?.latestReport && (() => {
+                            const counts = { green: 0, yellow: 0, red: 0 };
+                            for (const h of sortedHoldings) { const r = trackerHoldings?.[h.ticker.toUpperCase()]?.rating; if (r) counts[r]++; }
+                            const changes = thesisTracker.latestReport!.changes;
+                            return (
+                              <div className="hidden sm:flex items-center gap-1.5 text-xs text-zinc-500 font-medium"
+                                title={`Thesis Tracker run ${fmtDay(thesisTracker.latestReport!.date)}${changes.length ? `\nChanged: ${changes.map(c => `${c.ticker} ${c.from ? RATING_EMOJI[c.from] : ''}→${c.to ? RATING_EMOJI[c.to] : ''}`).join(', ')}` : '\nNo rating changes'}\nClick a holding's badge for its thesis`}>
+                                <span>Thesis {fmtDay(thesisTracker.latestReport!.date)}:</span>
+                                <span>{RATING_EMOJI.green}{counts.green}</span><span>{RATING_EMOJI.yellow}{counts.yellow}</span><span>{RATING_EMOJI.red}{counts.red}</span>
+                              </div>
+                            );
+                          })()}
                         </div>
                         <div className="flex flex-wrap items-center gap-2 sm:gap-4 relative z-20 min-w-0">
                           <StockSearch onSelect={(ticker) => setSelectedChartTicker(ticker)} />
@@ -8168,7 +8092,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                     handleEditClick={handleEditClick}
                                     handleViewHistory={handleViewHistory}
                                     handleDelete={handleDelete}
-                                    handleThesis={setThesisEditorTicker}
+                                    handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
                                     hasThesis={hasThesis}
                                     isSortable={false}
                                   />
@@ -8315,7 +8239,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 handleEditClick={handleEditClick}
                                 handleViewHistory={handleViewHistory}
                                 handleDelete={handleDelete}
-                                handleThesis={setThesisEditorTicker}
+                                handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
                                 hasThesis={hasThesis}
                               />
                             ))}
@@ -8810,16 +8734,8 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       <Toaster position="top-right" richColors />
       <ConfirmDialogHost />
-      {thesisEditorTicker && (
-        <ThesisEditor
-          key={thesisEditorTicker}
-          ticker={thesisEditorTicker}
-          thesis={thesisByTicker.get(thesisEditorTicker) ?? null}
-          inputs={thesisInputsFor(thesisEditorTicker)}
-          onClose={() => setThesisEditorTicker(null)}
-          onSave={(data) => saveThesis(thesisEditorTicker, data)}
-          onDelete={() => deleteThesis(thesisEditorTicker)}
-        />
+      {thesisPanelTicker && trackerHoldings?.[thesisPanelTicker] && (
+        <ThesisPanel holding={trackerHoldings[thesisPanelTicker]} onClose={() => setThesisPanelTicker(null)} />
       )}
       {botCloseSymbol && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => !isClosingBotPosition && setBotCloseSymbol(null)}>

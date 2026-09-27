@@ -42,36 +42,6 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS alerts_user_idx ON alerts (user_id);
 
--- Investment thesis per holding: a summary plus measurable rules (jsonb), and the
--- last evaluated status so a worsening can be alerted once.
-CREATE TABLE IF NOT EXISTS theses (
-  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id           text NOT NULL,
-  ticker            text NOT NULL,
-  portfolio_type    text NOT NULL DEFAULT 'global',
-  summary           text,
-  rules             jsonb NOT NULL DEFAULT '[]',
-  manual_status     text,
-  last_status       text,
-  status_changed_at timestamptz,
-  updated_at        timestamptz NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS theses_user_ticker_idx ON theses (user_id, portfolio_type, ticker);
-ALTER TABLE theses ADD COLUMN IF NOT EXISTS last_logged_at timestamptz;
-
--- Each thesis check, logged when the status changes and otherwise at most daily:
--- status plus every rule's value at the time.
-CREATE TABLE IF NOT EXISTS thesis_history (
-  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id      text NOT NULL,
-  thesis_id    uuid NOT NULL REFERENCES theses(id) ON DELETE CASCADE,
-  ticker       text NOT NULL,
-  status       text NOT NULL,
-  results      jsonb NOT NULL DEFAULT '[]',
-  evaluated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS thesis_history_thesis_idx ON thesis_history (user_id, thesis_id, evaluated_at);
-
 -- One settings document per user (tabs, profile, AI config, layout, calendar...),
 -- stored whole as JSON because its shape changes with the UI.
 CREATE TABLE IF NOT EXISTS settings (

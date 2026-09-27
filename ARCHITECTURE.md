@@ -78,6 +78,7 @@ flowchart LR
 | `server-bot.ts` | Owner-only proxy to the TradingBot dashboard (`/api/bot/*`) |
 | `server-fundamentals.ts` | SEC EDGAR company financials, normalised and cached (`/api/fundamentals/:ticker`) |
 | `server-segments.ts` | Segment / product / geography revenue from filings' XBRL (`/api/company-segments/:ticker`) |
+| `server-thesis-tracker.ts` | Owner-only reader for the Thesis Tracker's thesis and report files (`/api/thesis-tracker`) |
 | `server-portfolio-fundamentals.ts` | Per-holding TTM figures and return attribution in one call (`/api/portfolio-fundamentals`) |
 | `db/schema.sql`, `db/migrate.ts` | Postgres schema and the migration runner |
 | `db/import-firebase-export.ts` | One-off copy of a user's Firebase JSON exports into Neon (dry-run by default) |
@@ -113,8 +114,6 @@ flowchart LR
 | `holdings` | typed rows | ticker, shares, avg_price, currency, `portfolio_type` (`global`/`australia`), `sort_order`, `updated_at` |
 | `transactions` | typed rows | buy/sell, shares, price, date, optional `lot_id`; FK to `holdings` with `ON DELETE CASCADE` |
 | `alerts` | typed rows | price alerts: ticker, condition, target price, triggered flag |
-| `theses` | typed rows | investment thesis per holding: summary, `rules` (jsonb), manual status, last evaluated status; unique per user/tab/ticker |
-| `thesis_history` | typed rows | logged thesis checks: status and each rule's value (jsonb); deleted with its thesis |
 | `company_fundamentals`, `company_segments` | shared cache | public SEC data, not per user (see Company fundamentals) |
 | `settings` | JSON document per user | tab settings, profile, AI config, table layout, calendar events (`data jsonb`) |
 | `backups` | JSON document per user | single-slot undo buffer for "Reset portfolio" |
@@ -210,25 +209,27 @@ answers bursts with a redirect loop).
   investment gains/losses (e.g. crypto treasuries) are excluded; lenders get no FCF
   or gross margin.
 
-## Thesis tracker
+## Thesis Tracker
 
-Each holding can have a thesis (⋯ menu → Add thesis): a summary plus measurable
-rules such as "revenue growth ≥ 15%", "Intelligent Cloud growth ≥ 25%" or
-"P/S ≤ 12×", checked in the browser (`src/lib/thesis.ts`) against the figures
-from the fundamentals and segments APIs. A failing **core** rule makes the thesis
-**Broken**, any other failing rule **At risk**; otherwise **On track** (or **No
-data**). Without rules the user sets the status by hand. The status colours the
-holding's Asset cell and shows as a badge with the rules in its tooltip.
+The owner's Thesis Tracker (`~/Code/ThesisTracker`, override with
+`THESIS_TRACKER_DIR`) is a separate daily Claude task that grades each holding's
+thesis 🟢/🟡/🔴 from news and earnings. It writes plain files, which
+`server-thesis-tracker.ts` parses on every request, so a new run shows up without
+any sync step:
 
-The last evaluated status is stored on the thesis. When a new evaluation is worse
-(e.g. a new filing breaks a rule) the app shows a toast and emails the user once;
-saving a thesis records its current status, so saving never alerts.
+- `theses/<TICKER>.md` gives the thesis, pillars, rubric, thesis log and
+  `current_rating`.
+- `reports/YYYY-MM-DD.md` gives each run's ratings table (rating, change, one-line
+  reason) and per-holding detail; the latest report's rating wins, and all reports
+  together are the rating history.
 
-Each check is also logged to `thesis_history` when the status changes, and
-otherwise at most once a day, so P/S moving with the share price doesn't flood
-it. The thesis editor shows the history as a status strip plus each check with
-its rules' values at the time. Checks run in the browser, so nothing is logged
-on days the app isn't opened.
+`GET /api/thesis-tracker` returns the snapshot and `/api/thesis-tracker/reports/:date`
+a full report; both are owner-only (verified `BOT_OWNER_EMAIL`), since the files are
+private notes. The app polls every 10 minutes and on focus. Each rating colours
+the holding's Asset cell with a badge (Intact / In question / Broken) that opens
+the thesis (`ThesisPanel`), the holdings header shows the run date and counts, and
+each new run is announced once per browser with its rating changes. The app never
+writes to the tracker; theses are edited in their files.
 
 ## Trading Bot tab
 
@@ -281,9 +282,10 @@ table.
 | `NEON_AUTH_BASE_URL` / `VITE_NEON_AUTH_URL` | Neon Auth base URL (server JWT checks / browser client) |
 | `FINNHUB_API_KEY` | Live price stream and some fallbacks |
 | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | AI features |
-| `RESEND_API_KEY` | `/api/send-email` (price and thesis alerts; signed-in users, sent only to their own verified address) |
+| `RESEND_API_KEY` | `/api/send-email` (price alerts; signed-in users, sent only to their own verified address) |
 | `BOT_DASHBOARD_URL`, `BOT_OWNER_EMAIL` | Trading Bot tab |
 | `SEC_USER_AGENT_EMAIL` | Contact email the SEC requires in the User-Agent (company fundamentals) |
+| `THESIS_TRACKER_DIR` | Optional path to the Thesis Tracker (default `~/Code/ThesisTracker`) |
 | `MYSQL_URL` | Optional MySQL instead of SQLite for the server's own cache tables |
 
 ## Known debt
