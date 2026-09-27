@@ -8,7 +8,7 @@
 // filed after it is already restated by the company and is left alone.
 
 // filed: latest filing the value came from; firstFiled: when it was first reported.
-export interface FundValue { value: number; currency: string | null; filed: string; firstFiled?: string }
+export interface FundValue { value: number; currency: string | null; filed: string; firstFiled?: string; tag?: string }
 export interface FundPeriod {
   key: string;
   fiscalYear: number;
@@ -29,6 +29,9 @@ export interface ValuationPoint {
   price: number;
   marketCap: number | null;
   enterpriseValue: number | null;
+  // Point-in-time inputs: split-adjusted diluted shares and TTM revenue known at `date`.
+  shares: number | null;
+  revenue: number | null;
   pe: number | null;
   evSales: number | null;
   pFcf: number | null;
@@ -111,7 +114,7 @@ export function computeValuation(annual: FundPeriod[], quarterly: FundPeriod[], 
     const netIncome = ttm('netIncome', date, q, a, statementCurrency);
     const fcf = ttm('freeCashFlow', date, q, a, statementCurrency);
     return {
-      date, price: close, marketCap, enterpriseValue,
+      date, price: close, marketCap, enterpriseValue, shares, revenue,
       pe: marketCap != null && netIncome && netIncome > 0 ? marketCap / netIncome : null,
       evSales: enterpriseValue != null && revenue && revenue > 0 ? enterpriseValue / revenue : null,
       pFcf: marketCap != null && fcf && fcf > 0 ? marketCap / fcf : null,

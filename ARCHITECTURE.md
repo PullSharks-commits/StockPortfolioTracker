@@ -76,6 +76,9 @@ flowchart LR
 | `server-auth.ts` | Neon Auth JWT verification middleware (JWKS, EdDSA) |
 | `server-data.ts` | Authenticated per-user data API over Postgres (`/api/data/*`) |
 | `server-bot.ts` | Owner-only proxy to the TradingBot dashboard (`/api/bot/*`) |
+| `server-fundamentals.ts` | SEC EDGAR company financials, normalised and cached (`/api/fundamentals/:ticker`) |
+| `server-segments.ts` | Segment / product / geography revenue from filings' XBRL (`/api/company-segments/:ticker`) |
+| `server-portfolio-fundamentals.ts` | Per-holding TTM figures and return attribution in one call (`/api/portfolio-fundamentals`) |
 | `db/schema.sql`, `db/migrate.ts` | Postgres schema and the migration runner |
 | `db/import-firebase-export.ts` | One-off copy of a user's Firebase JSON exports into Neon (dry-run by default) |
 | `src/main.tsx` | React entry point |
@@ -176,6 +179,34 @@ free Finnhub key allows one connection, so running another copy of the app
 with the same key makes them disconnect each other. Without a key, prices
 only update on page load and Refresh.
 
+## Company fundamentals
+
+Source is SEC EDGAR: the companies' own filed numbers, free, 10+ years deep.
+Only SEC registrants are covered (US listings and foreign filers of 20-F/40-F);
+exchange-suffixed tickers (`.AX`) and ETFs come back as "none" rather than being
+matched to an unrelated US ticker. Requests identify themselves with
+`SEC_USER_AGENT_EMAIL` and are spaced 150 ms apart (SEC allows ~10/second; it
+answers bursts with a redirect loop).
+
+- **Financials** (`server-fundamentals.ts`, table `company_fundamentals`, 24 h):
+  companyfacts XBRL normalised into annual and quarterly periods. Tags are chosen
+  per period, periods come from each value's own dates, restatements win, Q2/Q3
+  cash flows are derived from year-to-date figures and Q4 as the year minus Q1-Q3.
+  `firstFiled` on each value lets valuation history use only numbers known at the
+  time (`src/lib/valuation.ts`: point-in-time P/E, EV/Sales, P/FCF, split-adjusted).
+- **Segments** (`server-segments.ts`, table `company_segments`): the XBRL instance
+  of the last 8 10-Q/10-Ks (3 20-F/40-Fs), read for revenue and operating income by
+  segment, product and geography. Labels come from the filing's `MetaLinks.json`.
+  Rebuilt only when a new periodic filing appears.
+- **Portfolio** (`server-portfolio-fundamentals.ts` + `src/lib/portfolioFundamentals.ts`):
+  trailing-twelve-month figures per holding for the table columns (revenue growth,
+  operating margin, P/S, P/E) and the "Portfolio as One Company" widget, which adds
+  up each holding's stake (position value ÷ market cap) of its company's results.
+  Return attribution splits a share's price return exactly into revenue growth,
+  share count change and P/S change. Companies whose results are dominated by
+  investment gains/losses (e.g. crypto treasuries) are excluded; lenders get no FCF
+  or gross margin.
+
 ## Trading Bot tab
 
 A third tab backed by the separate TradingBot project's dashboard server
@@ -229,6 +260,7 @@ table.
 | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | AI features |
 | `RESEND_API_KEY` | `/api/send-email` |
 | `BOT_DASHBOARD_URL`, `BOT_OWNER_EMAIL` | Trading Bot tab |
+| `SEC_USER_AGENT_EMAIL` | Contact email the SEC requires in the User-Agent (company fundamentals) |
 | `MYSQL_URL` | Optional MySQL instead of SQLite for the server's own cache tables |
 
 ## Known debt

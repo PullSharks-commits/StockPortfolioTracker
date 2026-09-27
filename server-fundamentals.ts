@@ -29,8 +29,9 @@ interface MetricDef { kind: Kind; unit: 'currency' | 'shares' | 'perShare'; tags
 // Tags in priority order. us-gaap and ifrs-full names are listed together; each
 // value records which tag it came from.
 const METRICS: Record<string, MetricDef> = {
-  // Total revenues first: contract revenue can exclude e.g. a lender's interest income.
-  revenue: { kind: 'flow', unit: 'currency', tags: ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet', 'Revenue', 'RevenueFromContractsWithCustomers'] },
+  // Total revenues first: contract revenue can exclude e.g. a lender's interest income
+  // (SoFi tags its total only as RevenuesNetOfInterestExpense).
+  revenue: { kind: 'flow', unit: 'currency', tags: ['Revenues', 'RevenuesNetOfInterestExpense', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'RevenueFromContractWithCustomerIncludingAssessedTax', 'SalesRevenueNet', 'Revenue', 'RevenueFromContractsWithCustomers'] },
   costOfRevenue: { kind: 'flow', unit: 'currency', tags: ['CostOfRevenue', 'CostOfGoodsAndServicesSold', 'CostOfSales'] },
   grossProfit: { kind: 'flow', unit: 'currency', tags: ['GrossProfit'] },
   operatingIncome: { kind: 'flow', unit: 'currency', tags: ['OperatingIncomeLoss', 'ProfitLossFromOperatingActivities'] },
@@ -177,6 +178,25 @@ export function normalizeCompanyFacts(companyFacts: any) {
     }
   }
 
+  // 10-Qs report cash flows year-to-date (6 and 9 months), not per quarter. Derive
+  // a missing quarter as this quarter's YTD minus the previous quarter's YTD.
+  const ytd = (facts: Map<string, Fact>, fyStart: string, end: string) => {
+    for (const f of facts.values()) if (f.start && f.end === end && Math.abs(days(fyStart, f.start)) <= 5) return f;
+    return undefined;
+  };
+  for (const q of quarterly) {
+    if (!q.fiscalQuarter || q.fiscalQuarter === 1) continue;
+    const fy = fiscalYearOf(q.end);
+    const prevQ = quarterly.find(p => p.fiscalYear === q.fiscalYear && p.fiscalQuarter === q.fiscalQuarter! - 1);
+    if (!fy || !prevQ) continue;
+    for (const [name, def] of Object.entries(METRICS)) {
+      if (q.values[name] || def.kind !== 'flow' || def.unit !== 'currency') continue;
+      const cur = ytd(perMetric[name], fy.start, q.end), prev = ytd(perMetric[name], fy.start, prevQ.end);
+      if (!cur || !prev || cur.unit !== prev.unit || days(cur.start!, cur.end) < 150) continue;
+      q.values[name] = { ...toValue(cur, true), value: cur.val - prev.val };
+    }
+  }
+
   // Derive missing Q4 flow values: FY - (Q1 + Q2 + Q3), same currency only.
   for (const fy of annual) {
     const qs = [1, 2, 3].map(n => quarterly.find(q => q.fiscalYear === fy.fiscalYear && q.fiscalQuarter === n));
@@ -305,13 +325,14 @@ export async function lookupCik(ticker: string, contact: string) {
 
 const CACHE_TTL_MS = 24 * 3600_000;
 // Bump when the payload shape changes so older cached entries are rebuilt.
-const PAYLOAD_VERSION = 3;
+const PAYLOAD_VERSION = 4;
 
-export function registerFundamentalsRoutes(app: Express) {
+// Returns the cached loader so other routes (portfolio fundamentals) share its cache.
+export function registerFundamentalsRoutes(app: Express): ((ticker: string) => Promise<any>) | null {
   const connectionString = process.env.DATABASE_URL;
   const authBase = process.env.NEON_AUTH_BASE_URL;
   const contact = (process.env.SEC_USER_AGENT_EMAIL || '').trim();
-  if (!connectionString || !authBase) return;
+  if (!connectionString || !authBase) return null;
   const pool = new pg.Pool({ connectionString, max: 3 });
   const requireUser = createRequireUser(authBase);
   const inFlight = new Map<string, Promise<any>>();
@@ -352,17 +373,22 @@ export function registerFundamentalsRoutes(app: Express) {
     return payload;
   }
 
+  // Concurrent requests for the same ticker share one SEC fetch.
+  const loadShared = (ticker: string, force = false) => {
+    if (!inFlight.has(ticker)) inFlight.set(ticker, load(ticker, force).finally(() => inFlight.delete(ticker)));
+    return inFlight.get(ticker)!;
+  };
+
   app.get('/api/fundamentals/:ticker', requireUser, async (req: Request, res: Response) => {
     const ticker = String(req.params.ticker || '').trim().toUpperCase();
     if (!/^[A-Z0-9][A-Z0-9.\-]{0,14}$/.test(ticker)) return res.status(400).json({ error: 'Invalid ticker' });
-    const force = req.query.refresh === '1';
     try {
-      // Concurrent requests for the same ticker share one SEC fetch.
-      if (!inFlight.has(ticker)) inFlight.set(ticker, load(ticker, force).finally(() => inFlight.delete(ticker)));
-      res.json(await inFlight.get(ticker));
+      res.json(await loadShared(ticker, req.query.refresh === '1'));
     } catch (err: any) {
       console.error(`[fundamentals] ${ticker}:`, err?.message || err);
       res.status(502).json({ error: `Couldn't load fundamentals for ${ticker}: ${err?.message || err}` });
     }
   });
+
+  return (ticker: string) => loadShared(ticker);
 }

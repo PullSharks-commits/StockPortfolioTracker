@@ -22,6 +22,7 @@ import { registerDataRoutes } from './server-data';
 import { registerBotRoutes } from './server-bot';
 import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
+import { registerPortfolioFundamentalsRoutes } from './server-portfolio-fundamentals';
 import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -91,6 +92,54 @@ const METADATA_TTL = 24 * 60 * 60 * 1000; // 24 hours
 const EARNINGS_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
 // Helper for fetching with retry (useful for DNS and network issues)
+// Monthly prices (11 years), splits and reported EPS for the Company view and
+// return attribution. Cached for 6 hours.
+const companyMarketCache = new Map<string, { at: number; data: any }>();
+async function loadCompanyMarketData(symbol: string) {
+  const cached = companyMarketCache.get(symbol);
+  if (cached && Date.now() - cached.at < 6 * 3600_000) return cached.data;
+  const from = new Date();
+  from.setFullYear(from.getFullYear() - 11);
+  const [chart, summary]: any[] = await Promise.all([
+    yahooWithRetry(() => yahooFinance.chart(symbol, { period1: from, interval: '1mo', events: 'split' } as any, { validateResult: false })),
+    yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['earningsHistory'] }, { validateResult: false })).catch(() => null),
+  ]);
+  const data = {
+    symbol,
+    currency: chart?.meta?.currency ?? null,
+    monthly: (chart?.quotes ?? [])
+      .filter((q: any) => typeof q.close === 'number')
+      .map((q: any) => ({ date: new Date(q.date).toISOString().slice(0, 10), close: q.close })),
+    splits: (chart?.events?.splits ?? []).map((s: any) => ({
+      date: new Date(s.date).toISOString().slice(0, 10),
+      ratio: s.numerator / s.denominator,
+    })),
+    earnings: (summary?.earningsHistory?.history ?? [])
+      .filter((e: any) => e.quarter)
+      .map((e: any) => ({
+        quarterEnd: new Date(e.quarter).toISOString().slice(0, 10),
+        epsActual: e.epsActual ?? null,
+        epsEstimate: e.epsEstimate ?? null,
+        surprisePercent: e.surprisePercent ?? null,
+      })),
+  };
+  companyMarketCache.set(symbol, { at: Date.now(), data });
+  return data;
+}
+
+// Rate to convert `currency` into USD (e.g. CHF 1 = USD 1.25), for companies that
+// report in another currency. Cached for 6 hours.
+const fxToUsdCache = new Map<string, { at: number; rate: number | null }>();
+async function loadFxToUsd(currency: string): Promise<number | null> {
+  if (currency === 'USD') return 1;
+  const cached = fxToUsdCache.get(currency);
+  if (cached && Date.now() - cached.at < 6 * 3600_000) return cached.rate;
+  const quote: any = await yahooWithRetry(() => yahooFinance.quote(`${currency}USD=X`, {}, { validateResult: false })).catch(() => null);
+  const rate = typeof quote?.regularMarketPrice === 'number' && quote.regularMarketPrice > 0 ? quote.regularMarketPrice : null;
+  fxToUsdCache.set(currency, { at: Date.now(), rate });
+  return rate;
+}
+
 async function fetchWithRetry(url: string, options: any = {}, retries = 5, backoff = 2000): Promise<Response> {
   const retryableErrors = [
     'EAI_AGAIN',
@@ -390,7 +439,8 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   registerDataRoutes(app);
   registerBotRoutes(app);
-  registerFundamentalsRoutes(app);
+  const loadFundamentals = registerFundamentalsRoutes(app);
+  registerPortfolioFundamentalsRoutes(app, loadFundamentals, loadCompanyMarketData, loadFxToUsd);
   registerSegmentRoutes(app);
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -1679,40 +1729,11 @@ async function startServer() {
 
   // Market inputs for the Company view's valuation and earnings sections: monthly
   // (split-adjusted) closes for ~11 years, split events, and recent EPS vs estimates.
-  const companyMarketCache = new Map<string, { at: number; data: any }>();
   app.get('/api/company-market-data', async (req, res) => {
     const symbol = String(req.query.symbol || '').trim().toUpperCase();
     if (!/^[A-Z0-9^][A-Z0-9.\-=^]{0,14}$/.test(symbol)) return res.status(400).json({ error: 'Invalid symbol' });
-    const cached = companyMarketCache.get(symbol);
-    if (cached && Date.now() - cached.at < 6 * 3600_000) return res.json(cached.data);
     try {
-      const from = new Date();
-      from.setFullYear(from.getFullYear() - 11);
-      const [chart, summary]: any[] = await Promise.all([
-        yahooWithRetry(() => yahooFinance.chart(symbol, { period1: from, interval: '1mo', events: 'split' } as any, { validateResult: false })),
-        yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['earningsHistory'] }, { validateResult: false })).catch(() => null),
-      ]);
-      const data = {
-        symbol,
-        currency: chart?.meta?.currency ?? null,
-        monthly: (chart?.quotes ?? [])
-          .filter((q: any) => typeof q.close === 'number')
-          .map((q: any) => ({ date: new Date(q.date).toISOString().slice(0, 10), close: q.close })),
-        splits: (chart?.events?.splits ?? []).map((s: any) => ({
-          date: new Date(s.date).toISOString().slice(0, 10),
-          ratio: s.numerator / s.denominator,
-        })),
-        earnings: (summary?.earningsHistory?.history ?? [])
-          .filter((e: any) => e.quarter)
-          .map((e: any) => ({
-            quarterEnd: new Date(e.quarter).toISOString().slice(0, 10),
-            epsActual: e.epsActual ?? null,
-            epsEstimate: e.epsEstimate ?? null,
-            surprisePercent: e.surprisePercent ?? null,
-          })),
-      };
-      companyMarketCache.set(symbol, { at: Date.now(), data });
-      res.json(data);
+      res.json(await loadCompanyMarketData(symbol));
     } catch (error: any) {
       console.error(`[company-market-data] ${symbol}:`, error?.message || error);
       res.status(502).json({ error: `Couldn't load market data for ${symbol}` });

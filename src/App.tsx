@@ -41,7 +41,8 @@ import {
   serverTimestamp,
   User,
   handleFirestoreError,
-  OperationType
+  OperationType,
+  authedFetch
 } from './backend';
 import { StatCard, AllocationChart, PortfolioSummary, AnimatedCountUp } from './components/DashboardComponents';
 import { PerformanceChart } from './components/PerformanceChart';
@@ -62,6 +63,8 @@ import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
+import { PortfolioFundamentals } from './components/PortfolioFundamentals';
+import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
 import { calculateGroupFearGreed } from './lib/fearGreed';
@@ -139,7 +142,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'manual';
+type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'revenueGrowth' | 'operatingMargin' | 'psRatio' | 'peRatio' | 'manual';
 
 interface Holding {
   id: string;
@@ -1949,7 +1952,7 @@ const NO_TRANSACTIONS: never[] = [];
 
 // Holdings table: which columns survive longest when space runs out (first = most
 // important) and roughly how wide each needs to be, in px.
-const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'fearGreed'];
+const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'revenueGrowth', 'peRatio', 'psRatio', 'operatingMargin', 'fearGreed'];
 // Always shown (unless the user hides them), even if a narrow screen then has to
 // scroll sideways - a table with only the Asset column isn't useful.
 const HOLDINGS_ALWAYS_SHOWN = new Set(['ticker', 'currentValue', 'dayChange', 'profitLoss']);
@@ -1958,7 +1961,7 @@ const columnPriority = (colId: string) => {
   return i === -1 ? HOLDINGS_COLUMN_PRIORITY.length : i;
 };
 // Minimum widths measured with real data (headers may wrap), plus a small margin.
-const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 131, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124 };
+const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 131, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124, revenueGrowth: 112, operatingMargin: 112, psRatio: 84, peRatio: 84 };
 const HOLDINGS_DRAG_COLUMN_WIDTH = 40;
 const HOLDINGS_ACTIONS_COLUMN_WIDTH = 88;
 
@@ -2124,6 +2127,7 @@ export default function App() {
       transactions: 3,
       upload: 1,
       sectorHeatmap: 3,
+      portfolioFundamentals: 3,
     };
     const saved = localStorage.getItem('widgetSizes');
     if (saved) {
@@ -2196,6 +2200,10 @@ export default function App() {
       'priceAlerts',
       'sectorHeatmap',
     ];
+    // Widgets introduced later are added once to saved layouts (after Holdings), so a
+    // user who removes one doesn't get it back.
+    const LATER_WIDGETS = [{ id: 'portfolioFundamentals', after: 'watchlist' }];
+    defaultOrder.splice(defaultOrder.indexOf('watchlist') + 1, 0, 'portfolioFundamentals');
     let order = [...defaultOrder];
     if (saved) {
       try {
@@ -2208,11 +2216,24 @@ export default function App() {
             const hIdx = parsed.indexOf('holdings');
             parsed.splice(hIdx + 1, 0, 'watchlist');
           }
+          let introduced: string[] = [];
+          try { introduced = JSON.parse(localStorage.getItem('widgetsIntroduced') || '[]'); } catch { /* ignore */ }
+          for (const w of LATER_WIDGETS) {
+            if (introduced.includes(w.id)) continue;
+            if (!parsed.includes(w.id)) {
+              const i = parsed.indexOf(w.after);
+              parsed.splice(i === -1 ? parsed.length : i + 1, 0, w.id);
+            }
+            introduced.push(w.id);
+          }
+          try { localStorage.setItem('widgetsIntroduced', JSON.stringify(introduced)); } catch { /* ignore */ }
           order = parsed;
         }
       } catch (e) {
         console.error('Failed to parse widgetOrder from localStorage', e);
       }
+    } else {
+      try { localStorage.setItem('widgetsIntroduced', JSON.stringify(LATER_WIDGETS.map(w => w.id))); } catch { /* ignore */ }
     }
     return order;
   });
@@ -2284,6 +2305,7 @@ export default function App() {
     { id: 'transactions', label: 'Transactions Registry' },
     { id: 'priceAlerts', label: 'Price Alerts' },
     { id: 'sectorHeatmap', label: 'Sector Heatmap' },
+    { id: 'portfolioFundamentals', label: 'Portfolio as One Company' },
   ];
 
   const removeWidget = (id: string) => {
@@ -2368,7 +2390,7 @@ export default function App() {
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [fitColumns, setFitColumns] = useState(true);
   const [columnOrder, setColumnOrder] = useState<string[]>([
-    'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap'
+    'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
   ]);
 
   const [holdingsTableWidth, setHoldingsTableWidth] = useState(0);
@@ -2545,6 +2567,10 @@ export default function App() {
                 loadedOrder.push('growthMultiple');
               }
             }
+            // Columns added after the layout was saved go at the end.
+            for (const col of ['revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio']) {
+              if (!loadedOrder.includes(col)) loadedOrder.push(col);
+            }
             setColumnOrder(loadedOrder);
           }
           if (data.tableLayout.tableGrouping) setTableGrouping(data.tableLayout.tableGrouping);
@@ -2572,7 +2598,7 @@ export default function App() {
           },
           tableLayout: {
             columnOrder: [
-              'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap'
+              'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
             ],
             tableGrouping: 'none',
             sortConfig: { key: 'currentValue', direction: 'desc' }
@@ -5828,8 +5854,52 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     return stats;
   }, [holdings, allTransactions, transactionsByHolding, sortedTransactionsByHolding, quotes, activeCurrency, user]);
 
+  // Company fundamentals for the active tab's SEC-filing holdings (/api/portfolio-fundamentals):
+  // table columns and the "Portfolio as One Company" widget.
+  const [holdingFundamentals, setHoldingFundamentals] = useState<Record<string, HoldingFundamentals>>({});
+  const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
+  const [fundamentalsError, setFundamentalsError] = useState<string | null>(null);
+  const fundamentalsTickers = useMemo(
+    () => [...new Set(holdings.filter(h => h.shares !== 0).map(h => h.ticker.toUpperCase()))]
+      .filter(t => t !== 'CASH' && !t.includes('.')).sort().join(','),
+    [holdings]
+  );
+  useEffect(() => {
+    if (!user || !fundamentalsTickers) return;
+    const missing = fundamentalsTickers.split(',').filter(t => !holdingFundamentals[t]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    setFundamentalsLoading(true);
+    setFundamentalsError(null);
+    authedFetch('POST', '/api/portfolio-fundamentals', { tickers: missing })
+      .then((res: { results: Record<string, HoldingFundamentals> }) => { if (!cancelled) setHoldingFundamentals(prev => ({ ...prev, ...res.results })); })
+      .catch(err => { if (!cancelled) setFundamentalsError(err instanceof Error ? err.message : String(err)); })
+      .finally(() => { if (!cancelled) setFundamentalsLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, fundamentalsTickers]);
+
+  const fundamentalsInputs = useMemo<HoldingInput[]>(() => {
+    const usdToDisplay = getExchangeRate('USD', activeCurrency, quotes);
+    return portfolioStats.enrichedHoldings.filter(h => h.shares !== 0 && (h.currentValue ?? 0) > 0).map(h => ({
+      ticker: h.ticker,
+      value: h.currentValue ?? 0,
+      marketCap: (h as any).marketCap ?? null,
+      fundamentals: h.ticker === 'CASH' ? { ticker: 'CASH', status: 'none', reason: 'Cash' } : holdingFundamentals[h.ticker.toUpperCase()],
+      usdToDisplay,
+    }));
+  }, [portfolioStats.enrichedHoldings, holdingFundamentals, activeCurrency, quotes]);
+  const fundamentalsByTicker = useMemo(() => {
+    const out: Record<string, { revenueGrowth: number | null; operatingMargin: number | null; psRatio: number | null; peRatio: number | null }> = {};
+    for (const h of fundamentalsInputs) {
+      const f = h.fundamentals, m = holdingMultiples(h);
+      out[h.ticker] = { revenueGrowth: f?.revenueGrowth ?? null, operatingMargin: f?.operatingMargin ?? null, psRatio: m.ps, peRatio: m.pe };
+    }
+    return out;
+  }, [fundamentalsInputs]);
+
   const sortedHoldings = useMemo(() => {
-    let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0);
+    let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0).map(h => ({ ...h, ...fundamentalsByTicker[h.ticker] }));
     
     if (filterGroup) {
       if (chartView === 'asset') {
@@ -5856,7 +5926,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       });
     }
     return sortableItems;
-  }, [portfolioStats.enrichedHoldings, sortConfig, filterGroup, chartView, metadata]);
+  }, [portfolioStats.enrichedHoldings, fundamentalsByTicker, sortConfig, filterGroup, chartView, metadata]);
 
   const sortedWatchlist = useMemo(() => {
     return portfolioStats.enrichedHoldings
@@ -6114,6 +6184,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     { id: 'growthMultiple', label: 'Growth Multiple', align: 'right' as const, sortKey: 'growthMultiple' as SortKey },
     { id: 'realizedProfitLoss', label: `Realized P&L (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'realizedProfitLoss' as SortKey },
     { id: 'marketCap', label: `Market Cap (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'marketCap' as SortKey },
+    { id: 'revenueGrowth', label: 'Revenue Growth', align: 'right' as const, sortKey: 'revenueGrowth' as SortKey },
+    { id: 'operatingMargin', label: 'Op. Margin', align: 'right' as const, sortKey: 'operatingMargin' as SortKey },
+    { id: 'psRatio', label: 'P/S', align: 'right' as const, sortKey: 'psRatio' as SortKey },
+    { id: 'peRatio', label: 'P/E', align: 'right' as const, sortKey: 'peRatio' as SortKey },
   ];
 
   const toggleColumnHidden = (colId: string) => {
@@ -6505,6 +6579,26 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             ) : '-'}
           </td>
         );
+      case 'revenueGrowth':
+      case 'operatingMargin': {
+        const v = (holding as any)[colId] as number | null | undefined;
+        return (
+          <td key={colId} className={cn("px-3 py-4 text-right font-mono text-sm", v == null ? "text-zinc-400" : colId === 'revenueGrowth' ? (v >= 0 ? "text-emerald-600" : "text-rose-600") : v < 0 ? "text-rose-600" : "")}
+            title={colId === 'revenueGrowth' ? 'Revenue, last twelve months vs the twelve before (SEC filings)' : 'Operating income ÷ revenue, last twelve months (SEC filings)'}>
+            {v == null ? '-' : `${colId === 'revenueGrowth' && v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`}
+          </td>
+        );
+      }
+      case 'psRatio':
+      case 'peRatio': {
+        const v = (holding as any)[colId] as number | null | undefined;
+        return (
+          <td key={colId} className={cn("px-3 py-4 text-right font-mono text-sm", v == null && "text-zinc-400")}
+            title={colId === 'peRatio' ? 'Market cap ÷ net income, last twelve months (blank if loss-making)' : 'Market cap ÷ revenue, last twelve months'}>
+            {v == null ? '-' : `${v.toFixed(1)}×`}
+          </td>
+        );
+      }
       default:
         return null;
     }
@@ -8538,6 +8632,32 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         activeTab={activeTab}
                         fearGreedData={fearGreedData}
                       />
+                    </SortableWidget>
+                  );
+                }
+
+                if (widgetId === 'portfolioFundamentals') {
+                  return (
+                    <SortableWidget key="portfolioFundamentals" id="portfolioFundamentals" className={cn("p-6 flex flex-col", getWidgetClass('portfolioFundamentals'))} onDoubleClick={() => toggleWidgetSize('portfolioFundamentals')}>
+                      <div className="flex items-center justify-between mb-3 relative z-20">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                          <Briefcase className="w-5 h-5 text-zinc-400" />
+                          Portfolio as One Company
+                        </h2>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => toggleWidgetSize('portfolioFundamentals')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all relative z-20" title="Resize Widget">
+                            {(widgetSizes.portfolioFundamentals || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button
+                            onClick={() => removeWidget('portfolioFundamentals')}
+                            className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                            title="Remove widget"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <PortfolioFundamentals holdings={fundamentalsInputs} currency={activeCurrency} loading={fundamentalsLoading} error={fundamentalsError} />
                     </SortableWidget>
                   );
                 }
