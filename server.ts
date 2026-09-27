@@ -23,6 +23,7 @@ import { registerBotRoutes } from './server-bot';
 import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
 import { registerPortfolioFundamentalsRoutes } from './server-portfolio-fundamentals';
+import { authedUser, createRequireUser } from './server-auth';
 import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -610,12 +611,21 @@ async function startServer() {
   });
 
   // Email route using Resend
-  app.post('/api/send-email', async (req, res) => {
-    const { to, subject, text } = req.body;
-    
-    if (!to || !subject || !text) {
-      return res.status(400).json({ error: 'Missing to, subject, or text fields' });
+  // Alert emails. Signed-in users only, and only ever to their own verified address -
+  // otherwise this would relay mail to anyone through our Resend account.
+  const requireUserForEmail = process.env.NEON_AUTH_BASE_URL
+    ? createRequireUser(process.env.NEON_AUTH_BASE_URL)
+    : (_req: any, res: any) => res.status(503).json({ error: 'Auth is not configured' });
+  app.post('/api/send-email', requireUserForEmail, async (req, res) => {
+    const { subject, text } = req.body ?? {};
+    const user = authedUser(req);
+    if (!subject || !text) {
+      return res.status(400).json({ error: 'Missing subject or text' });
     }
+    if (!user?.email || !user.emailVerified) {
+      return res.status(403).json({ error: 'Your account has no verified email address' });
+    }
+    const to = user.email;
 
     if (!process.env.RESEND_API_KEY) {
       console.warn('Cannot send email: RESEND_API_KEY is missing from environment variables');

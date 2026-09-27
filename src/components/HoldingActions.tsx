@@ -5,11 +5,13 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Edit2, FileText, LineChart, MoreHorizontal, Trash2, Zap } from 'lucide-react';
+import { Edit2, FileText, LineChart, MoreHorizontal, Target, Trash2, Zap } from 'lucide-react';
 
 export interface HoldingActionHandlers {
   onChart?: () => void;
   onAnalyze?: () => void;
+  onThesis?: () => void;
+  thesisLabel?: string;
   onEdit?: () => void;
   onHistory?: () => void;
   historyLabel?: string;
@@ -32,6 +34,7 @@ export function HoldingActions({ ticker, ...h }: HoldingActionHandlers & { ticke
 
   const items: MenuItem[] = [
     h.onAnalyze && { label: 'Analyze with AI', icon: <Zap className="w-4 h-4" />, onSelect: h.onAnalyze },
+    h.onThesis && { label: h.thesisLabel || 'Thesis', icon: <Target className="w-4 h-4" />, onSelect: h.onThesis },
     h.onEdit && { label: 'Edit holding', icon: <Edit2 className="w-4 h-4" />, onSelect: h.onEdit },
     h.onHistory && { label: h.historyLabel || 'History', icon: <FileText className="w-4 h-4" />, onSelect: h.onHistory },
     h.onDelete && { label: h.deleteLabel || 'Delete', icon: <Trash2 className="w-4 h-4" />, onSelect: h.onDelete, danger: true },
