@@ -3,6 +3,7 @@
 // Edit the thesis in the tracker's theses/<TICKER>.md; the app picks changes up.
 
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ExternalLink, FileText, Loader2, X } from 'lucide-react';
@@ -60,8 +61,10 @@ export function ThesisPanel({ holding, onClose }: { holding: TrackerHolding; onC
   const history = [...holding.history].reverse();
   const strip = holding.history.slice(-90);
 
-  return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-3" onMouseDown={onClose}>
+  // Portalled to <body>: an ancestor with a transform (the draggable widgets) would
+  // otherwise turn `fixed` into "fixed to that widget" and clip the panel.
+  return createPortal(
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/40 p-3" onMouseDown={onClose}>
       <div ref={scrollRef} className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-zinc-900 shadow-xl" onMouseDown={e => e.stopPropagation()} role="dialog" aria-label={`Thesis for ${holding.ticker}`}>
         <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-zinc-100 dark:border-zinc-800 sticky top-0 bg-white dark:bg-zinc-900 z-10">
           <div className="min-w-0">
@@ -165,6 +168,7 @@ export function ThesisPanel({ holding, onClose }: { holding: TrackerHolding; onC
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
