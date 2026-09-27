@@ -56,3 +56,12 @@ CREATE TABLE IF NOT EXISTS backups (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE backups ADD COLUMN IF NOT EXISTS data jsonb NOT NULL DEFAULT '{}';
+
+-- Company fundamentals from SEC EDGAR, normalised (server-fundamentals.ts).
+-- Shared by all users: this is public company data, not personal data.
+CREATE TABLE IF NOT EXISTS company_fundamentals (
+  ticker     text PRIMARY KEY,
+  source     text NOT NULL,
+  payload    jsonb NOT NULL,
+  fetched_at timestamptz NOT NULL DEFAULT now()
+);
