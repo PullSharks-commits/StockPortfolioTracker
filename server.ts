@@ -2466,7 +2466,9 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      // Also answer on the Mac's Tailscale name (https://<machine>.<tailnet>.ts.net),
+      // for opening the app from a phone.
+      server: { middlewareMode: true, allowedHosts: ['.ts.net'] },
       appType: 'spa',
     });
     app.use(vite.middlewares);
