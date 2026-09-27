@@ -9,6 +9,7 @@ import {
   segmentMetricKey, thesisStatus, type MetricInputs, type SegmentSeriesLite, type Thesis, type ThesisRule, type ThesisStatus,
 } from '../lib/thesis';
 import { ThesisBadge } from './ThesisBadge';
+import { ThesisHistory } from './ThesisHistory';
 
 const newId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
 
@@ -194,6 +195,12 @@ export function ThesisEditor({ ticker, thesis, inputs, onClose, onSave, onDelete
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+          {thesis && (
+            <div>
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">History</span>
+              <div className="mt-2"><ThesisHistory thesisId={thesis.id} /></div>
             </div>
           )}
         </div>

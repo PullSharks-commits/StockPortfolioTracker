@@ -65,7 +65,7 @@ import { HoldingActions } from './components/HoldingActions';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
-import { evaluateRules, formatRuleValue, isSegmentMetric, isWorse, ruleLabel, ruleUnit, STATUS_LABEL, thesisStatus, type MetricInputs, type RuleResult, type SegmentSeriesLite, type Thesis, type ThesisStatus } from './lib/thesis';
+import { evaluateRules, formatRuleValue, historySnapshot, isSegmentMetric, isWorse, shouldLog, ruleLabel, ruleUnit, STATUS_LABEL, thesisStatus, type MetricInputs, type RuleResult, type SegmentSeriesLite, type Thesis, type ThesisStatus } from './lib/thesis';
 import { ThesisEditor } from './components/ThesisEditor';
 import { ThesisBadge, THESIS_ROW_EDGE } from './components/ThesisBadge';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
@@ -5959,15 +5959,21 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     return out;
   }, [activeTheses, thesisInputsFor, holdingFundamentals, thesisSegments]);
 
-  // Alert once when a thesis gets worse (e.g. a new filing breaks a rule), and remember
-  // the latest status either way.
+  // After each check: alert once when a thesis gets worse (e.g. a new filing breaks a
+  // rule), remember the status, and log the check to the thesis history when the
+  // status changed or nothing was logged today.
   const thesisStatusWrites = useRef(new Set<string>());
+  // What this browser just wrote, until the reloaded thesis reflects it.
+  const thesisWritten = useRef(new Map<string, Pick<Thesis, 'lastStatus' | 'lastLoggedAt'>>());
   useEffect(() => {
     if (!user) return;
     for (const [ticker, ev] of thesisEvaluations) {
-      const { thesis, status, results, ready } = ev;
-      if (!ready || !status || status === thesis.lastStatus || thesisStatusWrites.current.has(thesis.id)) continue;
+      const { status, results, ready } = ev;
+      const thesis = { ...ev.thesis, ...thesisWritten.current.get(ev.thesis.id) };
+      if (!ready || !status || thesisStatusWrites.current.has(thesis.id) || !shouldLog(thesis, status)) continue;
       thesisStatusWrites.current.add(thesis.id);
+      const now = new Date().toISOString();
+      const changed = status !== thesis.lastStatus;
       if (isWorse(status, thesis.lastStatus)) {
         const failing = results.filter(r => r.pass === false).map(r => {
           const unit = ruleUnit(r.rule);
@@ -5981,8 +5987,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           }).catch(err => console.error('Failed to send thesis alert email:', err));
         }
       }
-      updateDoc(doc(db, 'theses', thesis.id), { lastStatus: status, statusChangedAt: new Date().toISOString() })
-        .catch(err => console.error('Failed to save thesis status', err))
+      thesisWritten.current.set(thesis.id, { lastStatus: status, lastLoggedAt: now });
+      Promise.all([
+        addDoc(collection(db, 'thesisHistory'), { thesisId: thesis.id, ticker, status, results: historySnapshot(results, thesisSegments[ticker]), userId: user.uid }),
+        updateDoc(doc(db, 'theses', thesis.id), { lastStatus: status, lastLoggedAt: now, ...(changed ? { statusChangedAt: now } : {}) }),
+      ])
+        .catch(err => { console.error('Failed to log thesis check', err); thesisWritten.current.delete(thesis.id); })
         .finally(() => thesisStatusWrites.current.delete(thesis.id));
     }
   }, [thesisEvaluations, user, thesisSegments]);
@@ -5992,8 +6002,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     const t = ticker.toUpperCase();
     // Store the status as of saving, so saving never triggers an alert by itself.
     const status = thesisStatus(data, evaluateRules(data.rules, thesisInputsFor(t)));
-    const payload = { ...data, lastStatus: status, statusChangedAt: new Date().toISOString() };
+    // lastLoggedAt: null makes the next check log the edited rules to the history.
+    const payload = { ...data, lastStatus: status, statusChangedAt: new Date().toISOString(), lastLoggedAt: null };
     const existing = thesisByTicker.get(t);
+    if (existing) thesisWritten.current.delete(existing.id);
     try {
       if (existing) await updateDoc(doc(db, 'theses', existing.id), payload);
       else await addDoc(collection(db, 'theses'), { ...payload, ticker: t, portfolioType: activeTab, userId: user.uid });
@@ -6371,7 +6383,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         const thesisEval = thesisEvaluations.get(holding.ticker.toUpperCase());
         const thesisState = thesisEval?.status ?? null;
         const thesisTitle = thesisEval
-          ? [thesisEval.thesis.summary, ...thesisEval.results.map(r => `${r.pass === true ? '✓' : r.pass === false ? '✗' : '?'} ${ruleLabel(r.rule, thesisSegments[holding.ticker.toUpperCase()])} ${r.rule.op === '>=' ? '≥' : '≤'} ${formatRuleValue(r.rule.value, ruleUnit(r.rule))}${r.value != null ? ` (now ${formatRuleValue(r.value, ruleUnit(r.rule))})` : ''}`)].filter(Boolean).join('\n')
+          ? [thesisEval.thesis.summary, thesisEval.thesis.lastLoggedAt ? `Last logged ${new Date(thesisEval.thesis.lastLoggedAt).toLocaleString()}` : '', ...thesisEval.results.map(r => `${r.pass === true ? '✓' : r.pass === false ? '✗' : '?'} ${ruleLabel(r.rule, thesisSegments[holding.ticker.toUpperCase()])} ${r.rule.op === '>=' ? '≥' : '≤'} ${formatRuleValue(r.rule.value, ruleUnit(r.rule))}${r.value != null ? ` (now ${formatRuleValue(r.value, ruleUnit(r.rule))})` : ''}`)].filter(Boolean).join('\n')
           : undefined;
         return (
           <td key={colId} className={cn("px-3 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800", thesisState ? THESIS_ROW_EDGE[thesisState] : "shadow-[1px_0_0_0_rgb(228_228_231)]")} onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>

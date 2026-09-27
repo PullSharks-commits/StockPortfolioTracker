@@ -31,6 +31,25 @@ export interface Thesis {
   manualStatus?: ThesisStatus | null;
   lastStatus?: ThesisStatus | null;
   statusChangedAt?: string | null;
+  lastLoggedAt?: string | null;   // last history entry
+}
+
+// One logged check: the status and each rule as it stood at the time. Rules are
+// copied (label, threshold) so the entry still reads correctly after edits.
+export interface HistoryRule { ruleId: string; label: string; op: RuleOp; threshold: number; unit: string; value: number | null; pass: boolean | null; core: boolean }
+export interface HistoryEntry { id: string; thesisId: string; ticker: string; status: ThesisStatus; results: HistoryRule[]; evaluatedAt: string }
+
+export function historySnapshot(results: RuleResult[], segments?: SegmentSeriesLite[]): HistoryRule[] {
+  return results.map(({ rule, value, pass }) => ({
+    ruleId: rule.id, label: ruleLabel(rule, segments), op: rule.op, threshold: rule.value, unit: ruleUnit(rule),
+    value: value == null ? null : Math.round(value * 100) / 100, pass, core: rule.core,
+  }));
+}
+
+// Log when the status changes, otherwise at most once per calendar day.
+export function shouldLog(thesis: Pick<Thesis, 'lastStatus' | 'lastLoggedAt'>, status: ThesisStatus, now = new Date()) {
+  if (status !== thesis.lastStatus || !thesis.lastLoggedAt) return true;
+  return new Date(thesis.lastLoggedAt).toDateString() !== now.toDateString();
 }
 
 export interface MetricDef { label: string; unit: '%' | '×'; group: string; hint: string }

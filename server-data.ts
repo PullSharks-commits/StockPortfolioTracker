@@ -5,7 +5,7 @@
 // Neon Auth user in the bearer JWT; that scoping replaces firestore.rules.
 //
 // Two kinds of collection:
-// - row collections (holdings, transactions, alerts, theses): many typed rows per user,
+// - row collections (holdings, transactions, alerts, theses, thesisHistory): many typed rows per user,
 //   keyed by a uuid `id`, with a fixed field -> column mapping.
 // - document collections (settings, backups): one JSON document per user, keyed by
 //   the user id, stored whole in a `data` jsonb column.
@@ -83,8 +83,20 @@ const COLLECTIONS: Record<string, CollectionDef> = {
       manualStatus: ['manual_status', 'text'],
       lastStatus: ['last_status', 'text'],
       statusChangedAt: ['status_changed_at', 'timestamp'],
+      lastLoggedAt: ['last_logged_at', 'timestamp'],
     },
     updatedField: ['updatedAt', 'updated_at'],
+  },
+  thesisHistory: {
+    kind: 'rows',
+    table: 'thesis_history',
+    fields: {
+      thesisId: ['thesis_id', 'uuid'],
+      ticker: ['ticker', 'text'],
+      status: ['status', 'text'],
+      results: ['results', 'json'],
+    },
+    createdField: ['evaluatedAt', 'evaluated_at'],
   },
   settings: { kind: 'doc', table: 'settings', updatedColumn: 'updated_at' },
   backups: { kind: 'doc', table: 'backups', updatedColumn: 'created_at' },

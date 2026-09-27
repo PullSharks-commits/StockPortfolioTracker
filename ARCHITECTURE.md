@@ -114,6 +114,7 @@ flowchart LR
 | `transactions` | typed rows | buy/sell, shares, price, date, optional `lot_id`; FK to `holdings` with `ON DELETE CASCADE` |
 | `alerts` | typed rows | price alerts: ticker, condition, target price, triggered flag |
 | `theses` | typed rows | investment thesis per holding: summary, `rules` (jsonb), manual status, last evaluated status; unique per user/tab/ticker |
+| `thesis_history` | typed rows | logged thesis checks: status and each rule's value (jsonb); deleted with its thesis |
 | `company_fundamentals`, `company_segments` | shared cache | public SEC data, not per user (see Company fundamentals) |
 | `settings` | JSON document per user | tab settings, profile, AI config, table layout, calendar events (`data jsonb`) |
 | `backups` | JSON document per user | single-slot undo buffer for "Reset portfolio" |
@@ -222,6 +223,12 @@ holding's Asset cell and shows as a badge with the rules in its tooltip.
 The last evaluated status is stored on the thesis. When a new evaluation is worse
 (e.g. a new filing breaks a rule) the app shows a toast and emails the user once;
 saving a thesis records its current status, so saving never alerts.
+
+Each check is also logged to `thesis_history` when the status changes, and
+otherwise at most once a day, so P/S moving with the share price doesn't flood
+it. The thesis editor shows the history as a status strip plus each check with
+its rules' values at the time. Checks run in the browser, so nothing is logged
+on days the app isn't opened.
 
 ## Trading Bot tab
 
