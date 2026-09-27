@@ -1058,7 +1058,7 @@ const SortableHeader = ({ id, label, sortKey, align, sortConfig, onSort }: any) 
     <th
       ref={setNodeRef}
       style={style}
-      className={cn("px-6 py-4 font-medium select-none group relative bg-zinc-50/50", align === 'right' ? "text-right" : "text-left", id === 'ticker' && "sticky left-0 z-20 bg-zinc-50 dark:bg-zinc-900 shadow-[1px_0_0_0_rgb(228_228_231)]")}
+      className={cn("px-3 py-4 font-medium select-none group relative bg-zinc-50/50", align === 'right' ? "text-right" : "text-left", id === 'ticker' && "sticky left-0 z-20 bg-zinc-50 dark:bg-zinc-900 shadow-[1px_0_0_0_rgb(228_228_231)]")}
     >
       <div className={cn("flex items-center gap-1", align === 'right' ? "justify-end" : "justify-start")}>
         <div 
@@ -1138,7 +1138,7 @@ const SortableHoldingRow = ({
         </td>
       )}
       {columnOrder.map((colId: string) => renderCell(colId, holding))}
-      <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
+      <td className="px-3 py-4 text-center" onClick={(e) => e.stopPropagation()}>
         {editingId === holding.id ? (
           <div className="flex items-center justify-center gap-1 relative z-20">
             <button
@@ -1946,6 +1946,21 @@ const SettingsModal = ({
 
 const NO_TRANSACTIONS: never[] = [];
 
+// Holdings table: which columns survive longest when space runs out (first = most
+// important) and roughly how wide each needs to be, in px.
+const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'fearGreed'];
+// Always shown (unless the user hides them), even if a narrow screen then has to
+// scroll sideways - a table with only the Asset column isn't useful.
+const HOLDINGS_ALWAYS_SHOWN = new Set(['ticker', 'currentValue', 'dayChange', 'profitLoss']);
+const columnPriority = (colId: string) => {
+  const i = HOLDINGS_COLUMN_PRIORITY.indexOf(colId);
+  return i === -1 ? HOLDINGS_COLUMN_PRIORITY.length : i;
+};
+// Minimum widths measured with real data (headers may wrap), plus a small margin.
+const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 131, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124 };
+const HOLDINGS_DRAG_COLUMN_WIDTH = 40;
+const HOLDINGS_ACTIONS_COLUMN_WIDTH = 88;
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -2215,6 +2230,8 @@ export default function App() {
   const importBtnRef = useRef<HTMLButtonElement>(null);
   const holdingsImportRef = useRef<HTMLInputElement>(null);
   const transactionsImportRef = useRef<HTMLInputElement>(null);
+  const [showColumnsMenu, setShowColumnsMenu] = useState(false);
+  const columnsMenuRef = useRef<HTMLDivElement>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
@@ -2239,6 +2256,9 @@ export default function App() {
         !importBtnRef.current.contains(event.target as Node)
       ) {
         setShowImportMenu(false);
+      }
+      if (columnsMenuRef.current && !columnsMenuRef.current.contains(event.target as Node)) {
+        setShowColumnsMenu(false);
       }
       if (
         exportMenuRef.current &&
@@ -2340,10 +2360,48 @@ export default function App() {
   // Sort state
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'currentValue', direction: 'desc' });
   const [tableGrouping, setTableGrouping] = useState<'none' | 'theme' | 'assetType' | 'sector' | 'industry' | 'marketCap'>('none');
+
+
   const [filterGroup, setFilterGroup] = useState<string | null>(null);
+  // Holdings columns the user chose to hide, and whether the table drops
+  // lower-priority columns automatically so it fits without sideways scrolling.
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const [fitColumns, setFitColumns] = useState(true);
   const [columnOrder, setColumnOrder] = useState<string[]>([
     'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap'
   ]);
+
+  const [holdingsTableWidth, setHoldingsTableWidth] = useState(0);
+  const holdingsTableObserver = useRef<ResizeObserver | null>(null);
+  const holdingsTableBoxRef = React.useCallback((el: HTMLDivElement | null) => {
+    holdingsTableObserver.current?.disconnect();
+    if (!el) return;
+    // Measure now, not only when the observer first reports (that waits for a frame).
+    setHoldingsTableWidth(el.clientWidth);
+    holdingsTableObserver.current = new ResizeObserver(([entry]) => setHoldingsTableWidth(Math.floor(entry.contentRect.width)));
+    holdingsTableObserver.current.observe(el);
+  }, []);
+
+  // Columns to render: the user's order minus hidden ones and, when fitting, minus
+  // the lowest-priority columns that don't fit the available width.
+  const { displayedColumns, autoHiddenColumns } = useMemo(() => {
+    const visible = columnOrder.filter(c => c === 'ticker' || !hiddenColumns.includes(c));
+    if (!fitColumns || holdingsTableWidth === 0) return { displayedColumns: visible, autoHiddenColumns: [] as string[] };
+    const fixed = (tableGrouping === 'none' ? HOLDINGS_DRAG_COLUMN_WIDTH : 0) + HOLDINGS_ACTIONS_COLUMN_WIDTH;
+    let budget = holdingsTableWidth - fixed;
+    const kept = new Set<string>();
+    for (const col of [...visible].sort((a, b) => columnPriority(a) - columnPriority(b))) {
+      const width = HOLDINGS_COLUMN_WIDTHS[col] ?? 130;
+      if (HOLDINGS_ALWAYS_SHOWN.has(col) || width <= budget) {
+        kept.add(col);
+        budget -= width;
+      }
+    }
+    return {
+      displayedColumns: visible.filter(c => kept.has(c)),
+      autoHiddenColumns: visible.filter(c => !kept.has(c)),
+    };
+  }, [columnOrder, hiddenColumns, fitColumns, holdingsTableWidth, tableGrouping]);
 
   // Settings state
   const [tabSettings, setTabSettings] = useState<Record<string, { benchmark: string, riskProfile: string, targetReturn: number, currency: string }>>({
@@ -2491,6 +2549,8 @@ export default function App() {
           }
           if (data.tableLayout.tableGrouping) setTableGrouping(data.tableLayout.tableGrouping);
           if (data.tableLayout.sortConfig) setSortConfig(data.tableLayout.sortConfig);
+          if (Array.isArray(data.tableLayout.hiddenColumns)) setHiddenColumns(data.tableLayout.hiddenColumns);
+          if (typeof data.tableLayout.fitColumns === 'boolean') setFitColumns(data.tableLayout.fitColumns);
         }
       } else {
         // Initialize default settings in Firestore
@@ -2602,7 +2662,7 @@ export default function App() {
 
   const [layoutSaveStatus, setLayoutSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
-  const saveTableLayout = async (layout: { columnOrder?: string[], tableGrouping?: string, sortConfig?: any }) => {
+  const saveTableLayout = async (layout: { columnOrder?: string[], tableGrouping?: string, sortConfig?: any, hiddenColumns?: string[], fitColumns?: boolean }) => {
     if (!user) return;
     setLayoutSaveStatus('saving');
     try {
@@ -2610,7 +2670,9 @@ export default function App() {
         tableLayout: {
           columnOrder: layout.columnOrder !== undefined ? layout.columnOrder : columnOrder,
           tableGrouping: layout.tableGrouping !== undefined ? layout.tableGrouping : tableGrouping,
-          sortConfig: layout.sortConfig !== undefined ? layout.sortConfig : sortConfig
+          sortConfig: layout.sortConfig !== undefined ? layout.sortConfig : sortConfig,
+          hiddenColumns: layout.hiddenColumns !== undefined ? layout.hiddenColumns : hiddenColumns,
+          fitColumns: layout.fitColumns !== undefined ? layout.fitColumns : fitColumns
         }
       }, { merge: true });
       setLayoutSaveStatus('saved');
@@ -6108,6 +6170,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     { id: 'marketCap', label: `Market Cap (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'marketCap' as SortKey },
   ];
 
+  const toggleColumnHidden = (colId: string) => {
+    const next = hiddenColumns.includes(colId) ? hiddenColumns.filter(c => c !== colId) : [...hiddenColumns, colId];
+    setHiddenColumns(next);
+    saveTableLayout({ hiddenColumns: next });
+  };
+
   const handleHoldingsTableDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over) return;
@@ -6167,7 +6235,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     switch (colId) {
       case 'ticker':
         return (
-          <td key={colId} className="px-6 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800 shadow-[1px_0_0_0_rgb(228_228_231)]" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
+          <td key={colId} className="px-3 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800 shadow-[1px_0_0_0_rgb(228_228_231)]" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
             <div className="flex items-center gap-3">
               <CompanyLogo ticker={holding.ticker} logo={metadata[holding.ticker]?.logo} />
               {editingId === holding.id ? (
@@ -6217,7 +6285,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       case 'fearGreed':
         const hFg = fearGreedData?.details?.find((d: any) => d.symbol === holding.ticker);
         return (
-          <td key={colId} className="px-6 py-4 text-center">
+          <td key={colId} className="px-3 py-4 text-center">
             {hFg ? (
               <div 
                 className={cn(
@@ -6240,7 +6308,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         );
       case 'shares':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'shares'); }}>
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'shares'); }}>
             {editingId === holding.id ? (
               <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                 <input
@@ -6295,7 +6363,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         );
       case 'displayAvgPrice':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'displayAvgPrice'); }}>
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'displayAvgPrice'); }}>
             {editingId === holding.id ? (
               <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                 <select
@@ -6351,13 +6419,13 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         );
       case 'costBasis':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm">
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm">
             {formatCurrency(holding.costBasis, activeCurrency)}
           </td>
         );
       case 'currentPrice':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm font-medium">
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm font-medium">
             <div className="flex items-center justify-end">
               {formatCurrency(holding.currentPrice, activeCurrency)}
               {getMarketStateBadge((holding as any).marketState)}
@@ -6366,7 +6434,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         );
       case 'dayChange':
         return (
-          <td key={colId} className="px-6 py-4 text-right">
+          <td key={colId} className="px-3 py-4 text-right">
             <PulseCell value={holding.dayChange} className="items-end">
               <div className={cn(
                 "inline-flex items-center gap-1 font-medium text-sm",
@@ -6386,7 +6454,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         );
       case 'currentValue':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm font-medium">
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm font-medium">
             {formatCurrency(holding.currentValue, activeCurrency)}
           </td>
         );
@@ -6395,7 +6463,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           ? (holding.currentValue / portfolioStats.totalValue) * 100 
           : 0;
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm">
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm">
             <div className="font-medium text-zinc-900">{allocationPercent.toFixed(1)}%</div>
             <div className="w-16 h-1 bg-zinc-100 rounded-full mt-1.5 ml-auto overflow-hidden">
               <div 
@@ -6410,7 +6478,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           ? (holding.currentValue / holding.costBasis) 
           : (holding.currentValue > 0 ? 1 : 0);
         return (
-          <td key={colId} className="px-6 py-4 text-right">
+          <td key={colId} className="px-3 py-4 text-right">
             <PulseCell value={holding.profitLoss} className="items-end">
               <div className="flex items-center justify-end gap-1.5">
                 <div className={cn(
@@ -6450,7 +6518,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           : (holding.currentValue > 0 ? 1 : 0);
         const isGain = multiple >= 1;
         return (
-          <td key={colId} className="px-6 py-4 text-right">
+          <td key={colId} className="px-3 py-4 text-right">
             <div className="flex items-center justify-end">
               <span 
                 className={cn(
@@ -6470,7 +6538,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       }
       case 'realizedProfitLoss':
         return (
-          <td key={colId} className="px-6 py-4 text-right">
+          <td key={colId} className="px-3 py-4 text-right">
             <div className={cn(
               "text-sm font-semibold font-mono",
               holding.realizedProfitLoss > 0 ? "text-emerald-600" : holding.realizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
@@ -6481,7 +6549,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         );
       case 'marketCap':
         return (
-          <td key={colId} className="px-6 py-4 text-right font-mono text-sm">
+          <td key={colId} className="px-3 py-4 text-right font-mono text-sm">
             {holding.marketCap ? (
               holding.marketCap >= 1e12 
                 ? `${formatCurrency(holding.marketCap / 1e12, activeCurrency, false, 2)}T`
@@ -6509,7 +6577,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       />
       {/* Header */}
       <header className="bg-white border-b border-zinc-200 relative xl:sticky xl:top-0 z-[100]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <div className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-zinc-900 p-2 rounded-lg">
               <Briefcase className="w-5 h-5 text-white" />
@@ -6564,7 +6632,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         </div>
         {userSettings.showCombinedSummary && (() => {
           return (
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-0">
+            <div className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-0">
               <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden">
                 <div>
                   <div className="p-4 grid grid-cols-1 lg:grid-cols-[auto_1fr] items-center gap-4 lg:gap-10">
@@ -6706,7 +6774,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             </div>
           );
         })()}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row md:flex-wrap items-start md:items-center justify-between gap-x-4 mt-2">
+        <div className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row md:flex-wrap items-start md:items-center justify-between gap-x-4 mt-2">
           <div className="flex items-center gap-6 min-w-max pb-2 md:pb-0 overflow-x-auto hide-scrollbar">
             <button
               onClick={() => setActiveTab('global')}
@@ -6934,7 +7002,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <main className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {activeTab === 'bot' ? (
           <BotPortfolioView
             status={botStatus}
@@ -7636,6 +7704,47 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             <option value="industry">Group by Specific Industry (e.g., Semiconductors)</option>
                             <option value="marketCap">Group by Market Cap</option>
                           </select>
+                          <div className="relative" ref={columnsMenuRef}>
+                            <button
+                              onClick={() => setShowColumnsMenu(!showColumnsMenu)}
+                              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 border border-zinc-200 text-zinc-700 rounded-lg text-xs font-medium hover:bg-zinc-50"
+                              title="Choose which columns to show"
+                            >
+                              <Settings className="w-3.5 h-3.5" />
+                              Columns{autoHiddenColumns.length + hiddenColumns.length > 0 ? ` (${displayedColumns.length}/${columnOrder.length})` : ''}
+                            </button>
+                            {showColumnsMenu && (
+                              <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-zinc-900 rounded-xl shadow-xl border border-zinc-200 dark:border-zinc-700 p-3 z-[150]">
+                                <label className="flex items-start gap-2.5 px-1 pb-3 mb-2 border-b border-zinc-100 dark:border-zinc-800 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5"
+                                    checked={fitColumns}
+                                    onChange={() => { setFitColumns(!fitColumns); saveTableLayout({ fitColumns: !fitColumns }); }}
+                                  />
+                                  <span>
+                                    <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100">Fit to window</span>
+                                    <span className="block text-xs text-zinc-500">Hide lower-priority columns instead of scrolling sideways.</span>
+                                  </span>
+                                </label>
+                                <div className="max-h-72 overflow-y-auto">
+                                  {columnOrder.filter(c => c !== 'ticker').map(colId => {
+                                    const col = COLUMNS.find(c => c.id === colId);
+                                    if (!col) return null;
+                                    const userHidden = hiddenColumns.includes(colId);
+                                    const fitHidden = !userHidden && autoHiddenColumns.includes(colId);
+                                    return (
+                                      <label key={colId} className="flex items-center gap-2.5 px-1 py-1.5 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer text-sm text-zinc-700 dark:text-zinc-200">
+                                        <input type="checkbox" checked={!userHidden} onChange={() => toggleColumnHidden(colId)} />
+                                        <span className="flex-1">{col.label}</span>
+                                        {fitHidden && <span className="text-[10px] font-medium text-amber-600 bg-amber-50 dark:bg-amber-950 px-1.5 py-0.5 rounded">hidden to fit</span>}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                           <button onClick={() => toggleWidgetSize('holdings')} className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Resize Widget">
                             {widgetSizes.holdings === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                           </button>
@@ -7686,7 +7795,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                   <p className="text-sm mt-1">Add your first stock to start tracking.</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto" ref={holdingsTableBoxRef}>
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
@@ -7696,8 +7805,8 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                       <thead>
                         <tr className="border-b border-zinc-200 text-xs uppercase tracking-wider text-zinc-500 bg-zinc-50/50">
                           {tableGrouping === 'none' && <th className="w-8 px-2 py-4"></th>}
-                          <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-                            {columnOrder.map((colId) => {
+                          <SortableContext items={displayedColumns} strategy={horizontalListSortingStrategy}>
+                            {displayedColumns.map((colId) => {
                               const col = COLUMNS.find(c => c.id === colId);
                               if (!col) return null;
                               return (
@@ -7844,7 +7953,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 return (
                                 <React.Fragment key={groupName}>
                                 <tr className="bg-zinc-50 border-y border-zinc-200 group/header">
-                                  <td colSpan={columnOrder.length + 1} className="px-6 py-2.5 bg-zinc-100/30">
+                                  <td colSpan={displayedColumns.length + 1} className="px-6 py-2.5 bg-zinc-100/30">
                                     <div className="flex justify-between items-center w-full">
                                       <div className="flex items-center gap-2">
                                         <span className="text-xs font-bold uppercase tracking-wider text-zinc-800">{groupName === 'mag7' ? 'Magnificent Seven (Mag7)' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName}</span>
@@ -7874,7 +7983,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                   <SortableHoldingRow
                                     key={holding.id}
                                     holding={holding}
-                                    columnOrder={columnOrder}
+                                    columnOrder={displayedColumns}
                                     renderCell={renderCell}
                                     editingId={editingId}
                                     setSelectedChartTicker={setSelectedChartTicker}
@@ -7889,17 +7998,17 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 ))}
                                 {/* Group Totals Summary Row */}
                                 <tr className="bg-zinc-100/35 border-t border-b border-zinc-200/80 font-semibold text-zinc-700 text-xs">
-                                  {columnOrder.map((colId) => {
+                                  {displayedColumns.map((colId) => {
                                     switch (colId) {
                                       case 'ticker':
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-left font-sans font-bold text-zinc-500 uppercase tracking-wider text-[10px] sticky left-0 z-10 bg-zinc-100 dark:bg-zinc-800">
+                                          <td key={colId} className="px-3 py-3 text-left font-sans font-bold text-zinc-500 uppercase tracking-wider text-[10px] sticky left-0 z-10 bg-zinc-100 dark:bg-zinc-800">
                                             Total {groupName === 'mag7' ? 'Mag7' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName === 'Cash' ? 'Cash' : groupName}
                                           </td>
                                         );
                                       case 'fearGreed':
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-center">
+                                          <td key={colId} className="px-3 py-3 text-center">
                                             {groupFg ? (
                                               <div 
                                                 className={cn(
@@ -7920,26 +8029,26 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                         );
                                       case 'costBasis':
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right text-zinc-900 font-bold font-mono">
+                                          <td key={colId} className="px-3 py-3 text-right text-zinc-900 font-bold font-mono">
                                             {formatCurrency(groupData.totalCost, activeCurrency)}
                                           </td>
                                         );
                                       case 'currentValue':
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right text-zinc-900 font-bold font-mono">
+                                          <td key={colId} className="px-3 py-3 text-right text-zinc-900 font-bold font-mono">
                                             {formatCurrency(groupData.value, activeCurrency)}
                                           </td>
                                         );
                                       case 'allocation':
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right text-zinc-500 font-medium font-mono">
+                                          <td key={colId} className="px-3 py-3 text-right text-zinc-500 font-medium font-mono">
                                             {((groupData.value / (portfolioStats.totalValue || 1)) * 100).toFixed(1)}%
                                           </td>
                                         );
                                       case 'profitLoss': {
                                         const profitPercent = groupData.totalCost > 0 ? (groupData.totalProfit / groupData.totalCost) * 100 : 0;
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right">
+                                          <td key={colId} className="px-3 py-3 text-right">
                                             <div className={cn(
                                               "font-bold font-mono text-sm",
                                               groupData.totalProfit >= 0 ? "text-emerald-600" : "text-rose-600"
@@ -7957,7 +8066,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                       }
                                       case 'dayChange': {
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right">
+                                          <td key={colId} className="px-3 py-3 text-right">
                                             <div className={cn(
                                               "font-bold font-mono text-sm",
                                               groupData.totalDayChange >= 0 ? "text-emerald-600" : "text-rose-600"
@@ -7970,7 +8079,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                       case 'growthMultiple': {
                                         const groupMultiple = groupData.totalCost > 0 ? (groupData.value / groupData.totalCost) : 1;
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right">
+                                          <td key={colId} className="px-3 py-3 text-right">
                                             <span 
                                               className={cn(
                                                 "inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-bold border shadow-2xs",
@@ -7987,7 +8096,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                       }
                                       case 'realizedProfitLoss': {
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right">
+                                          <td key={colId} className="px-3 py-3 text-right">
                                             <div className={cn(
                                               "font-bold font-mono text-sm",
                                               groupData.totalRealizedProfitLoss > 0 ? "text-emerald-600" : groupData.totalRealizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
@@ -7999,13 +8108,13 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                       }
                                       default:
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-right text-zinc-400/60 font-normal font-mono">
+                                          <td key={colId} className="px-3 py-3 text-right text-zinc-400/60 font-normal font-mono">
                                             -
                                           </td>
                                         );
                                     }
                                   })}
-                                  <td className="px-6 py-3"></td>
+                                  <td className="px-3 py-3"></td>
                                 </tr>
                                 </React.Fragment>
                             )})})()}
@@ -8019,7 +8128,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                               <SortableHoldingRow
                                 key={holding.id}
                                 holding={holding}
-                                columnOrder={columnOrder}
+                                columnOrder={displayedColumns}
                                 renderCell={renderCell}
                                 editingId={editingId}
                                 setSelectedChartTicker={setSelectedChartTicker}
