@@ -2040,11 +2040,8 @@ export default function App() {
   const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   // Whether the Company view found SEC financials; Yahoo's short charts are a fallback.
   const [fundamentalsSource, setFundamentalsSource] = useState<'sec' | 'none' | 'error' | null>(null);
-  const [kpiTimeScale, setKpiTimeScale] = useState<'5y' | '10y' | 'all_y' | '8q' | '12q' | '20q'>('5y');
   const [financialsData, setFinancialsData] = useState<any>(null);
   const [isFinancialsLoading, setIsFinancialsLoading] = useState(false);
-  const [businessKpisData, setBusinessKpisData] = useState<any>(null);
-  const [isBusinessKpisLoading, setIsBusinessKpisLoading] = useState(false);
   const [fearGreedData, setFearGreedData] = useState<any>(null);
 
   // History state
@@ -3834,63 +3831,9 @@ export default function App() {
         }
       };
 
-      const fetchBusinessKpis = async () => {
-        setIsBusinessKpisLoading(true);
-        try {
-          const isQuarterly = kpiTimeScale.endsWith('q');
-          const timeValue = kpiTimeScale.replace(/[yq]/, '').replace('all_', 'all ');
-          const periodText = isQuarterly ? 'quarterly' : 'annual';
-          const durationText = kpiTimeScale.startsWith('all') ? 'all available' : `the last ${timeValue}`;
-          const durationUnit = isQuarterly ? 'quarters' : 'years';
-
-          const res = await fetch('/api/gemini-analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: "gemini-3.1-pro-preview",
-              prompt: `Provide the historical and projected ${periodText} business KPIs (e.g., Daily Active Users, Monthly Active Users, Subscribers, Deliveries, or other relevant operational metrics) for the company with ticker symbol ${selectedChartTicker} over ${durationText} ${durationUnit}, plus the next 2-3 ${durationUnit} of analyst and company projections. If the company is not a tech/service company with users, provide their most relevant operational KPIs (e.g., vehicles delivered for TSLA, stores opened for SBUX). Return the data as a JSON array of objects, where each object has a 'period' (string, e.g., '2023' for annual or 'Q1 2023' for quarterly), a boolean 'isProjection' indicating if it's a future estimate, and 2-3 relevant KPI fields (numbers). Use short, camelCase keys for the KPI fields.`,
-              config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      period: { type: "string" },
-                      isProjection: { type: "boolean", description: "True if this period is a future projection/estimate" },
-                      kpi1Name: { type: "string", description: "Display name of the first KPI (e.g., 'Daily Active Users (Millions)')" },
-                      kpi1Value: { type: "number" },
-                      kpi2Name: { type: "string", description: "Display name of the second KPI" },
-                      kpi2Value: { type: "number" },
-                      kpi3Name: { type: "string", description: "Display name of the third KPI (optional)" },
-                      kpi3Value: { type: "number" }
-                    },
-                    required: ["period", "isProjection", "kpi1Name", "kpi1Value", "kpi2Name", "kpi2Value"]
-                  }
-                }
-              }
-            })
-          });
-
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.details || err.error || 'Analysis failed');
-          }
-          const response = await res.json();
-          const data = typeof response.text === 'string' ? JSON.parse(response.text.replace(/```json\n?|\n?```/g, '').trim()) : response.text;
-          setBusinessKpisData(data);
-        } catch (error) {
-          console.error('Error fetching business KPIs:', error);
-          setBusinessKpisData(null);
-        } finally {
-          setIsBusinessKpisLoading(false);
-        }
-      };
-
       fetchFinancials();
-      fetchBusinessKpis();
     }
-  }, [selectedChartTicker, chartModalTab, kpiTimeScale]);
+  }, [selectedChartTicker, chartModalTab]);
 
   useEffect(() => {
     // Setup WebSocket for real-time updates
@@ -8735,89 +8678,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                   <div className="max-w-5xl mx-auto mb-8">
                     <CompanyFundamentals ticker={selectedChartTicker} onSource={setFundamentalsSource} />
                   </div>
-                  {isFinancialsLoading || isBusinessKpisLoading ? (
+                  {isFinancialsLoading ? (
                     <div className="flex items-center justify-center h-full">
                       <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
                     </div>
                   ) : (
                     <div className="space-y-8 max-w-4xl mx-auto">
-                      <div className="flex justify-end">
-                        <select
-                          value={kpiTimeScale}
-                          onChange={(e) => setKpiTimeScale(e.target.value as any)}
-                          className="px-3 py-1.5 text-sm font-medium rounded-md border border-zinc-200 bg-white text-zinc-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        >
-                          <option value="5y">Last 5 Years</option>
-                          <option value="10y">Last 10 Years</option>
-                          <option value="all_y">All Available Years</option>
-                          <option value="8q">Last 8 Quarters</option>
-                          <option value="12q">Last 12 Quarters</option>
-                          <option value="20q">Last 20 Quarters</option>
-                        </select>
-                      </div>
-                      {businessKpisData && businessKpisData.length > 0 && (
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
-                          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                            <h4 className="text-base font-semibold text-zinc-800">Operational KPIs</h4>
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Unverified AI estimate</span>
-                          </div>
-                          <p className="text-xs text-amber-700 mb-4">
-                            These figures are generated by an AI model without sources and may be inaccurate, including past values. Check them against the company's reports before relying on them.
-                          </p>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {[1, 2, 3].map((kpiIndex) => {
-                              const kpiNameKey = `kpi${kpiIndex}Name`;
-                              const kpiValueKey = `kpi${kpiIndex}Value`;
-                              const kpiName = businessKpisData[0][kpiNameKey];
-                              
-                              if (!kpiName) return null;
-                              
-                              return (
-                                <div key={kpiIndex} className="h-64">
-                                  <h5 className="text-sm font-medium text-zinc-600 mb-2 text-center">{kpiName}</h5>
-                                  <ResponsiveContainer width="100%" height="100%">
-                                    <BarChart data={businessKpisData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
-                                      <XAxis dataKey="period" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#71717a' }} />
-                                      <YAxis 
-                                        axisLine={false} 
-                                        tickLine={false} 
-                                        tick={{ fontSize: 12, fill: '#71717a' }}
-                                        tickFormatter={(val) => val >= 1000000 ? `${(val / 1000000).toFixed(1)}M` : val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}
-                                        tickCount={8}
-                                      />
-                                      <RechartsTooltip 
-                                        formatter={(value: number, name: string, props: any) => {
-                                          const isProj = props.payload.isProjection;
-                                          return [value.toLocaleString(), isProj ? `${name} (Projected)` : name];
-                                        }}
-                                        labelStyle={{ color: '#18181b', fontWeight: 600 }}
-                                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                        cursor={{ fill: '#f4f4f5' }}
-                                      />
-                                      <Bar 
-                                        dataKey={kpiValueKey} 
-                                        name={kpiName} 
-                                        radius={[4, 4, 0, 0]} 
-                                        animationDuration={1000} 
-                                        animationEasing="ease-out"
-                                        activeBar={{ stroke: '#f59e0b', strokeWidth: 2, fillOpacity: 0.8 }}
-                                      >
-                                        {businessKpisData.map((entry: any, index: number) => {
-                                          const defaultColor = kpiIndex === 1 ? "#f59e0b" : kpiIndex === 2 ? "#ec4899" : "#06b6d4";
-                                          const projectionColor = kpiIndex === 1 ? "#fcd34d" : kpiIndex === 2 ? "#f9a8d4" : "#67e8f9";
-                                          return <Cell key={`cell-${index}`} fill={entry.isProjection ? projectionColor : defaultColor} />;
-                                        })}
-                                      </Bar>
-                                    </BarChart>
-                                  </ResponsiveContainer>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
                       {fundamentalsSource !== 'sec' && financialsData && financialsData.kpis && financialsData.kpis.length > 0 && (
                         <>
                           <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
@@ -8878,7 +8744,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         </>
                       )}
 
-                      {fundamentalsSource !== 'sec' && (!businessKpisData || businessKpisData.length === 0) && (!financialsData || !financialsData.kpis || financialsData.kpis.length === 0) && (
+                      {fundamentalsSource !== 'sec' && (!financialsData || !financialsData.kpis || financialsData.kpis.length === 0) && (
                         <div className="flex flex-col items-center justify-center h-64 text-zinc-500">
                           <BarChart2 className="w-12 h-12 mb-4 text-zinc-300" />
                           <p>Business KPIs are not available for this asset.</p>

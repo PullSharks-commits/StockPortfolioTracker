@@ -65,3 +65,12 @@ CREATE TABLE IF NOT EXISTS company_fundamentals (
   payload    jsonb NOT NULL,
   fetched_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Segment, product and geography revenue from filings' XBRL (server-segments.ts).
+-- Shared public company data; rebuilt when the company files a new 10-Q/10-K.
+CREATE TABLE IF NOT EXISTS company_segments (
+  ticker           text PRIMARY KEY,
+  latest_accession text,
+  payload          jsonb NOT NULL,
+  fetched_at       timestamptz NOT NULL DEFAULT now()
+);

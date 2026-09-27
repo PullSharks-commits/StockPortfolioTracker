@@ -7,6 +7,7 @@ import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContai
 import { ExternalLink, Info, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { authedFetch } from '../backend';
+import { CompanySegments } from './CompanySegments';
 import { computeValuation, type FundPeriod, type MarketData, type MultipleStats } from '../lib/valuation';
 
 type Range = '5' | '10' | 'all';
@@ -218,6 +219,8 @@ export function CompanyFundamentals({ ticker, onSource }: Props) {
           </div>
         )}
       </div>
+
+      <CompanySegments ticker={ticker} />
 
       {market?.earnings && market.earnings.length > 0 && (
         <Card title="Recent earnings vs estimates">

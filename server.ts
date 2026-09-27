@@ -21,6 +21,7 @@ import dns from 'node:dns/promises';
 import { registerDataRoutes } from './server-data';
 import { registerBotRoutes } from './server-bot';
 import { registerFundamentalsRoutes } from './server-fundamentals';
+import { registerSegmentRoutes } from './server-segments';
 import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -390,6 +391,7 @@ async function startServer() {
   registerDataRoutes(app);
   registerBotRoutes(app);
   registerFundamentalsRoutes(app);
+  registerSegmentRoutes(app);
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.set('trust proxy', true);

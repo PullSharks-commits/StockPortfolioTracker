@@ -280,7 +280,7 @@ const SEC_MIN_INTERVAL_MS = 150; // well under SEC's 10 requests/second
 let lastSecRequest = 0;
 let tickerMap: { at: number; map: Map<string, { cik: number; title: string }> } | null = null;
 
-async function secFetch(url: string, contact: string) {
+export async function secFetch(url: string, contact: string) {
   const wait = lastSecRequest + SEC_MIN_INTERVAL_MS - Date.now();
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
   lastSecRequest = Date.now();
@@ -290,10 +290,10 @@ async function secFetch(url: string, contact: string) {
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`SEC request failed (${res.status}) for ${url}`);
-  return res.json();
+  return url.endsWith('.json') ? res.json() : res.text();
 }
 
-async function lookupCik(ticker: string, contact: string) {
+export async function lookupCik(ticker: string, contact: string) {
   if (!tickerMap || Date.now() - tickerMap.at > 24 * 3600_000) {
     const raw = await secFetch('https://www.sec.gov/files/company_tickers.json', contact);
     const map = new Map<string, { cik: number; title: string }>();
