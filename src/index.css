@@ -129,3 +129,11 @@
 .dark .custom-logo {
   filter: invert(1) hue-rotate(180deg);
 }
+
+/* Touch screens can't hover, so controls that other devices reveal on hover
+   (widget, row and cell actions) are always shown there. */
+@media (hover: none) {
+  [class*="opacity-0"][class*="group-hover"] {
+    opacity: 1 !important;
+  }
+}

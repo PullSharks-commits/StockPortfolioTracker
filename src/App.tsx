@@ -59,6 +59,8 @@ import { computeHoldingFromTransactions } from './utils/portfolioCalculations';
 import { Toaster, toast } from 'sonner';
 import { BotStatus, clearBotPortfolio, closeBotPosition, onBotStatus, refreshBotPortfolio, runBotHousekeeping } from './botPortfolio';
 import { BotPortfolioView } from './components/BotPortfolioView';
+import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
+import { HoldingActions } from './components/HoldingActions';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
 import { calculateGroupFearGreed } from './lib/fearGreed';
@@ -132,233 +134,6 @@ function PulseCell({ value, children, className }: { value: number; children: Re
 
 
 // Memoized Holding Row Component
-const HoldingRow = React.memo(({ 
-  holding, 
-  metadata, 
-  editingId, 
-  editTicker,
-  editShares, 
-  editAvgPrice,
-  editAvgPriceCurrency,
-  setEditTicker,
-  setEditShares,
-  setEditAvgPrice,
-  setEditAvgPriceCurrency,
-  handleSaveEdit,
-  handleCancelEdit,
-  handleEditClick,
-  promptAnalysisStrategy,
-  setSelectedChartTicker,
-  handleViewHistory,
-  handleDelete,
-  handleQuickAddClick,
-  getMarketStateBadge,
-  CompanyLogo,
-  activeCurrency
-}: any) => {
-  return (
-    <tr 
-      className="hover:bg-zinc-100/50 hover:shadow-sm transition-all duration-200 cursor-pointer group/row"
-      onClick={() => setSelectedChartTicker(holding.ticker)}
-    >
-      <td className="px-6 py-4">
-        <div className="flex items-center gap-3">
-          <CompanyLogo ticker={holding.ticker} logo={metadata[holding.ticker]?.logo} />
-          {editingId === holding.id ? (
-            <input
-              type="text"
-              value={editTicker}
-              onChange={(e) => setEditTicker(e.target.value)}
-              className="w-24 px-2 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 uppercase"
-              placeholder="Ticker"
-            />
-          ) : (
-            <div className="font-semibold text-zinc-900 group-hover/row:text-indigo-600 transition-colors">{holding.ticker}</div>
-          )}
-        </div>
-      </td>
-      <td className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => e.stopPropagation()}>
-        {editingId === holding.id ? (
-          <input
-            type="text"
-            inputMode="decimal"
-            value={editShares}
-            onChange={(e) => setEditShares(e.target.value)}
-            className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
-            min="0.00001"
-            step="any"
-          />
-        ) : (
-          holding.ticker === 'CASH' ? formatCurrency(holding.shares, holding.avgPriceCurrency || activeCurrency) : holding.shares.toLocaleString()
-        )}
-      </td>
-      <td className="px-6 py-4 text-right font-mono text-sm" onClick={(e) => e.stopPropagation()}>
-        {editingId === holding.id ? (
-          <div className="flex items-center justify-end gap-1">
-            <select
-              value={editAvgPriceCurrency}
-              onChange={(e) => setEditAvgPriceCurrency(e.target.value)}
-              className="px-1 py-1 border border-zinc-300 rounded focus:outline-none focus:ring-1 focus:ring-zinc-900 bg-white"
-            >
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-              <option value="GBP">GBP</option>
-              <option value="AUD">AUD</option>
-              <option value="CAD">CAD</option>
-              <option value="INR">INR</option>
-              <option value="SGD">SGD</option>
-            </select>
-            {editTicker?.toUpperCase() !== 'CASH' && (
-              <input
-                type="text"
-                inputMode="decimal"
-                value={editAvgPrice}
-                onChange={(e) => setEditAvgPrice(e.target.value)}
-                className="w-24 px-2 py-1 border border-zinc-300 rounded text-right focus:outline-none focus:ring-1 focus:ring-zinc-900"
-                min="0.01"
-                step="any"
-              />
-            )}
-          </div>
-        ) : (
-          holding.ticker === 'CASH' ? '-' : formatCurrency(holding.displayAvgPrice, activeCurrency)
-        )}
-      </td>
-      <td className="px-6 py-4 text-right font-mono text-sm">
-        {formatCurrency(holding.costBasis, activeCurrency)}
-      </td>
-      <td className="px-6 py-4 text-right font-mono text-sm font-medium">
-        <div className="flex items-center justify-end">
-          {holding.ticker === 'CASH' ? '-' : formatCurrency(holding.currentPrice, activeCurrency)}
-          {getMarketStateBadge((holding as any).marketState)}
-        </div>
-      </td>
-      <td className="px-6 py-4 text-right">
-        {holding.ticker === 'CASH' ? (
-          <span className="text-zinc-400">-</span>
-        ) : (
-          <PulseCell value={holding.dayChange} className="items-end">
-            <div className={cn(
-              "inline-flex items-center gap-1 font-medium text-sm",
-              holding.dayChange >= 0 ? "text-emerald-600" : "text-rose-600"
-            )}>
-              {holding.dayChange >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-              {holding.dayChange >= 0 ? '+' : '-'}{Math.abs(holding.dayChangePercent).toFixed(2)}%
-            </div>
-            <div className={cn(
-              "text-xs mt-0.5 font-mono",
-              holding.dayChange >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
-            )}>
-              {formatCurrency(holding.dayChange, activeCurrency, true)}
-            </div>
-          </PulseCell>
-        )}
-      </td>
-      <td className="px-6 py-4 text-right font-mono text-sm font-medium">
-        {formatCurrency(holding.currentValue, activeCurrency)}
-      </td>
-      <td className="px-6 py-4 text-right">
-        {holding.ticker === 'CASH' ? (
-          <span className="text-zinc-400">-</span>
-        ) : (
-          <PulseCell value={holding.profitLoss} className="items-end">
-            <div className={cn(
-              "inline-flex items-center gap-1 font-medium text-sm",
-              holding.profitLoss >= 0 ? "text-emerald-600" : "text-rose-600"
-            )}>
-              {holding.profitLoss >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-              {holding.profitLoss >= 0 ? '+' : '-'}{Math.abs(holding.profitLossPercent).toFixed(2)}%
-            </div>
-            <div className={cn(
-              "text-xs mt-0.5 font-mono",
-              holding.profitLoss >= 0 ? "text-emerald-600/70" : "text-rose-600/70"
-            )}>
-              {formatCurrency(holding.profitLoss, activeCurrency, true)}
-            </div>
-          </PulseCell>
-        )}
-      </td>
-      <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
-        {editingId === holding.id ? (
-          <div className="flex items-center justify-center gap-1">
-            <button
-              onClick={() => handleSaveEdit(holding.id)}
-              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-              title="Save changes"
-            >
-              <Check size={16} />
-            </button>
-            <button
-              onClick={handleCancelEdit}
-              className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
-              title="Cancel edit"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-center gap-1">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                promptAnalysisStrategy(holding.ticker);
-              }}
-              className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-              title="Analyze Stock"
-            >
-              <Zap size={16} />
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleQuickAddClick(holding);
-              }}
-              className="p-1.5 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-              title="Add More Quantity"
-            >
-              <PlusCircle size={16} />
-            </button>
-            <button
-              onClick={() => handleEditClick(holding)}
-              className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
-              title="Edit holding"
-            >
-              <Edit2 size={16} />
-            </button>
-            <button
-              onClick={() => setSelectedChartTicker(holding.ticker)}
-              className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-              title="View Chart"
-            >
-              <LineChart size={16} />
-            </button>
-            <button
-              onClick={() => handleViewHistory(holding)}
-              className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-              title="View History"
-            >
-              <FileText size={16} />
-            </button>
-            <button
-              onClick={() => {
-                if (window.confirm(`Are you sure you want to delete ${holding.ticker}?`)) {
-                  handleDelete(holding.id);
-                }
-              }}
-              className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-              title="Delete stock"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-        )}
-      </td>
-    </tr>
-  );
-});
-
-HoldingRow.displayName = 'HoldingRow';
-
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -971,7 +746,7 @@ const FinancialCalendar = ({
           {onResize && (
             <button 
               onClick={onResize} 
-              className="p-2 text-zinc-400 hover:text-zinc-600 rounded-lg hover:bg-zinc-100 opacity-0 group-hover:opacity-100 transition-opacity relative z-20"
+              className="p-2 text-zinc-400 hover:text-zinc-600 rounded-lg hover:bg-zinc-100 opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity relative z-20"
               title="Resize Widget"
             >
               {size === 3 ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -980,7 +755,7 @@ const FinancialCalendar = ({
           {onRemove && (
             <button 
               onClick={onRemove} 
-              className="p-2 text-zinc-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity relative z-20"
+              className="p-2 text-zinc-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity relative z-20"
               title="Remove Widget"
             >
               <X size={16} />
@@ -1283,7 +1058,7 @@ const SortableHeader = ({ id, label, sortKey, align, sortConfig, onSort }: any) 
     <th
       ref={setNodeRef}
       style={style}
-      className={cn("px-6 py-4 font-medium select-none group relative bg-zinc-50/50", align === 'right' ? "text-right" : "text-left")}
+      className={cn("px-6 py-4 font-medium select-none group relative bg-zinc-50/50", align === 'right' ? "text-right" : "text-left", id === 'ticker' && "sticky left-0 z-20 bg-zinc-50 dark:bg-zinc-900 shadow-[1px_0_0_0_rgb(228_228_231)]")}
     >
       <div className={cn("flex items-center gap-1", align === 'right' ? "justify-end" : "justify-start")}>
         <div 
@@ -1382,57 +1157,16 @@ const SortableHoldingRow = ({
             </button>
           </div>
         ) : (
-          <div className="flex items-center justify-center gap-1 relative z-20">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                promptAnalysisStrategy(holding.ticker);
-              }}
-              className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-              title="Analyze Stock"
-            >
-              <Zap className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => handleEditClick(holding)}
-              className="p-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors"
-              title="Edit holding"
-            >
-              <Edit2 className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setSelectedChartTicker(holding.ticker)}
-              className="p-1.5 text-zinc-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-              title="View Chart"
-            >
-              <LineChart className="w-4 h-4" />
-            </button>
-            {holding.ticker !== 'CASH' && holding.shares > 0 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleViewHistory(holding);
-                }}
-                className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                title="Sell Specific Lot"
-              >
-                <TrendingDown className="w-4 h-4" />
-              </button>
-            )}
-            <button
-              onClick={() => handleViewHistory(holding)}
-              className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-              title="View History"
-            >
-              <FileText className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => handleDelete(holding.id)}
-              className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-              title="Remove holding"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+          <div className="relative z-20">
+            <HoldingActions
+              ticker={holding.ticker}
+              onChart={() => setSelectedChartTicker(holding.ticker)}
+              onAnalyze={holding.ticker !== 'CASH' ? () => promptAnalysisStrategy(holding.ticker) : undefined}
+              onEdit={() => handleEditClick(holding)}
+              onHistory={() => handleViewHistory(holding)}
+              historyLabel={holding.ticker !== 'CASH' && holding.shares > 0 ? 'History & sell lots' : 'History'}
+              onDelete={() => handleDelete(holding.id)}
+            />
           </div>
         )}
       </td>
@@ -1486,7 +1220,7 @@ const SortableWidget = ({ id, className, children, onDoubleClick }: { id: string
       {...attributes}
     >
       <div 
-        className="absolute top-3 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-600 z-20 p-1 bg-white/90 backdrop-blur-sm rounded-md shadow-sm border border-zinc-100" 
+        className="absolute top-3 left-1/2 -translate-x-1/2 opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-600 z-20 p-1 bg-white/90 backdrop-blur-sm rounded-md shadow-sm border border-zinc-100" 
         {...attributes} 
         {...listeners}
       >
@@ -2602,7 +2336,6 @@ export default function App() {
   };
   
   // Save state
-  const [saveMessage, setSaveMessage] = useState<{text: string, type: 'success' | 'error'} | null>(null);
 
   // Sort state
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'currentValue', direction: 'desc' });
@@ -2851,19 +2584,18 @@ export default function App() {
       setUserSettings(newUserSettings);
 
       if (autoClose) {
-        setSaveMessage({ text: 'Settings saved', type: 'success' });
+        toast.success('Settings saved');
         setShowSettings(false);
       }
     } catch (error) {
       console.error('Error saving settings:', error);
       if (autoClose) {
-        setSaveMessage({ text: 'Failed to save settings', type: 'error' });
+        toast.error('Failed to save settings');
       }
       throw error;
     } finally {
       setIsSavingSettings(false);
       if (autoClose) {
-        setTimeout(() => setSaveMessage(null), 3000);
       }
     }
   };
@@ -3150,13 +2882,12 @@ export default function App() {
             });
           }
         });
-        setSaveMessage({ text: 'Portfolio imported successfully', type: 'success' });
+        toast.success('Portfolio imported successfully');
       } catch (err) {
         console.error('Import error:', err);
         toast.error('Failed to import portfolio. Please check the file format.');
       } finally {
         setIsSubmitting(false);
-        setTimeout(() => setSaveMessage(null), 3000);
         if (e.target) e.target.value = '';
       }
     };
@@ -3295,7 +3026,7 @@ export default function App() {
         if (!user) return;
 
         setIsSubmitting(true);
-        setSaveMessage({ text: 'Processing transactions history...', type: 'success' });
+        toast.info('Processing transaction history...');
 
         const parseFlexDate = (val: any): string => {
           if (!val) return new Date().toISOString();
@@ -3497,16 +3228,12 @@ export default function App() {
           toast.warning(`Skipped ${skipped.map(([p, n]) => `${n} transaction(s) for portfolio "${p}"`).join(', ')}: this app only has Global and Australia tabs.`);
         }
 
-        setSaveMessage({ 
-          text: `Successfully imported ${totalTransactionsCreated} transactions for ${totalHoldingsCreated} assets.`, 
-          type: 'success' 
-        });
+        toast.success(`Successfully imported ${totalTransactionsCreated} transactions for ${totalHoldingsCreated} assets.`);
       } catch (err) {
         console.error('Import transactions error:', err);
         toast.error(`Failed to import transactions: ${err instanceof Error ? err.message : err}`);
       } finally {
         setIsSubmitting(false);
-        setTimeout(() => setSaveMessage(null), 3000);
         if (e.target) e.target.value = '';
       }
     };
@@ -3543,13 +3270,12 @@ export default function App() {
         fetchEarnings(holdings),
         fetchDividends(holdings)
       ]);
-      setSaveMessage({ text: 'Data refreshed', type: 'success' });
+      toast.success('Data refreshed');
     } catch (error) {
       console.error('Error refreshing data:', error);
-      setSaveMessage({ text: 'Failed to refresh data', type: 'error' });
+      toast.error('Failed to refresh data');
     } finally {
       setIsRefreshing(false);
-      setTimeout(() => setSaveMessage(null), 3000);
     }
   };
 
@@ -3591,14 +3317,13 @@ export default function App() {
         await Promise.all(transactionsToDelete.map(d => deleteDoc(d.ref)));
       }
       
-      setSaveMessage({ text: 'Portfolio reset successfully', type: 'success' });
+      toast.success('Portfolio reset successfully');
       setShowResetConfirm(false);
     } catch (error) {
       console.error('Error resetting portfolio:', error);
-      setSaveMessage({ text: 'Failed to reset portfolio', type: 'error' });
+      toast.error('Failed to reset portfolio');
     } finally {
       setIsResetting(false);
-      setTimeout(() => setSaveMessage(null), 3000);
     }
   };
 
@@ -3623,17 +3348,16 @@ export default function App() {
         // Delete backup
         await deleteDoc(doc(db, 'backups', user.uid));
         
-        setSaveMessage({ text: 'Portfolio restored successfully', type: 'success' });
+        toast.success('Portfolio restored successfully');
         setShowRestoreConfirm(false);
       } else {
-        setSaveMessage({ text: 'No backup found to restore', type: 'error' });
+        toast.error('No backup found to restore');
       }
     } catch (error) {
       console.error('Error restoring portfolio:', error);
-      setSaveMessage({ text: 'Failed to restore portfolio', type: 'error' });
+      toast.error('Failed to restore portfolio');
     } finally {
       setIsRestoring(false);
-      setTimeout(() => setSaveMessage(null), 3000);
     }
   };
 
@@ -3867,7 +3591,13 @@ export default function App() {
 
   const handleRunBotHousekeeping = async () => {
     if (!user || isRunningHousekeeping) return;
-    if (!window.confirm('Run the trading bot\'s housekeeping job now? It can place or adjust real orders.')) return;
+    const ok = await confirmDialog({
+      title: 'Run housekeeping now?',
+      message: "The trading bot's housekeeping job can place or adjust real orders.",
+      confirmLabel: 'Run housekeeping',
+      danger: true,
+    });
+    if (!ok) return;
     setIsRunningHousekeeping(true);
     try {
       await runBotHousekeeping((result) => {
@@ -4381,15 +4111,48 @@ export default function App() {
     }
   };
 
+  // Deleting a holding also deletes its transactions, so it is confirmed first and
+  // can be undone for a few seconds afterwards (restored with the same ids).
   const handleDelete = async (id: string) => {
+    if (!user) return;
+    const holding = allHoldings.find(h => h.id === id);
+    const label = holding?.ticker || 'this holding';
+    const txCount = transactionsByHolding.get(id)?.length ?? 0;
+    const ok = await confirmDialog({
+      title: `Delete ${label}?`,
+      message: txCount > 0
+        ? `This removes the holding and its ${txCount} transaction${txCount === 1 ? '' : 's'}. You can undo it for a few seconds afterwards.`
+        : 'This removes the holding. You can undo it for a few seconds afterwards.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      await deleteDoc(doc(db, 'holdings', id));
-      // Optionally delete associated transactions
-      const q = query(collection(db, 'transactions'), where('holdingId', '==', id), where('userId', '==', user?.uid));
-      const snapshot = await getDocs(q);
-      await Promise.all(snapshot.docs.map(d => deleteDoc(d.ref)));
+      const holdingSnap = await getDoc(doc(db, 'holdings', id));
+      const txSnap = await getDocs(query(collection(db, 'transactions'), where('holdingId', '==', id), where('userId', '==', user.uid)));
+      const saved = { holding: holdingSnap.data(), transactions: txSnap.docs.map(d => ({ id: d.id, data: d.data() })) };
+      await deleteDoc(doc(db, 'holdings', id)); // the database removes its transactions too
+
+      toast.success(`Deleted ${label}`, {
+        duration: 8000,
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            try {
+              await withBatchedUpdates(async () => {
+                await setDoc(doc(db, 'holdings', id), saved.holding);
+                await Promise.all(saved.transactions.map(t => setDoc(doc(db, 'transactions', t.id), t.data)));
+              });
+              toast.success(`Restored ${label}`);
+            } catch (err) {
+              toast.error(`Couldn't restore ${label}: ${err instanceof Error ? err.message : err}`);
+            }
+          },
+        },
+      });
     } catch (error) {
       console.error('Error deleting stock:', error);
+      toast.error(`Couldn't delete ${label}: ${error instanceof Error ? error.message : error}`);
     }
   };
 
@@ -4781,7 +4544,7 @@ export default function App() {
       })) as Transaction[];
       setHistoryTransactions(data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
       
-      setSaveMessage({ text: 'Lot shares sold successfully', type: 'success' });
+      toast.success('Lot shares sold successfully');
       setSellingLot(null);
     } catch (error: any) {
       console.error('Error selling lot:', error);
@@ -4862,8 +4625,7 @@ export default function App() {
       await handleViewHistory(latestHolding);
       setConfirmUndoId(null);
       
-      setSaveMessage({ text: 'Transaction undone successfully', type: 'success' });
-      setTimeout(() => setSaveMessage(null), 3000);
+      toast.success('Transaction undone successfully');
     } catch (error) {
       console.error('Error undoing transaction:', error);
       setUndoError('Failed to undo transaction');
@@ -6293,36 +6055,36 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     const state = benchmarkQuote.marketState;
     if (!state || state === 'REGULAR') {
       return (
-        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-bold border border-emerald-100 ml-2">
+        <div className="flex items-center gap-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-bold border px-1.5 sm:px-2 border-emerald-100 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          OPEN
+          <span className="hidden sm:inline">OPEN</span>
         </div>
       );
     }
     
     if (state === 'PRE') {
       return (
-        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-50 text-amber-700 rounded-full text-[10px] font-bold border border-amber-100 ml-2">
+        <div className="flex items-center gap-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-full text-[10px] font-bold border px-1.5 sm:px-2 border-amber-100 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-          PRE
+          <span className="hidden sm:inline">PRE</span>
         </div>
       );
     }
     
     if (state === 'POST' || state === 'POSTPOST') {
       return (
-        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-bold border border-indigo-100 ml-2">
+        <div className="flex items-center gap-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded-full text-[10px] font-bold border px-1.5 sm:px-2 border-indigo-100 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-          POST
+          <span className="hidden sm:inline">POST</span>
         </div>
       );
     }
 
     if (state === 'CLOSED') {
       return (
-        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-zinc-100 text-zinc-600 rounded-full text-[10px] font-bold border border-zinc-200 ml-2">
+        <div className="flex items-center gap-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded-full text-[10px] font-bold border px-1.5 sm:px-2 border-zinc-200 ml-2">
           <div className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
-          CLOSED
+          <span className="hidden sm:inline">CLOSED</span>
         </div>
       );
     }
@@ -6405,7 +6167,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     switch (colId) {
       case 'ticker':
         return (
-          <td key={colId} className="px-6 py-4" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
+          <td key={colId} className="px-6 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800 shadow-[1px_0_0_0_rgb(228_228_231)]" onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
             <div className="flex items-center gap-3">
               <CompanyLogo ticker={holding.ticker} logo={metadata[holding.ticker]?.logo} />
               {editingId === holding.id ? (
@@ -6713,7 +6475,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               "text-sm font-semibold font-mono",
               holding.realizedProfitLoss > 0 ? "text-emerald-600" : holding.realizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
             )}>
-              {holding.realizedProfitLoss > 0 ? '+' : ''}{formatCurrency(holding.realizedProfitLoss, activeCurrency, true)}
+              {formatCurrency(holding.realizedProfitLoss, activeCurrency, true)}
             </div>
           </td>
         );
@@ -6746,7 +6508,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         isSaving={isSavingSettings}
       />
       {/* Header */}
-      <header className="bg-white border-b border-zinc-200 sticky top-0 z-[100]">
+      <header className="bg-white border-b border-zinc-200 relative xl:sticky xl:top-0 z-[100]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="bg-zinc-900 p-2 rounded-lg">
@@ -6804,9 +6566,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           return (
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-0">
               <div className="bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden">
-                <div className="overflow-x-auto no-scrollbar">
-                  <div className="p-4 flex flex-row items-center gap-6 lg:gap-10 min-w-max">
-                    <div className="flex flex-col min-w-max">
+                <div>
+                  <div className="p-4 grid grid-cols-1 lg:grid-cols-[auto_1fr] items-center gap-4 lg:gap-10">
+                    <div className="flex flex-col">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Combined Value</span>
                         <select 
@@ -6837,14 +6599,15 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                       <span className="text-2xl font-semibold tracking-tight text-zinc-900">
                         <AnimatedCountUp value={combinedStats.totalValue} currency={userSettings.combinedCurrency || 'USD'} />
                       </span>
+                      <span className="text-[11px] text-zinc-400 mt-0.5">All portfolio tabs</span>
                     </div>
 
-                    <div className="flex flex-row gap-6 lg:gap-8 ml-auto min-w-max">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-x-6 gap-y-4">
                       <div className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Combined Return
                         </div>
-                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                        <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedStats.totalProfitLoss} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
                         <div className={cn("text-xs font-medium flex items-center gap-1", combinedStats.totalProfitLossPercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
@@ -6857,7 +6620,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Realized Return
                         </div>
-                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.allTimeRealized >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                        <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedPeriodStats.allTimeRealized >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedPeriodStats.allTimeRealized} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
                         <div className="text-xs font-medium text-zinc-400">
@@ -6867,9 +6630,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
                       <div className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
-                          Combined Day Change
+                          Day Change
                         </div>
-                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                        <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedStats.totalDayChange} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
                         <div className={cn("text-xs font-medium flex items-center gap-1", combinedStats.totalDayChangePercent >= 0 ? "text-emerald-600" : "text-rose-600")}>
@@ -6878,13 +6641,13 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         </div>
                       </div>
 
-                      <div className="h-10 w-px bg-zinc-200 self-center shrink-0 hidden md:block" />
+                      
 
                       <div className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Total Gain 6M
                         </div>
-                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.sixMonths.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                        <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedPeriodStats.sixMonths.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedPeriodStats.sixMonths.total} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
                         <div className={cn("text-xs font-medium flex items-center gap-1", combinedPeriodStats.sixMonths.percent >= 0 ? "text-emerald-600" : "text-rose-600")}>
@@ -6894,7 +6657,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-[10px] text-zinc-500 font-medium flex items-center gap-1 pt-0.5">
                           <span>Realized:</span>
                           <span className={cn("font-semibold font-mono", combinedPeriodStats.sixMonths.realized >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                            {combinedPeriodStats.sixMonths.realized >= 0 ? '+' : ''}
                             {formatCurrency(combinedPeriodStats.sixMonths.realized, userSettings.combinedCurrency || 'USD', true)}
                           </span>
                         </div>
@@ -6904,7 +6666,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Total Gain YTD
                         </div>
-                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.ytd.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                        <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedPeriodStats.ytd.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedPeriodStats.ytd.total} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
                         <div className={cn("text-xs font-medium flex items-center gap-1", combinedPeriodStats.ytd.percent >= 0 ? "text-emerald-600" : "text-rose-600")}>
@@ -6914,7 +6676,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-[10px] text-zinc-500 font-medium flex items-center gap-1 pt-0.5">
                           <span>Realized:</span>
                           <span className={cn("font-semibold font-mono", combinedPeriodStats.ytd.realized >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                            {combinedPeriodStats.ytd.realized >= 0 ? '+' : ''}
                             {formatCurrency(combinedPeriodStats.ytd.realized, userSettings.combinedCurrency || 'USD', true)}
                           </span>
                         </div>
@@ -6924,7 +6685,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Total Gain 1Y
                         </div>
-                        <div className={cn("text-xl md:text-2xl font-medium flex items-center gap-2", combinedPeriodStats.oneYear.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                        <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedPeriodStats.oneYear.total >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedPeriodStats.oneYear.total} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
                         <div className={cn("text-xs font-medium flex items-center gap-1", combinedPeriodStats.oneYear.percent >= 0 ? "text-emerald-600" : "text-rose-600")}>
@@ -6934,7 +6695,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-[10px] text-zinc-500 font-medium flex items-center gap-1 pt-0.5">
                           <span>Realized:</span>
                           <span className={cn("font-semibold font-mono", combinedPeriodStats.oneYear.realized >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                            {combinedPeriodStats.oneYear.realized >= 0 ? '+' : ''}
                             {formatCurrency(combinedPeriodStats.oneYear.realized, userSettings.combinedCurrency || 'USD', true)}
                           </span>
                         </div>
@@ -6946,40 +6706,35 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             </div>
           );
         })()}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-start md:items-center justify-between mt-2">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row md:flex-wrap items-start md:items-center justify-between gap-x-4 mt-2">
           <div className="flex items-center gap-6 min-w-max pb-2 md:pb-0 overflow-x-auto hide-scrollbar">
             <button
               onClick={() => setActiveTab('global')}
               className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'global' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
             >
-              Global Portfolio
+              <span className="sm:hidden">Global</span>
+              <span className="hidden sm:inline">Global Portfolio</span>
               {getMarketStatus('global')}
             </button>
             <button
               onClick={() => setActiveTab('australia')}
               className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'australia' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
             >
-              Australia Investment
+              <span className="sm:hidden">Australia</span>
+              <span className="hidden sm:inline">Australia Investment</span>
               {getMarketStatus('australia')}
             </button>
             <button
               onClick={() => setActiveTab('bot')}
               className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'bot' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
             >
-              Trading Bot
+              <span className="sm:hidden">Bot</span>
+              <span className="hidden sm:inline">Trading Bot</span>
               {getMarketStatus('bot')}
             </button>
           </div>
           
-          <div className={cn("flex flex-wrap items-center gap-2 pb-2 md:pb-0 w-full md:w-auto mt-2 md:mt-0 justify-start md:justify-end", activeTab === 'bot' && "hidden")}>
-            {saveMessage && (
-              <span className={cn(
-                "text-sm font-medium whitespace-nowrap",
-                saveMessage.type === 'success' ? "text-emerald-600" : "text-rose-600"
-              )}>
-                {saveMessage.text}
-              </span>
-            )}
+          <div className={cn("flex flex-wrap lg:flex-nowrap items-center gap-2 pb-2 md:pb-0 w-full md:w-auto md:ml-auto mt-2 md:mt-0 justify-start md:justify-end", activeTab === 'bot' && "hidden")}>
             <button
               onClick={() => promptAnalysisStrategy()}
               disabled={isAnalyzing || holdings.length === 0}
@@ -7001,10 +6756,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               <button
                 ref={importBtnRef}
                 onClick={() => { setShowImportMenu(!showImportMenu); setShowExportMenu(false); }}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm whitespace-nowrap text-sm"
                 title="Import holdings, transaction history or a brokerage statement"
               >
-                {isUploading || isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                {isUploading || isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                 <span className="hidden sm:inline">Import</span>
               </button>
               {/* File pickers stay mounted so an import keeps its file if the menu closes. */}
@@ -7061,10 +6816,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               <button
                 ref={exportBtnRef}
                 onClick={() => { setShowExportMenu(!showExportMenu); setShowImportMenu(false); }}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm whitespace-nowrap text-sm"
                 title="Export holdings or transaction history"
               >
-                <Download className="w-4 h-4" />
+                <Download className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Export</span>
               </button>
               {showExportMenu && (
@@ -7120,26 +6875,26 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 </div>
               )}
             </div>
-            <div className="flex bg-zinc-100 p-0.5 rounded-lg shrink-0">
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              disabled={isResetting || holdings.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm whitespace-nowrap text-sm hover:text-rose-600"
+              title="Remove every holding in this tab (you can undo it afterwards)"
+            >
+              {isResetting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">Reset</span>
+            </button>
+            {hasBackup && (
               <button
-                onClick={() => setShowResetConfirm(true)}
-                disabled={isResetting || holdings.length === 0}
-                className="p-1.5 text-zinc-600 hover:text-rose-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Reset Portfolio"
+                onClick={() => setShowRestoreConfirm(true)}
+                disabled={isRestoring}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-900 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm whitespace-nowrap text-sm hover:text-emerald-700"
+                title="Bring back the holdings removed by the last reset"
               >
-                {isResetting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {isRestoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Undo2 className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">Undo reset</span>
               </button>
-              {hasBackup && (
-                <button
-                  onClick={() => setShowRestoreConfirm(true)}
-                  disabled={isRestoring}
-                  className="p-1.5 text-zinc-600 hover:text-emerald-600 hover:bg-white hover:shadow-sm rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Restore Last Reset"
-                >
-                  {isRestoring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Undo2 className="w-3.5 h-3.5" />}
-                </button>
-              )}
-            </div>
+            )}
             <div className="relative shrink-0">
               <button
                 ref={addWidgetBtnRef}
@@ -7251,10 +7006,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           <p className="text-sm text-zinc-500 mt-1">Simulated portfolio value vs major indices tracking invested capital</p>
                         </div>
                         <div className="flex items-center gap-1">
-                          <button onClick={() => toggleWidgetSize('performance')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
+                          <button onClick={() => toggleWidgetSize('performance')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Resize Widget">
                             {widgetSizes.performance === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                           </button>
-                          <button onClick={() => removeWidget('performance')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
+                          <button onClick={() => removeWidget('performance')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Remove Widget">
                             <X className="w-4 h-4" />
                           </button>
                         </div>
@@ -7279,10 +7034,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                   return (
                     <SortableWidget key="allocation" id="allocation" className={cn("p-8", getWidgetClass('allocation'))} onDoubleClick={() => toggleWidgetSize('allocation')}>
                       <div className="flex justify-end mb-2 relative z-20">
-                        <button onClick={() => toggleWidgetSize('allocation')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
+                        <button onClick={() => toggleWidgetSize('allocation')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Resize Widget">
                           {widgetSizes.allocation === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                         </button>
-                        <button onClick={() => removeWidget('allocation')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
+                        <button onClick={() => removeWidget('allocation')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Remove Widget">
                           <X className="w-4 h-4" />
                         </button>
                       </div>
@@ -7818,7 +7573,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 if (widgetId === 'holdings') {
                   return (
                     <SortableWidget key="holdings" id="holdings" className={cn(getWidgetClass('holdings'))} onDoubleClick={() => toggleWidgetSize('holdings')}>
-                      <div className="px-6 py-5 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/50 rounded-t-2xl">
+                      <div className="px-4 sm:px-6 py-5 border-b border-zinc-200 flex flex-wrap items-center justify-between gap-3 bg-zinc-50/50 rounded-t-2xl">
                         <div className="flex items-center gap-4 relative z-20">
                           <h2 className="text-lg font-semibold flex items-center gap-2">
                             Current Holdings
@@ -7838,7 +7593,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             {sortedHoldings.length} {sortedHoldings.length === 1 ? 'Asset' : 'Assets'}
                           </div>
                         </div>
-                        <div className="flex items-center gap-4 relative z-20">
+                        <div className="flex flex-wrap items-center gap-2 sm:gap-4 relative z-20 min-w-0">
                           <StockSearch onSelect={(ticker) => setSelectedChartTicker(ticker)} />
                           
                           {layoutSaveStatus !== 'idle' && (
@@ -7864,17 +7619,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             </div>
                           )}
 
-                          <button
-                            onClick={handleExportCSV}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 border text-xs font-medium border-zinc-200 text-zinc-700 rounded-lg focus:outline-none hover:bg-zinc-50 dark:hover:bg-zinc-700 hover:border-zinc-300 transition-colors cursor-pointer mr-2 relative z-20 shadow-sm"
-                            title="Export current portfolio as CSV file"
-                          >
-                            <Download className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Export CSV</span>
-                          </button>
 
                           <select 
-                            className="bg-white dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 border text-xs font-medium border-zinc-200 text-zinc-700 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-zinc-300 transition-colors cursor-pointer mr-2 relative z-20"
+                            className="max-w-[14rem] sm:max-w-xs truncate bg-white dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 border text-xs font-medium border-zinc-200 text-zinc-700 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 hover:border-zinc-300 transition-colors cursor-pointer mr-2 relative z-20"
                             value={tableGrouping}
                             onChange={(e) => {
                               const val = e.target.value as any;
@@ -7889,10 +7636,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             <option value="industry">Group by Specific Industry (e.g., Semiconductors)</option>
                             <option value="marketCap">Group by Market Cap</option>
                           </select>
-                          <button onClick={() => toggleWidgetSize('holdings')} className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
+                          <button onClick={() => toggleWidgetSize('holdings')} className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Resize Widget">
                             {widgetSizes.holdings === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                           </button>
-                          <button onClick={() => removeWidget('holdings')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
+                          <button onClick={() => removeWidget('holdings')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Remove Widget">
                             <X className="w-4 h-4" />
                           </button>
                         </div>
@@ -8146,7 +7893,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                     switch (colId) {
                                       case 'ticker':
                                         return (
-                                          <td key={colId} className="px-6 py-3 text-left font-sans font-bold text-zinc-500 uppercase tracking-wider text-[10px]">
+                                          <td key={colId} className="px-6 py-3 text-left font-sans font-bold text-zinc-500 uppercase tracking-wider text-[10px] sticky left-0 z-10 bg-zinc-100 dark:bg-zinc-800">
                                             Total {groupName === 'mag7' ? 'Mag7' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName === 'Cash' ? 'Cash' : groupName}
                                           </td>
                                         );
@@ -8197,7 +7944,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                               "font-bold font-mono text-sm",
                                               groupData.totalProfit >= 0 ? "text-emerald-600" : "text-rose-600"
                                             )}>
-                                              {groupData.totalProfit >= 0 ? '+' : ''}{formatCurrency(groupData.totalProfit, activeCurrency, true)}
+                                              {formatCurrency(groupData.totalProfit, activeCurrency, true)}
                                             </div>
                                             <div className={cn(
                                               "text-[10px] mt-0.5 font-mono font-medium",
@@ -8215,7 +7962,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                               "font-bold font-mono text-sm",
                                               groupData.totalDayChange >= 0 ? "text-emerald-600" : "text-rose-600"
                                             )}>
-                                              {groupData.totalDayChange >= 0 ? '+' : ''}{formatCurrency(groupData.totalDayChange, activeCurrency, true)}
+                                              {formatCurrency(groupData.totalDayChange, activeCurrency, true)}
                                             </div>
                                           </td>
                                         );
@@ -8245,7 +7992,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                               "font-bold font-mono text-sm",
                                               groupData.totalRealizedProfitLoss > 0 ? "text-emerald-600" : groupData.totalRealizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
                                             )}>
-                                              {groupData.totalRealizedProfitLoss > 0 ? '+' : ''}{formatCurrency(groupData.totalRealizedProfitLoss, activeCurrency, true)}
+                                              {formatCurrency(groupData.totalRealizedProfitLoss, activeCurrency, true)}
                                             </div>
                                           </td>
                                         );
@@ -8383,7 +8130,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                         "font-semibold font-mono text-sm",
                                         holding.realizedProfitLoss > 0 ? "text-emerald-600" : holding.realizedProfitLoss < 0 ? "text-rose-600" : "text-zinc-400"
                                       )}>
-                                        {holding.realizedProfitLoss > 0 ? '+' : ''}{formatCurrency(holding.realizedProfitLoss, holding.avgPriceCurrency || activeCurrency, true)}
+                                        {formatCurrency(holding.realizedProfitLoss, holding.avgPriceCurrency || activeCurrency, true)}
                                       </div>
                                     </td>
                                     <td className="px-6 py-4">
@@ -8392,33 +8139,16 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                       </div>
                                     </td>
                                     <td className="px-6 py-4 text-center" onClick={(e) => e.stopPropagation()}>
-                                      <div className="flex items-center justify-center gap-1 relative z-20">
-                                        {holding.shares > 0 && (
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleViewHistory(holding);
-                                            }}
-                                            className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                                            title="Sell Specific Lot"
-                                          >
-                                            <TrendingDown className="w-4 h-4" />
-                                          </button>
-                                        )}
-                                        <button
-                                          onClick={() => handleViewHistory(holding)}
-                                          className="p-1.5 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                          title="View History"
-                                        >
-                                          <FileText className="w-4 h-4" />
-                                        </button>
-                                        <button
-                                          onClick={() => handleDelete(holding.id)}
-                                          className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                                          title="Remove from watchlist"
-                                        >
-                                          <Trash2 className="w-4 h-4" />
-                                        </button>
+                                      <div className="relative z-20">
+                                        <HoldingActions
+                                          ticker={holding.ticker}
+                                          onChart={() => setSelectedChartTicker(holding.ticker)}
+                                          onAnalyze={() => promptAnalysisStrategy(holding.ticker)}
+                                          onHistory={() => handleViewHistory(holding)}
+                                          historyLabel={holding.shares > 0 ? 'History & sell lots' : 'History'}
+                                          onDelete={() => handleDelete(holding.id)}
+                                          deleteLabel={holding.shares > 0 ? 'Delete' : 'Remove from watchlist'}
+                                        />
                                       </div>
                                     </td>
                                   </tr>
@@ -8515,10 +8245,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           <Plus className="w-5 h-5 text-zinc-400" />
                           Add Position
                         </h2>
-                        <button onClick={() => toggleWidgetSize('addPosition')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Resize Widget">
+                        <button onClick={() => toggleWidgetSize('addPosition')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Resize Widget">
                           {widgetSizes.addPosition === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                         </button>
-                        <button onClick={() => removeWidget('addPosition')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all relative z-20" title="Remove Widget">
+                        <button onClick={() => removeWidget('addPosition')} className="p-1.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg opacity-40 group-hover:opacity-100 focus-visible:opacity-100 transition-all relative z-20" title="Remove Widget">
                           <X className="w-4 h-4" />
                         </button>
                       </div>
@@ -8765,6 +8495,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       </main>
 
       <Toaster position="top-right" richColors />
+      <ConfirmDialogHost />
       {botCloseSymbol && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => !isClosingBotPosition && setBotCloseSymbol(null)}>
           <div className="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
