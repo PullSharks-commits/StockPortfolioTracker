@@ -51,8 +51,10 @@ const METRICS: Record<string, MetricDef> = {
 
 const ANNUAL_FORMS = new Set(['10-K', '10-K/A', '20-F', '20-F/A', '40-F', '40-F/A', '10-KT']);
 
-interface Fact { val: number; unit: string; start?: string; end: string; form: string; filed: string; tag: string; tagRank: number }
-interface Value { value: number; currency: string | null; tag: string; filed: string; form: string; derived?: boolean }
+interface Fact { val: number; unit: string; start?: string; end: string; form: string; filed: string; tag: string; tagRank: number; firstFiled?: string }
+// filed = filing the value was taken from (latest, so restatements win);
+// firstFiled = when this period's figure was first reported (for point-in-time use).
+interface Value { value: number; currency: string | null; tag: string; filed: string; firstFiled: string; form: string; derived?: boolean }
 export interface Period {
   key: string;            // "FY2024" or "Q3 FY2024"
   fiscalYear: number;
@@ -91,26 +93,37 @@ function collectFacts(companyFacts: any, def: MetricDef): Fact[] {
 }
 
 // For each period (start|end), keep one fact: best tag first, then latest filing.
+// Also note when the period was first reported at all - later filings repeat old
+// periods as comparatives, which must not make them look newly known.
 function pickPerPeriod(facts: Fact[]): Map<string, Fact> {
   const best = new Map<string, Fact>();
+  const first = new Map<string, string>();
   for (const f of facts) {
     const key = `${f.start ?? ''}|${f.end}`;
     const cur = best.get(key);
     if (!cur || f.tagRank < cur.tagRank || (f.tagRank === cur.tagRank && f.filed > cur.filed)) best.set(key, f);
+    if (!first.has(key) || f.filed < first.get(key)!) first.set(key, f.filed);
   }
+  for (const [key, f] of best) best.set(key, { ...f, firstFiled: first.get(key) });
   return best;
 }
 
-const toValue = (f: Fact, derived = false): Value => ({ value: f.val, currency: unitCurrency(f.unit), tag: f.tag, filed: f.filed, form: f.form, ...(derived ? { derived } : {}) });
+const toValue = (f: Fact, derived = false): Value => ({ value: f.val, currency: unitCurrency(f.unit), tag: f.tag, filed: f.filed, firstFiled: f.firstFiled ?? f.filed, form: f.form, ...(derived ? { derived } : {}) });
 
 export function normalizeCompanyFacts(companyFacts: any) {
   const perMetric: Record<string, Map<string, Fact>> = {};
-  for (const [name, def] of Object.entries(METRICS)) perMetric[name] = pickPerPeriod(collectFacts(companyFacts, def));
+  const rawFacts: Record<string, Fact[]> = {};
+  for (const [name, def] of Object.entries(METRICS)) {
+    rawFacts[name] = collectFacts(companyFacts, def);
+    perMetric[name] = pickPerPeriod(rawFacts[name]);
+  }
 
-  // Fiscal years are defined by annual (~1 year) revenue/net income/cash-flow periods.
+  // Fiscal years are ~1-year revenue/net income/cash-flow periods that appeared in an
+  // annual report. Check every filing, not just the one a value was taken from: the
+  // latest copy of a year can come from an 8-K recasting old results.
   const annualSpans = new Map<string, { start: string; end: string }>();
   for (const name of ['revenue', 'netIncome', 'operatingCashFlow', 'operatingIncome']) {
-    for (const f of perMetric[name].values()) {
+    for (const f of rawFacts[name]) {
       if (!f.start) continue;
       const d = days(f.start, f.end);
       if (d >= 350 && d <= 380 && ANNUAL_FORMS.has(f.form)) annualSpans.set(f.end, { start: f.start, end: f.end });
@@ -183,7 +196,7 @@ export function normalizeCompanyFacts(companyFacts: any) {
       if (def.unit !== 'currency' || !total) continue; // shares/EPS don't sum across quarters
       const parts = qs.map(q => q!.values[name]);
       if (parts.some(v => !v || v.currency !== total.currency)) continue;
-      q4.values[name] = { value: total.value - parts.reduce((s, v) => s + v!.value, 0), currency: total.currency, tag: total.tag, filed: total.filed, form: total.form, derived: true };
+      q4.values[name] = { value: total.value - parts.reduce((s, v) => s + v!.value, 0), currency: total.currency, tag: total.tag, filed: total.filed, firstFiled: total.firstFiled, form: total.form, derived: true };
     }
   }
   quarterly.sort((a, b) => a.end.localeCompare(b.end));
@@ -291,6 +304,8 @@ async function lookupCik(ticker: string, contact: string) {
 }
 
 const CACHE_TTL_MS = 24 * 3600_000;
+// Bump when the payload shape changes so older cached entries are rebuilt.
+const PAYLOAD_VERSION = 3;
 
 export function registerFundamentalsRoutes(app: Express) {
   const connectionString = process.env.DATABASE_URL;
@@ -304,7 +319,7 @@ export function registerFundamentalsRoutes(app: Express) {
   async function load(ticker: string, force: boolean) {
     const cached = await pool.query('SELECT * FROM company_fundamentals WHERE ticker = $1', [ticker]);
     const row = cached.rows[0];
-    if (row && !force && Date.now() - new Date(row.fetched_at).getTime() < CACHE_TTL_MS) return row.payload;
+    if (row && !force && row.payload?.version === PAYLOAD_VERSION && Date.now() - new Date(row.fetched_at).getTime() < CACHE_TTL_MS) return row.payload;
 
     // Exchange-suffixed tickers (WES.AX, 0700.HK...) are not SEC registrants, and
     // stripping the suffix would match an unrelated US company.
@@ -328,6 +343,7 @@ export function registerFundamentalsRoutes(app: Express) {
 
   async function store(ticker: string, payload: any) {
     payload.fetchedAt = new Date().toISOString();
+    payload.version = PAYLOAD_VERSION;
     await pool.query(
       `INSERT INTO company_fundamentals (ticker, source, payload, fetched_at) VALUES ($1, $2, $3, now())
        ON CONFLICT (ticker) DO UPDATE SET source = EXCLUDED.source, payload = EXCLUDED.payload, fetched_at = now()`,

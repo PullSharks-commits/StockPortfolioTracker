@@ -1675,6 +1675,48 @@ async function startServer() {
     return res.json(quotes);
   });
 
+  // Market inputs for the Company view's valuation and earnings sections: monthly
+  // (split-adjusted) closes for ~11 years, split events, and recent EPS vs estimates.
+  const companyMarketCache = new Map<string, { at: number; data: any }>();
+  app.get('/api/company-market-data', async (req, res) => {
+    const symbol = String(req.query.symbol || '').trim().toUpperCase();
+    if (!/^[A-Z0-9^][A-Z0-9.\-=^]{0,14}$/.test(symbol)) return res.status(400).json({ error: 'Invalid symbol' });
+    const cached = companyMarketCache.get(symbol);
+    if (cached && Date.now() - cached.at < 6 * 3600_000) return res.json(cached.data);
+    try {
+      const from = new Date();
+      from.setFullYear(from.getFullYear() - 11);
+      const [chart, summary]: any[] = await Promise.all([
+        yahooWithRetry(() => yahooFinance.chart(symbol, { period1: from, interval: '1mo', events: 'split' } as any, { validateResult: false })),
+        yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['earningsHistory'] }, { validateResult: false })).catch(() => null),
+      ]);
+      const data = {
+        symbol,
+        currency: chart?.meta?.currency ?? null,
+        monthly: (chart?.quotes ?? [])
+          .filter((q: any) => typeof q.close === 'number')
+          .map((q: any) => ({ date: new Date(q.date).toISOString().slice(0, 10), close: q.close })),
+        splits: (chart?.events?.splits ?? []).map((s: any) => ({
+          date: new Date(s.date).toISOString().slice(0, 10),
+          ratio: s.numerator / s.denominator,
+        })),
+        earnings: (summary?.earningsHistory?.history ?? [])
+          .filter((e: any) => e.quarter)
+          .map((e: any) => ({
+            quarterEnd: new Date(e.quarter).toISOString().slice(0, 10),
+            epsActual: e.epsActual ?? null,
+            epsEstimate: e.epsEstimate ?? null,
+            surprisePercent: e.surprisePercent ?? null,
+          })),
+      };
+      companyMarketCache.set(symbol, { at: Date.now(), data });
+      res.json(data);
+    } catch (error: any) {
+      console.error(`[company-market-data] ${symbol}:`, error?.message || error);
+      res.status(502).json({ error: `Couldn't load market data for ${symbol}` });
+    }
+  });
+
   app.get('/api/earnings', async (req, res) => {
     const symbols = req.query.symbols as string;
     if (!symbols) return res.json([]);

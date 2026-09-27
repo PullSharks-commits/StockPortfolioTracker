@@ -61,6 +61,7 @@ import { BotStatus, clearBotPortfolio, closeBotPosition, onBotStatus, refreshBot
 import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
+import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
 import { calculateGroupFearGreed } from './lib/fearGreed';
@@ -2037,6 +2038,8 @@ export default function App() {
   const [chartModalTab, setChartModalTab] = useState<'chart' | 'kpis' | 'history'>('chart');
   const [showRsi, setShowRsi] = useState(false);
   const [isSyncingHistory, setIsSyncingHistory] = useState(false);
+  // Whether the Company view found SEC financials; Yahoo's short charts are a fallback.
+  const [fundamentalsSource, setFundamentalsSource] = useState<'sec' | 'none' | 'error' | null>(null);
   const [kpiTimeScale, setKpiTimeScale] = useState<'5y' | '10y' | 'all_y' | '8q' | '12q' | '20q'>('5y');
   const [financialsData, setFinancialsData] = useState<any>(null);
   const [isFinancialsLoading, setIsFinancialsLoading] = useState(false);
@@ -8642,13 +8645,13 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       {selectedChartTicker && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
-            <div className="px-6 py-4 border-b border-zinc-200 flex items-center justify-between">
-              <div className="flex items-center gap-4">
+            <div className="px-4 sm:px-6 py-4 border-b border-zinc-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-4 min-w-0">
                 <h3 className="text-lg font-semibold flex items-center gap-2">
                   <CompanyLogo ticker={selectedChartTicker} logo={metadata[selectedChartTicker]?.logo} size="sm" />
                   {selectedChartTicker}
                 </h3>
-                <div className="flex items-center bg-zinc-100 p-1 rounded-lg">
+                <div className="flex items-center bg-zinc-100 p-1 rounded-lg max-w-full overflow-x-auto">
                   <button
                     onClick={() => setChartModalTab('chart')}
                     className={cn("px-3 py-1.5 text-sm font-medium rounded-md transition-colors", chartModalTab === 'chart' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}
@@ -8659,7 +8662,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                     onClick={() => setChartModalTab('kpis')}
                     className={cn("px-3 py-1.5 text-sm font-medium rounded-md transition-colors", chartModalTab === 'kpis' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700")}
                   >
-                    Business KPIs
+                    Fundamentals
                   </button>
                   <button
                     onClick={() => setChartModalTab('history')}
@@ -8729,6 +8732,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 <HistoricalPriceChart ticker={selectedChartTicker} activeCurrency={activeCurrency} />
               ) : (
                 <div className="h-full w-full p-6 overflow-auto">
+                  <div className="max-w-5xl mx-auto mb-8">
+                    <CompanyFundamentals ticker={selectedChartTicker} onSource={setFundamentalsSource} />
+                  </div>
                   {isFinancialsLoading || isBusinessKpisLoading ? (
                     <div className="flex items-center justify-center h-full">
                       <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
@@ -8812,7 +8818,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         </div>
                       )}
 
-                      {financialsData && financialsData.kpis && financialsData.kpis.length > 0 && (
+                      {fundamentalsSource !== 'sec' && financialsData && financialsData.kpis && financialsData.kpis.length > 0 && (
                         <>
                           <div className="bg-white p-6 rounded-xl shadow-sm border border-zinc-200">
                             <h4 className="text-base font-semibold mb-4 text-zinc-800">Revenue & Net Income</h4>
@@ -8872,7 +8878,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         </>
                       )}
 
-                      {(!businessKpisData || businessKpisData.length === 0) && (!financialsData || !financialsData.kpis || financialsData.kpis.length === 0) && (
+                      {fundamentalsSource !== 'sec' && (!businessKpisData || businessKpisData.length === 0) && (!financialsData || !financialsData.kpis || financialsData.kpis.length === 0) && (
                         <div className="flex flex-col items-center justify-center h-64 text-zinc-500">
                           <BarChart2 className="w-12 h-12 mb-4 text-zinc-300" />
                           <p>Business KPIs are not available for this asset.</p>
