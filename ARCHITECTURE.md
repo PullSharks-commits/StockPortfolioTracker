@@ -67,6 +67,8 @@ flowchart LR
 | Port | `3000`, bound to `0.0.0.0` (reachable from the LAN) |
 | Schema | `npm run db:migrate` applies `db/schema.sql` (idempotent) |
 | Config | `.env` (gitignored); names listed in `.env.example` |
+| Always on | launchd agent `com.sumitnarayan.portfoliotracker` (`launchd/`, runs `scripts/run-server.sh`): starts the dev server at login, restarts it if it exits, keeps the Mac awake while it runs; output in `logs/server.log`. Restart after server changes with `launchctl kickstart -k gui/$(id -u)/com.sumitnarayan.portfoliotracker` |
+| Phone | `tailscale serve --bg 3000` publishes it at `https://<mac>.<tailnet>.ts.net` to the owner's Tailscale devices |
 
 ## Repository layout
 

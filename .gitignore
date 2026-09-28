@@ -10,3 +10,6 @@ coverage/
 # Local SQLite price cache written by the server
 portfolio.db
 portfolio.db-*
+
+# launchd server output
+logs/

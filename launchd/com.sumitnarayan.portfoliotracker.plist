@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sumitnarayan.portfoliotracker</string>
+
+    <!-- The Portfolio Tracker server (http://localhost:3000, and via Tailscale Serve
+         on the phone). Starts at login, is restarted if it exits, and keeps the Mac
+         awake while it runs (see scripts/run-server.sh). Install by copying this
+         file to ~/Library/LaunchAgents/ and running
+           launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sumitnarayan.portfoliotracker.plist
+         Restart after server changes: launchctl kickstart -k gui/$(id -u)/com.sumitnarayan.portfoliotracker
+         Stop and remove:             launchctl bootout gui/$(id -u)/com.sumitnarayan.portfoliotracker -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sumitnarayan/Code/StockPortfolioTracker/scripts/run-server.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sumitnarayan/Code/StockPortfolioTracker</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Wait at least 10 s between restarts if it keeps failing. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sumitnarayan/Code/StockPortfolioTracker/logs/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/sumitnarayan/Code/StockPortfolioTracker/logs/server.log</string>
+</dict>
+</plist>
