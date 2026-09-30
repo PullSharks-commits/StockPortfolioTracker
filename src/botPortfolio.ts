@@ -17,9 +17,24 @@ export interface BotStatus {
   errors: string[];
   error: string | null; // the bot dashboard itself could not be reached
   snapshot: any | null; // the bot's /api/positions response, for the Trading Bot tab
+  closedTrades: ClosedTrade[]; // the bot's latest closed trades (/api/trade-history, newest 50)
 }
 
-let status: BotStatus = { loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], errors: [], error: null, snapshot: null };
+// One row of the bot's closed_trades table (TradingBot/trades_db.py).
+export interface ClosedTrade {
+  id: number;
+  symbol: string;
+  entry_date: string | null;
+  exit_date: string;
+  qty: number;
+  entry_price: number | null;
+  exit_price: number | null;
+  realized_pnl: number | null;
+  exit_reason: string;
+  note: string | null;
+}
+
+let status: BotStatus = { loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], errors: [], error: null, snapshot: null, closedTrades: [] };
 const statusListeners = new Set<(s: BotStatus) => void>();
 
 export function onBotStatus(listener: (s: BotStatus) => void) {
@@ -115,6 +130,7 @@ async function load(userId: string) {
       errors: [...(snap.errors || []), ...(snap.realized_error ? [snap.realized_error] : [])],
       error: null,
       snapshot: snap,
+      closedTrades: closed,
     });
   } catch (err) {
     setStatus({ loaded: true, error: err instanceof Error ? err.message : String(err) });
@@ -124,7 +140,7 @@ async function load(userId: string) {
 export function clearBotPortfolio() {
   setVirtualDocs('holdings', []);
   setVirtualDocs('transactions', []);
-  setStatus({ loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], errors: [], error: null, snapshot: null });
+  setStatus({ loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], errors: [], error: null, snapshot: null, closedTrades: [] });
 }
 
 // --- Actions (place real orders) ----------------------------------------------

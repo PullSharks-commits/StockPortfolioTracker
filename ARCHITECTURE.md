@@ -69,7 +69,7 @@ flowchart LR
 | Schema | `npm run db:migrate` applies `db/schema.sql` (idempotent) |
 | Config | `.env` (gitignored); names listed in `.env.example` |
 | Always on | launchd agent `com.sumitnarayan.portfoliotracker` (`launchd/`, runs `scripts/run-server.sh`): runs the production build (rebuilding when sources are newer) from login, restarts it if it exits, keeps the Mac awake while it runs; output in `logs/server.log`. Restart after server changes with `launchctl kickstart -k gui/$(id -u)/com.sumitnarayan.portfoliotracker` |
-| Public | `tailscale funnel --bg 3000` publishes it to the internet at `https://<mac>.<tailnet>.ts.net` (a Neon Auth trusted domain) |
+| Access | `https://<mac>.<tailnet>.ts.net` (a Neon Auth trusted domain). `scripts/access.sh private` = only the owner's Tailscale devices (Serve, the current setting); `scripts/access.sh public` = the internet (Funnel), still behind sign-in and invites; `status` shows which |
 
 ## Repository layout
 

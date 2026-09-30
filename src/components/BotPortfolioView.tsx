@@ -3,10 +3,10 @@
 // position showing where the price sits between its stop and target. Prices come
 // from the tracker's live quote stream when available, else the bot's last snapshot.
 
-import React from 'react';
-import { Loader2, RefreshCw } from 'lucide-react';
+import React, { useState } from 'react';
+import { ChevronDown, Loader2, RefreshCw, X } from 'lucide-react';
 import { clsx } from 'clsx';
-import type { BotStatus } from '../botPortfolio';
+import type { BotStatus, ClosedTrade } from '../botPortfolio';
 
 const usd = (v: number | null | undefined) =>
   v == null || Number.isNaN(v) ? '—' : `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -16,6 +16,126 @@ const tone = (v: number | null | undefined) => (v == null ? 'text-zinc-900 dark:
 const clamp = (v: number) => Math.max(0, Math.min(100, v));
 
 const REALIZED_WINDOWS: [string, string][] = [['6m', '6 Months'], ['1y', '1 Year'], ['ytd', 'YTD'], ['all_time', 'All-Time']];
+
+// Same windows as the bot's realized_pnl_windows(): by exit date, trailing 182 / 365
+// days, since 1 January, or everything.
+function windowStart(key: string, today = new Date()): string | null {
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const back = (days: number) => iso(new Date(today.getTime() - days * 86_400_000));
+  if (key === '6m') return back(182);
+  if (key === '1y') return back(365);
+  if (key === 'ytd') return `${today.getFullYear()}-01-01`;
+  return null;
+}
+
+const EXIT_REASONS: Record<string, { label: string; className: string }> = {
+  target: { label: 'Target hit', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  stop: { label: 'Stop hit', className: 'bg-rose-50 text-rose-700 border-rose-200' },
+  time_stop: { label: 'Time stop', className: 'bg-amber-50 text-amber-700 border-amber-200' },
+  manual_dashboard: { label: 'Closed from app', className: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  closed_elsewhere: { label: 'Closed outside bot', className: 'bg-zinc-50 text-zinc-600 border-zinc-200' },
+  manual: { label: 'Manual', className: 'bg-zinc-50 text-zinc-600 border-zinc-200' },
+};
+const reasonOf = (r: string) => EXIT_REASONS[r] ?? { label: r.replace(/_/g, ' '), className: 'bg-zinc-50 text-zinc-600 border-zinc-200' };
+const day = (d: string | null) => (d ? new Date(`${d.slice(0, 10)}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const daysHeld = (t: ClosedTrade) => (t.entry_date ? Math.round((Date.parse(t.exit_date.slice(0, 10)) - Date.parse(t.entry_date.slice(0, 10))) / 86_400_000) : null);
+
+function ClosedTradesPanel({ title, trades, onClose }: { title: string; trades: ClosedTrade[]; onClose: () => void }) {
+  const known = trades.filter(t => t.realized_pnl != null);
+  const wins = known.filter(t => t.realized_pnl! > 0);
+  const losses = known.filter(t => t.realized_pnl! < 0);
+  const total = known.reduce((s, t) => s + t.realized_pnl!, 0);
+  const avg = (xs: ClosedTrade[]) => (xs.length ? xs.reduce((s, t) => s + t.realized_pnl!, 0) / xs.length : null);
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-4 border-b border-zinc-100 dark:border-zinc-800">
+        <div>
+          <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Closed trades · {title}</h3>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            {trades.length} trade{trades.length === 1 ? '' : 's'}
+            {known.length > 0 && <> · {wins.length} won, {losses.length} lost ({Math.round((wins.length / known.length) * 100)}% win rate) · total <span className={tone(total)}>{usd(total)}</span></>}
+            {avg(wins) != null && <> · avg win {usd(avg(wins))}</>}
+            {avg(losses) != null && <> · avg loss {usd(avg(losses))}</>}
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg" aria-label="Hide closed trades"><X className="w-4 h-4" /></button>
+      </div>
+      {trades.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-zinc-500">No trades closed in this period.</p>
+      ) : (
+        <>
+        {/* Phones: one compact card per trade. */}
+        <ul className="sm:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+          {trades.map(t => {
+            const reason = reasonOf(t.exit_reason);
+            const cost = t.entry_price != null ? t.entry_price * t.qty : null;
+            const pnlPct = t.realized_pnl != null && cost ? (t.realized_pnl / cost) * 100 : null;
+            const held = daysHeld(t);
+            return (
+              <li key={t.id} className="px-4 py-3 space-y-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">{t.symbol} <span className="text-xs font-normal text-zinc-500">{t.qty} sh</span></span>
+                  <span className={clsx('font-mono font-semibold', tone(t.realized_pnl))}>
+                    {t.realized_pnl == null ? <span className="text-zinc-400 font-normal text-sm">P&amp;L unknown</span> : <>{usd(t.realized_pnl)} <span className="text-xs font-normal">{pct(pnlPct)}</span></>}
+                  </span>
+                </div>
+                <div className="text-xs text-zinc-500 font-mono">
+                  {usd(t.entry_price)} → {usd(t.exit_price)}
+                  <span className="font-sans"> · {day(t.entry_date)} – {day(t.exit_date)}{held != null ? ` · ${held} day${held === 1 ? '' : 's'}` : ''}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={clsx('inline-block text-[11px] font-semibold border rounded-full px-2 py-0.5', reason.className)}>{reason.label}</span>
+                  {t.note && <span className="text-xs text-zinc-400">{t.note}</span>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="hidden sm:block overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wider text-zinc-400 text-left border-b border-zinc-100 dark:border-zinc-800">
+                <th className="px-5 py-2 font-medium">Symbol</th>
+                <th className="px-3 py-2 font-medium text-right">Qty</th>
+                <th className="px-3 py-2 font-medium">Entry</th>
+                <th className="px-3 py-2 font-medium">Exit</th>
+                <th className="px-3 py-2 font-medium text-right">Held</th>
+                <th className="px-3 py-2 font-medium text-right">P&amp;L</th>
+                <th className="px-5 py-2 font-medium">Exit reason</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {trades.map(t => {
+                const reason = reasonOf(t.exit_reason);
+                const cost = t.entry_price != null ? t.entry_price * t.qty : null;
+                const pnlPct = t.realized_pnl != null && cost ? (t.realized_pnl / cost) * 100 : null;
+                const held = daysHeld(t);
+                return (
+                  <tr key={t.id} className="hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                    <td className="px-5 py-3 font-semibold text-zinc-900 dark:text-zinc-100">{t.symbol}</td>
+                    <td className="px-3 py-3 text-right font-mono">{t.qty}</td>
+                    <td className="px-3 py-3 whitespace-nowrap"><span className="font-mono">{usd(t.entry_price)}</span> <span className="text-xs text-zinc-400">{day(t.entry_date)}</span></td>
+                    <td className="px-3 py-3 whitespace-nowrap"><span className="font-mono">{usd(t.exit_price)}</span> <span className="text-xs text-zinc-400">{day(t.exit_date)}</span></td>
+                    <td className="px-3 py-3 text-right text-zinc-500 whitespace-nowrap">{held == null ? '—' : `${held} day${held === 1 ? '' : 's'}`}</td>
+                    <td className={clsx('px-3 py-3 text-right font-mono font-semibold whitespace-nowrap', tone(t.realized_pnl))}>
+                      {t.realized_pnl == null ? <span className="text-zinc-400 font-normal" title="The exit price wasn't available, so this trade isn't counted in the totals">unknown</span> : <>{usd(t.realized_pnl)} <span className="text-xs font-normal">{pct(pnlPct)}</span></>}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className={clsx('inline-block text-[11px] font-semibold border rounded-full px-2 py-0.5 whitespace-nowrap', reason.className)} title={t.note || undefined}>{reason.label}</span>
+                      {t.note && <div className="mt-1 text-xs text-zinc-400 max-w-xs">{t.note}</div>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 interface Props {
   status: BotStatus | null;
@@ -107,6 +227,15 @@ function PositionCard({ row, livePrice, onClose }: { row: any; livePrice?: numbe
 
 export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, onRunHousekeeping, isRunningHousekeeping, onClosePosition }: Props) {
   const snap = status?.snapshot;
+  // Which Realized card's trades are listed below the cards (click again to hide).
+  const [tradesWindow, setTradesWindow] = useState<string | null>(null);
+  const closedTrades = status?.closedTrades ?? [];
+  const windowTrades = (key: string) => {
+    const start = windowStart(key);
+    return closedTrades
+      .filter(t => t.exit_date && (start == null || t.exit_date.slice(0, 10) >= start))
+      .sort((a, b) => b.exit_date.localeCompare(a.exit_date) || b.id - a.id);
+  };
   const positions: any[] = snap?.positions ?? [];
   const totals = snap?.totals;
 
@@ -168,15 +297,37 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {REALIZED_WINDOWS.map(([key, label]) => {
             const w = snap.realized[key] || { realized_pnl: null, n_trades: 0 };
+            const selected = tradesWindow === key;
             return (
-              <div key={key} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTradesWindow(selected ? null : key)}
+                aria-pressed={selected}
+                aria-label={`Realized ${label}: ${w.n_trades} trades. ${selected ? 'Hide' : 'Show'} closed trades`}
+                className={clsx(
+                  'text-left rounded-2xl border bg-white dark:bg-zinc-900 p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/30 dark:hover:bg-indigo-950/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
+                  selected ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-zinc-200 dark:border-zinc-800'
+                )}
+              >
                 <div className="text-[11px] uppercase tracking-wider text-zinc-400">Realized · {label}</div>
                 <div className={clsx('mt-1 text-lg font-semibold font-mono', tone(w.realized_pnl))}>{usd(w.realized_pnl)}</div>
-                <div className="text-xs text-zinc-400">{w.n_trades} trade{w.n_trades === 1 ? '' : 's'}</div>
-              </div>
+                <div className="flex items-center justify-between text-xs text-zinc-400">
+                  <span>{w.n_trades} trade{w.n_trades === 1 ? '' : 's'}</span>
+                  <span className="inline-flex items-center gap-0.5 text-indigo-600">{selected ? 'Hide' : 'Details'} <ChevronDown className={clsx('w-3 h-3 transition-transform', selected && 'rotate-180')} /></span>
+                </div>
+              </button>
             );
           })}
         </div>
+      )}
+
+      {tradesWindow && (
+        <ClosedTradesPanel
+          title={REALIZED_WINDOWS.find(([k]) => k === tradesWindow)?.[1] ?? ''}
+          trades={windowTrades(tradesWindow)}
+          onClose={() => setTradesWindow(null)}
+        />
       )}
 
       {status?.loaded && !status.error && positions.length === 0 && (
