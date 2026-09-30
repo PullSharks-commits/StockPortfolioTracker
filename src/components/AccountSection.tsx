@@ -4,6 +4,7 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2, Trash2 } from 'lucide-react';
 import { auth, authedFetch, signOut } from '../backend';
+import { InviteList } from './InviteList';
 
 interface Me { email: string | null; name: string | null; providers: string[]; isOwner: boolean }
 
@@ -67,6 +68,7 @@ export function AccountSection() {
         )
       )}
       {me?.isOwner && <p className="text-xs text-zinc-400">This is the app owner's account, so it can't be deleted here.</p>}
+      {me?.isOwner && <InviteList />}
       <p className="text-xs text-zinc-400"><a href="/privacy" className="underline">Privacy policy</a> · <a href="/data-deletion" className="underline">Data deletion</a></p>
     </section>
   );

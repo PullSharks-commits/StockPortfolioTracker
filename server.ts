@@ -5,7 +5,6 @@ import Database from 'better-sqlite3';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
-import multer from 'multer';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -26,6 +25,8 @@ import { registerThesisTrackerRoutes } from './server-thesis-tracker';
 import { authedUser, isOwner, requireUser, sessionUser } from './server-auth';
 import { registerAnalysesRoutes } from './server-analyses';
 import { registerAccountRoutes } from './server-account';
+import { isAllowed, registerAccessRoutes, requireInvited } from './server-access';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { registerLegalPages } from './server-legal';
 import { Resend } from 'resend';
 
@@ -229,7 +230,6 @@ try {
   console.error('Error initializing Finnhub client:', err);
 }
 
-const upload = multer({ storage: multer.memoryStorage() });
 
 let sqliteDb: Database.Database | null = null;
 let mysqlPool: mysql.Pool | null = null;
@@ -425,7 +425,7 @@ async function startServer() {
     server,
     path: '/api/ws',
     verifyClient: (info, done) => {
-      sessionUser(info.req as any).then(user => done(!!user, 401), () => done(false, 401));
+      sessionUser(info.req as any).then(async user => done(await isAllowed(user), 401), () => done(false, 401));
     },
   });
 
@@ -442,12 +442,33 @@ async function startServer() {
     next();
   });
   registerLegalPages(app);
-  app.use(express.json({ limit: '50mb' }));
+  // Requests arrive through Tailscale Serve/Funnel on this machine, which passes the
+  // visitor's address in X-Forwarded-For; trust only that local hop.
+  app.set('trust proxy', 'loopback');
+  const limited = { error: 'Too many requests. Please slow down and try again in a few minutes.' };
+  const ipKey = (req: express.Request) => ipKeyGenerator(req.ip ?? '');
+  const userKey = (req: express.Request) => authedUser(req)?.id ?? ipKey(req);
+  // Everyone, signed in or not.
+  app.use('/api', rateLimit({ windowMs: 5 * 60_000, limit: 900, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: ipKey, message: limited }));
+
+  // Request bodies: generous only where imports need it (statement files for AI
+  // extraction, bulk transaction imports), 1 MB elsewhere.
+  app.use(['/api/ai-analyze', '/api/gemini-analyze'], express.json({ limit: '20mb' }));
+  app.use('/api/data', express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '1mb' }));
   // Everything under /api needs a signed-in user (Neon Auth JWT), except the health
   // check, company logos (plain <img> requests can't carry a token) and the earnings
   // calendar feed (calendar apps subscribe to it without signing in).
   const PUBLIC_API = [/^\/api\/health$/, /^\/api\/logo\//, /^\/api\/calendar\/earnings\.ics$/];
-  app.use('/api', (req, res, next) => (PUBLIC_API.some(re => re.test(req.originalUrl.split('?')[0])) ? next() : requireUser(req, res, next)));
+  const isPublic = (req: express.Request) => PUBLIC_API.some(re => re.test(req.originalUrl.split('?')[0]));
+  app.use('/api', (req, res, next) => (isPublic(req) ? next() : requireUser(req, res, next)));
+  // Invite-only: signed in isn't enough, the owner must have invited the address.
+  app.use('/api', (req, res, next) => (isPublic(req) ? next() : requireInvited(req, res, next)));
+  // Per signed-in user, and a tighter budget for AI calls (they use the caller's own
+  // keys, but each one ties the server up for a while).
+  app.use('/api', rateLimit({ windowMs: 5 * 60_000, limit: req => (isOwner(authedUser(req)) ? 10_000 : 1_500), standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: userKey, skip: isPublic, message: limited }));
+  app.use(['/api/ai-analyze', '/api/gemini-analyze'], rateLimit({ windowMs: 60 * 60_000, limit: req => (isOwner(authedUser(req)) ? 1_000 : 40), standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: userKey, message: { error: 'AI request limit reached. Try again in an hour.' } }));
+  registerAccessRoutes(app);
   registerAnalysesRoutes(app);
   registerAccountRoutes(app);
   registerDataRoutes(app);
@@ -456,9 +477,8 @@ async function startServer() {
   registerPortfolioFundamentalsRoutes(app, loadFundamentals, loadCompanyMarketData, loadFxToUsd);
   registerSegmentRoutes(app);
   registerThesisTrackerRoutes(app);
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  app.use(express.urlencoded({ limit: '1mb', extended: true }));
 
-  app.set('trust proxy', true);
   app.get('/api/search', async (req, res) => {
     const { q } = req.query;
     if (!q || typeof q !== 'string') {
@@ -2158,8 +2178,11 @@ async function startServer() {
     });
   }
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  // Only this machine: visitors come through Tailscale (Serve/Funnel), which also
+  // gives them HTTPS. Set HOST=0.0.0.0 to reach it directly on the local network.
+  const HOST = process.env.HOST || '127.0.0.1';
+  server.listen(PORT, HOST, () => {
+    console.log(`Server running on http://${HOST}:${PORT}`);
   });
 }
 

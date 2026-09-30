@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS analyses (
 );
 CREATE INDEX IF NOT EXISTS analyses_user_idx ON analyses (user_id, date DESC);
 
+-- Invite-only access: email addresses (lowercase) the owner has invited. The owner
+-- (BOT_OWNER_EMAIL) is always allowed.
+CREATE TABLE IF NOT EXISTS invites (
+  email    text PRIMARY KEY,
+  added_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- One settings document per user (tabs, profile, AI config, layout, calendar...),
 -- stored whole as JSON because its shape changes with the UI.
 CREATE TABLE IF NOT EXISTS settings (

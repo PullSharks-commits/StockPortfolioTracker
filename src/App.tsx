@@ -1980,7 +1980,7 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   // From /api/me. The owner (BOT_OWNER_EMAIL) also gets the Trading Bot tab and the
   // Thesis Tracker; everyone else has just their own portfolios.
-  const [account, setAccount] = useState<{ email: string | null; name: string | null; providers: string[]; isOwner: boolean } | null>(null);
+  const [account, setAccount] = useState<{ email: string | null; name: string | null; providers: string[]; isOwner: boolean; invited: boolean } | null>(null);
   const isOwnerUser = !!account?.isOwner;
 
 
@@ -6186,6 +6186,28 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           <p className="mt-6 text-xs text-zinc-400">
             By continuing you agree to the <a href="/privacy" className="underline hover:text-zinc-600">privacy policy</a>. <a href="/data-deletion" className="underline hover:text-zinc-600">Deleting your data</a>.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Signed in, but the owner hasn't invited this address (invite-only).
+  if (account && !account.invited) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-zinc-200 max-w-md w-full text-center">
+          <div className="bg-zinc-900 w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-6">
+            <Lock className="w-6 h-6 text-white" />
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight mb-2">Invite only</h1>
+          <p className="text-zinc-500 mb-6">
+            Portfolio Tracker is invite-only for now, and <b className="text-zinc-700">{account.email}</b> hasn't been invited yet.
+            Ask the person who shared the link to add this address, then sign in again.
+          </p>
+          <button onClick={() => signOut(auth)} className="w-full bg-zinc-900 text-white px-4 py-3 rounded-xl hover:bg-zinc-800 transition-colors font-medium">
+            Sign out
+          </button>
+          <p className="mt-6 text-xs text-zinc-400"><a href="/privacy" className="underline">Privacy policy</a> · <a href="/data-deletion" className="underline">Data deletion</a></p>
         </div>
       </div>
     );

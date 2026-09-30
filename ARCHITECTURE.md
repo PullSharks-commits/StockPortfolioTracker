@@ -65,7 +65,7 @@ flowchart LR
 |---|---|
 | Dev | `npm run dev` → `tsx server.ts`; Vite runs as Express middleware (HMR) |
 | Prod | `npm run build` (Vite client → `dist/`, esbuild server → `dist/server.mjs`), `npm start` |
-| Port | `3000`, bound to `0.0.0.0` (reachable from the LAN) |
+| Port | `3000`, bound to `127.0.0.1` (reached through Tailscale; `HOST=0.0.0.0` for the LAN) |
 | Schema | `npm run db:migrate` applies `db/schema.sql` (idempotent) |
 | Config | `.env` (gitignored); names listed in `.env.example` |
 | Always on | launchd agent `com.sumitnarayan.portfoliotracker` (`launchd/`, runs `scripts/run-server.sh`): runs the production build (rebuilding when sources are newer) from login, restarts it if it exits, keeps the Mac awake while it runs; output in `logs/server.log`. Restart after server changes with `launchctl kickstart -k gui/$(id -u)/com.sumitnarayan.portfoliotracker` |
@@ -77,7 +77,8 @@ flowchart LR
 |---|---|
 | `server.ts` | Express app: market-data, AI, email and legacy routes; Finnhub/WebSocket relay; Vite/static hosting |
 | `server-auth.ts` | Neon Auth JWT verification (JWKS), the `/api` sign-in gate, owner check |
-| `server-account.ts` | `/api/me` (who am I, owner?) and account deletion |
+| `server-account.ts` | `/api/me` (who am I, owner? invited?) and account deletion |
+| `server-access.ts` | Invite-only access: the owner's invite list (`/api/invites`) and the check on every route |
 | `server-analyses.ts` | Saved Notes (AI analyses), per user |
 | `server-legal.ts` | Public `/privacy` and `/data-deletion` pages |
 | `server-data.ts` | Authenticated per-user data API over Postgres (`/api/data/*`) |
@@ -98,9 +99,12 @@ flowchart LR
 
 ## Authentication
 
-Multi-user: anyone with a Google account can sign in and starts with an empty
-portfolio. Nothing to configure: Neon Auth signs people in with Neon's shared
-Google credentials (Google's consent screen shows Neon's name).
+Multi-user and invite-only: anyone with a Google account can sign in, but only
+the owner and addresses the owner has invited (Settings → Account, table
+`invites`, `server-access.ts`) can use the app; everyone else sees "Invite only".
+Invited users start with an empty portfolio. Nothing to configure: Neon Auth
+signs people in with Neon's shared Google credentials (Google's consent screen
+shows Neon's name).
 
 - **Provider:** Neon Auth (managed Better Auth) on the Neon project's `main`
   branch. `localhost` is trusted by default; other origins (the Tailscale address)
@@ -119,6 +123,11 @@ Google credentials (Google's consent screen shows Neon's name).
   AI keys and never sees the owner's tools (`/api/me` tells the client).
 - **Users** are stored by Neon Auth in the `neon_auth` schema; app tables key rows
   by `user_id` = JWT `sub`.
+- **Limits:** 900 requests per IP per 5 min on `/api`, 1,500 per user (owner
+  10,000), AI analysis 40 per user per hour; request bodies 1 MB (10 MB for
+  `/api/data` imports, 20 MB for AI statement extraction). The server listens on
+  127.0.0.1 only (set `HOST` to change) and trusts `X-Forwarded-For` from that
+  local hop, i.e. Tailscale.
 - **Leaving:** Settings → Account → Delete my account removes every row for the
   user and their Neon Auth user (`DELETE /api/me`); `/privacy` and
   `/data-deletion` are public pages.

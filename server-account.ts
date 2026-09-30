@@ -5,6 +5,7 @@
 import type { Express, Request, Response } from 'express';
 import pg from 'pg';
 import { authEnabled, authedUser, isOwner, requireUser } from './server-auth';
+import { isAllowed } from './server-access';
 
 // Every per-user table (transactions also cascade from holdings).
 const USER_TABLES = ['transactions', 'holdings', 'alerts', 'analyses', 'settings', 'backups'];
@@ -28,6 +29,7 @@ export function registerAccountRoutes(app: Express) {
         image: profile.rows[0]?.image ?? null,
         providers: accounts.rows.map(r => r.providerId),
         isOwner: isOwner(user),
+        invited: await isAllowed(user),
       });
     } catch (err: any) {
       console.error('[account] me:', err?.message || err);
