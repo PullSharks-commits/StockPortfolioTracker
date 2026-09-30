@@ -225,10 +225,99 @@ function PositionCard({ row, livePrice, onClose }: { row: any; livePrice?: numbe
   );
 }
 
+// Open positions as one table, from the Position Value card: live price, value and
+// weight, unrealized P&L, and where the price sits relative to stop and target.
+function OpenPositionsPanel({ positions, livePrices, onClose }: { positions: any[]; livePrices: Props['livePrices']; onClose: () => void }) {
+  const rows = positions.map(p => {
+    const qty = Number(p.qty), entry = Number(p.entry_price);
+    const live = livePrices[p.symbol]?.price;
+    const price: number | null = live ?? p.current_price ?? null;
+    const value = (price ?? entry) * qty;
+    const cost = entry * qty;
+    const pnl = price != null ? (price - entry) * qty : null;
+    const stop = p.stop != null ? Number(p.stop) : null, target = p.target != null ? Number(p.target) : null;
+    const held = p.entry_date ? Math.floor((Date.now() - Date.parse(`${String(p.entry_date).slice(0, 10)}T00:00:00`)) / 86_400_000) : null;
+    return { p, qty, entry, price, live: live != null, value, cost, pnl, stop, target, held };
+  }).sort((a, b) => b.value - a.value);
+  const totalValue = rows.reduce((s, r) => s + r.value, 0);
+  const totalCost = rows.reduce((s, r) => s + r.cost, 0);
+  const totalPnl = totalValue - totalCost;
+  const toStop = (r: typeof rows[number]) => (r.stop != null && r.price != null ? (1 - r.stop / r.price) * 100 : null);
+  const toTarget = (r: typeof rows[number]) => (r.target != null && r.price != null ? (r.target / r.price - 1) * 100 : null);
+  const priceNote = (r: typeof rows[number]) => (r.live ? 'live' : r.p.stale ? 'stale' : 'bot snapshot');
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-4 border-b border-zinc-100 dark:border-zinc-800">
+        <div>
+          <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Open positions</h3>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            {rows.length} position{rows.length === 1 ? '' : 's'}
+            {rows.length > 0 && <> · value {usd(totalValue)} · cost {usd(totalCost)} · unrealized <span className={tone(totalPnl)}>{usd(totalPnl)} {totalCost > 0 && pct((totalPnl / totalCost) * 100)}</span></>}
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg" aria-label="Hide open positions"><X className="w-4 h-4" /></button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-zinc-500">The bot has no open positions.</p>
+      ) : (
+        <>
+        <ul className="sm:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+          {rows.map(r => (
+            <li key={r.p.symbol} className="px-4 py-3 space-y-1">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">{r.p.symbol} <span className="text-xs font-normal text-zinc-500">{r.qty} sh · {totalValue > 0 ? `${((r.value / totalValue) * 100).toFixed(0)}%` : ''}</span></span>
+                <span className={clsx('font-mono font-semibold', tone(r.pnl))}>{usd(r.pnl)} <span className="text-xs font-normal">{r.pnl != null && r.cost ? pct((r.pnl / r.cost) * 100) : ''}</span></span>
+              </div>
+              <div className="text-xs text-zinc-500 font-mono">{usd(r.entry)} → {usd(r.price)} <span className="font-sans">({priceNote(r)}) · value {usd(r.value)}</span></div>
+              <div className="text-xs text-zinc-500">
+                stop {usd(r.stop)}{toStop(r) != null && ` (${toStop(r)!.toFixed(1)}% away)`} · target {usd(r.target)}{toTarget(r) != null && ` (${toTarget(r)!.toFixed(1)}% away)`}
+                {r.held != null && ` · held ${r.held} day${r.held === 1 ? '' : 's'}`}
+              </div>
+            </li>
+          ))}
+        </ul>
+        <div className="hidden sm:block overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wider text-zinc-400 text-left border-b border-zinc-100 dark:border-zinc-800">
+                <th className="px-5 py-2 font-medium">Symbol</th>
+                <th className="px-3 py-2 font-medium text-right">Qty</th>
+                <th className="px-3 py-2 font-medium">Entry</th>
+                <th className="px-3 py-2 font-medium text-right">Price</th>
+                <th className="px-3 py-2 font-medium text-right">Value</th>
+                <th className="px-3 py-2 font-medium text-right">Unrealized</th>
+                <th className="px-3 py-2 font-medium text-right">Stop</th>
+                <th className="px-5 py-2 font-medium text-right">Target</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {rows.map(r => (
+                <tr key={r.p.symbol} className="hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                  <td className="px-5 py-3 font-semibold text-zinc-900 dark:text-zinc-100">{r.p.symbol}</td>
+                  <td className="px-3 py-3 text-right font-mono">{r.qty}</td>
+                  <td className="px-3 py-3 whitespace-nowrap"><span className="font-mono">{usd(r.entry)}</span> <span className="text-xs text-zinc-400">{day(r.p.entry_date)}{r.held != null ? ` · ${r.held}d` : ''}</span></td>
+                  <td className="px-3 py-3 text-right whitespace-nowrap"><span className="font-mono">{usd(r.price)}</span> <span className={clsx('text-[10px]', r.p.stale && !r.live ? 'text-amber-600' : 'text-zinc-400')}>{priceNote(r)}</span></td>
+                  <td className="px-3 py-3 text-right whitespace-nowrap"><span className="font-mono">{usd(r.value)}</span> <span className="text-xs text-zinc-400">{totalValue > 0 ? `${((r.value / totalValue) * 100).toFixed(0)}%` : ''}</span></td>
+                  <td className={clsx('px-3 py-3 text-right font-mono font-semibold whitespace-nowrap', tone(r.pnl))}>{usd(r.pnl)} <span className="text-xs font-normal">{r.pnl != null && r.cost ? pct((r.pnl / r.cost) * 100) : ''}</span></td>
+                  <td className="px-3 py-3 text-right whitespace-nowrap"><span className="font-mono text-rose-600">{usd(r.stop)}</span> <span className="text-xs text-zinc-400">{toStop(r) != null ? `${toStop(r)!.toFixed(1)}%` : ''}</span></td>
+                  <td className="px-5 py-3 text-right whitespace-nowrap"><span className="font-mono text-emerald-600">{usd(r.target)}</span> <span className="text-xs text-zinc-400">{toTarget(r) != null ? `${toTarget(r)!.toFixed(1)}%` : ''}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, onRunHousekeeping, isRunningHousekeeping, onClosePosition }: Props) {
   const snap = status?.snapshot;
   // Which Realized card's trades are listed below the cards (click again to hide).
   const [tradesWindow, setTradesWindow] = useState<string | null>(null);
+  const [showPositions, setShowPositions] = useState(false);
   const closedTrades = status?.closedTrades ?? [];
   const windowTrades = (key: string) => {
     const start = windowStart(key);
@@ -280,18 +369,44 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
             ['Position Value', usd(livePositionValue), null],
             ['Unrealized P&L', `${usd(unrealized)}`, unrealized],
             ['Remaining Cash', usd(totals.remaining_cash), null],
-          ].map(([label, value, signed]) => (
-            <div key={label as string} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
-              <div className="text-[11px] uppercase tracking-wider text-zinc-400">{label}</div>
-              <div className={clsx('mt-1 text-xl font-semibold font-mono', tone(signed as number | null))}>
-                {value}
-                {label === 'Unrealized P&L' && cost > 0 && <span className="ml-1 text-sm">({pct((unrealized / cost) * 100)})</span>}
-                {label === 'Remaining Cash' && totals.bot_capital_usd != null && <span className="ml-1 text-sm font-normal text-zinc-400">of {usd(totals.bot_capital_usd)}</span>}
-              </div>
-            </div>
-          ))}
+          ].map(([label, value, signed]) => {
+            const body = (
+              <>
+                <div className="text-[11px] uppercase tracking-wider text-zinc-400">{label}</div>
+                <div className={clsx('mt-1 text-xl font-semibold font-mono', tone(signed as number | null))}>
+                  {value}
+                  {label === 'Unrealized P&L' && cost > 0 && <span className="ml-1 text-sm">({pct((unrealized / cost) * 100)})</span>}
+                  {label === 'Remaining Cash' && totals.bot_capital_usd != null && <span className="ml-1 text-sm font-normal text-zinc-400">of {usd(totals.bot_capital_usd)}</span>}
+                </div>
+              </>
+            );
+            if (label !== 'Position Value') {
+              return <div key={label as string} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">{body}</div>;
+            }
+            // Position Value opens the open-positions table.
+            return (
+              <button
+                key={label as string}
+                type="button"
+                onClick={() => setShowPositions(v => !v)}
+                aria-pressed={showPositions}
+                aria-label={`Position value ${value}. ${showPositions ? 'Hide' : 'Show'} open positions`}
+                className={clsx(
+                  'text-left rounded-2xl border bg-white dark:bg-zinc-900 p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/30 dark:hover:bg-indigo-950/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
+                  showPositions ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-zinc-200 dark:border-zinc-800'
+                )}
+              >
+                {body}
+                <div className="mt-0.5 flex justify-end text-xs text-indigo-600">
+                  <span className="inline-flex items-center gap-0.5">{showPositions ? 'Hide' : 'Details'} <ChevronDown className={clsx('w-3 h-3 transition-transform', showPositions && 'rotate-180')} /></span>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
+
+      {showPositions && <OpenPositionsPanel positions={positions} livePrices={livePrices} onClose={() => setShowPositions(false)} />}
 
       {snap?.realized && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
