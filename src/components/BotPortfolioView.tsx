@@ -139,7 +139,7 @@ function ClosedTradesPanel({ title, trades, onClose }: { title: string; trades: 
 
 interface Props {
   status: BotStatus | null;
-  livePrices: Record<string, { price?: number } | undefined>;
+  livePrices: Record<string, { price?: number; previousClose?: number } | undefined>;
   onRefresh: () => void;
   isRefreshing: boolean;
   onRunHousekeeping: () => void;
@@ -313,11 +313,124 @@ function OpenPositionsPanel({ positions, livePrices, onClose }: { positions: any
   );
 }
 
+// Unrealized P&L broken down by position, from the Unrealized P&L card: each
+// position's gain or loss now, today's move, and what it would be at its stop and at
+// its target (the bot's exits), with totals for "every stop hit" / "every target hit".
+function UnrealizedPanel({ positions, livePrices, onClose }: { positions: any[]; livePrices: Props['livePrices']; onClose: () => void }) {
+  const rows = positions.map(p => {
+    const qty = Number(p.qty), entry = Number(p.entry_price), cost = entry * qty;
+    const q = livePrices[p.symbol];
+    const price: number | null = q?.price ?? p.current_price ?? null;
+    const pnl = price != null ? (price - entry) * qty : null;
+    const prevClose = q?.previousClose ?? null;
+    const today = price != null && prevClose ? (price - prevClose) * qty : null;
+    const todayPct = price != null && prevClose ? (price / prevClose - 1) * 100 : null;
+    const atStop = p.stop != null ? (Number(p.stop) - entry) * qty : null;
+    const atTarget = p.target != null ? (Number(p.target) - entry) * qty : null;
+    return { symbol: p.symbol, cost, pnl, pnlPct: pnl != null && cost ? (pnl / cost) * 100 : null, today, todayPct, atStop, atTarget };
+  }).sort((a, b) => (b.pnl ?? -Infinity) - (a.pnl ?? -Infinity));
+  const sum = (k: 'pnl' | 'today' | 'atStop' | 'atTarget') => {
+    const xs = rows.map(r => r[k]).filter((v): v is number => v != null);
+    return xs.length ? xs.reduce((a, b) => a + b, 0) : null;
+  };
+  const totalCost = rows.reduce((a, r) => a + r.cost, 0);
+  const total = sum('pnl'), today = sum('today'), atStop = sum('atStop'), atTarget = sum('atTarget');
+  const up = rows.filter(r => (r.pnl ?? 0) > 0).length, down = rows.filter(r => (r.pnl ?? 0) < 0).length;
+  const scale = Math.max(1, ...rows.map(r => Math.abs(r.pnl ?? 0)));
+  const ofCost = (v: number | null) => (v != null && totalCost > 0 ? pct((v / totalCost) * 100) : '');
+
+  const Bar = ({ v }: { v: number | null }) => (
+    <div className="relative h-2.5 w-full min-w-24 rounded bg-zinc-100 dark:bg-zinc-800 overflow-hidden" aria-hidden>
+      <div className="absolute inset-y-0 left-1/2 w-px bg-zinc-300 dark:bg-zinc-600" />
+      {v != null && v !== 0 && (
+        <div className={clsx('absolute inset-y-0', v > 0 ? 'left-1/2 bg-emerald-500' : 'right-1/2 bg-rose-500')} style={{ width: `${(Math.abs(v) / scale) * 50}%` }} />
+      )}
+    </div>
+  );
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-2 px-5 py-4 border-b border-zinc-100 dark:border-zinc-800">
+        <div className="space-y-0.5">
+          <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Unrealized P&amp;L</h3>
+          <p className="text-xs text-zinc-500">
+            <span className={tone(total)}>{usd(total)} {ofCost(total)}</span> on {usd(totalCost)} invested · {up} up, {down} down
+            {today != null && <> · today <span className={tone(today)}>{usd(today)}</span></>}
+          </p>
+          {rows.length > 0 && (
+            <p className="text-xs text-zinc-500">
+              If every stop is hit: <span className={tone(atStop)}>{usd(atStop)} {ofCost(atStop)}</span> · if every target is hit: <span className={tone(atTarget)}>{usd(atTarget)} {ofCost(atTarget)}</span>
+            </p>
+          )}
+        </div>
+        <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg" aria-label="Hide unrealized P&L"><X className="w-4 h-4" /></button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-zinc-500">The bot has no open positions, so nothing is unrealized.</p>
+      ) : (
+        <>
+        <ul className="sm:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+          {rows.map(r => (
+            <li key={r.symbol} className="px-4 py-3 space-y-1.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-semibold text-zinc-900 dark:text-zinc-100">{r.symbol}</span>
+                <span className={clsx('font-mono font-semibold', tone(r.pnl))}>{usd(r.pnl)} <span className="text-xs font-normal">{pct(r.pnlPct)}</span></span>
+              </div>
+              <Bar v={r.pnl} />
+              <div className="text-xs text-zinc-500">
+                today <span className={tone(r.today)}>{usd(r.today)}</span> · at stop <span className={tone(r.atStop)}>{usd(r.atStop)}</span> · at target <span className={tone(r.atTarget)}>{usd(r.atTarget)}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <div className="hidden sm:block overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wider text-zinc-400 text-left border-b border-zinc-100 dark:border-zinc-800">
+                <th className="px-5 py-2 font-medium">Symbol</th>
+                <th className="px-3 py-2 font-medium text-right">Unrealized</th>
+                <th className="px-3 py-2 font-medium w-1/4"></th>
+                <th className="px-3 py-2 font-medium text-right">Today</th>
+                <th className="px-3 py-2 font-medium text-right" title="Unrealized P&L if the price falls to the stop">At stop</th>
+                <th className="px-5 py-2 font-medium text-right" title="Unrealized P&L if the price reaches the target">At target</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {rows.map(r => (
+                <tr key={r.symbol} className="hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                  <td className="px-5 py-3 font-semibold text-zinc-900 dark:text-zinc-100">{r.symbol}</td>
+                  <td className={clsx('px-3 py-3 text-right font-mono font-semibold whitespace-nowrap', tone(r.pnl))}>{usd(r.pnl)} <span className="text-xs font-normal">{pct(r.pnlPct)}</span></td>
+                  <td className="px-3 py-3"><Bar v={r.pnl} /></td>
+                  <td className={clsx('px-3 py-3 text-right font-mono whitespace-nowrap', tone(r.today))}>{usd(r.today)} <span className="text-xs">{pct(r.todayPct)}</span></td>
+                  <td className={clsx('px-3 py-3 text-right font-mono whitespace-nowrap', tone(r.atStop))}>{usd(r.atStop)}</td>
+                  <td className={clsx('px-5 py-3 text-right font-mono whitespace-nowrap', tone(r.atTarget))}>{usd(r.atTarget)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-zinc-200 dark:border-zinc-700 font-semibold">
+                <td className="px-5 py-2.5 text-zinc-600 dark:text-zinc-300">Total</td>
+                <td className={clsx('px-3 py-2.5 text-right font-mono', tone(total))}>{usd(total)} <span className="text-xs font-normal">{ofCost(total)}</span></td>
+                <td />
+                <td className={clsx('px-3 py-2.5 text-right font-mono', tone(today))}>{usd(today)}</td>
+                <td className={clsx('px-3 py-2.5 text-right font-mono', tone(atStop))}>{usd(atStop)}</td>
+                <td className={clsx('px-5 py-2.5 text-right font-mono', tone(atTarget))}>{usd(atTarget)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, onRunHousekeeping, isRunningHousekeeping, onClosePosition }: Props) {
   const snap = status?.snapshot;
   // Which Realized card's trades are listed below the cards (click again to hide).
   const [tradesWindow, setTradesWindow] = useState<string | null>(null);
   const [showPositions, setShowPositions] = useState(false);
+  const [showUnrealized, setShowUnrealized] = useState(false);
   const closedTrades = status?.closedTrades ?? [];
   const windowTrades = (key: string) => {
     const start = windowStart(key);
@@ -380,25 +493,28 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
                 </div>
               </>
             );
-            if (label !== 'Position Value') {
+            // Position Value opens the open-positions table, Unrealized P&L its breakdown.
+            const toggle = label === 'Position Value' ? { on: showPositions, set: setShowPositions, what: 'open positions' }
+              : label === 'Unrealized P&L' ? { on: showUnrealized, set: setShowUnrealized, what: 'the unrealized P&L breakdown' }
+              : null;
+            if (!toggle) {
               return <div key={label as string} className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">{body}</div>;
             }
-            // Position Value opens the open-positions table.
             return (
               <button
                 key={label as string}
                 type="button"
-                onClick={() => setShowPositions(v => !v)}
-                aria-pressed={showPositions}
-                aria-label={`Position value ${value}. ${showPositions ? 'Hide' : 'Show'} open positions`}
+                onClick={() => toggle.set(v => !v)}
+                aria-pressed={toggle.on}
+                aria-label={`${label} ${value}. ${toggle.on ? 'Hide' : 'Show'} ${toggle.what}`}
                 className={clsx(
                   'text-left rounded-2xl border bg-white dark:bg-zinc-900 p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50/30 dark:hover:bg-indigo-950/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
-                  showPositions ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-zinc-200 dark:border-zinc-800'
+                  toggle.on ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-zinc-200 dark:border-zinc-800'
                 )}
               >
                 {body}
                 <div className="mt-0.5 flex justify-end text-xs text-indigo-600">
-                  <span className="inline-flex items-center gap-0.5">{showPositions ? 'Hide' : 'Details'} <ChevronDown className={clsx('w-3 h-3 transition-transform', showPositions && 'rotate-180')} /></span>
+                  <span className="inline-flex items-center gap-0.5">{toggle.on ? 'Hide' : 'Details'} <ChevronDown className={clsx('w-3 h-3 transition-transform', toggle.on && 'rotate-180')} /></span>
                 </div>
               </button>
             );
@@ -407,6 +523,7 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
       )}
 
       {showPositions && <OpenPositionsPanel positions={positions} livePrices={livePrices} onClose={() => setShowPositions(false)} />}
+      {showUnrealized && <UnrealizedPanel positions={positions} livePrices={livePrices} onClose={() => setShowUnrealized(false)} />}
 
       {snap?.realized && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

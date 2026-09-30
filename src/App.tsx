@@ -66,6 +66,8 @@ import { HoldingActions } from './components/HoldingActions';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
 import { AccountSection } from './components/AccountSection';
+import { computeCombinedBreakdown } from './lib/combinedBreakdown';
+import { CombinedDetails, SummaryCardButton, type CombinedDetailKey } from './components/CombinedDetails';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
 import { RATING_EMOJI, RATING_LABEL, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
 import { ThesisPanel } from './components/ThesisPanel';
@@ -5561,221 +5563,21 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     };
   }, [holdings, quotes, benchmarkTicker, allTransactions, transactionsByHolding, sortedTransactionsByHolding]);
 
-  const combinedStats = useMemo(() => {
-    let totalValue = 0;
-    let totalCost = 0;
-    let totalDayChange = 0;
-
-    const targetCurrency = userSettings.combinedCurrency || 'USD';
-
-    allHoldings.forEach(h => {
-      // Handle Cash
-      if (h.ticker === 'CASH') {
-        const sourceCurrency = h.avgPriceCurrency || (h.portfolioType === 'australia' ? 'AUD' : 'USD');
-        let rate = 1;
-        if (sourceCurrency !== targetCurrency) {
-          rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
-        }
-        const value = h.shares * rate;
-        totalValue += value;
-        totalCost += value;
-        return;
-      }
-
-      const quote = quotes[h.ticker] as any;
-      let currentPrice = quote?.price != null ? quote.price : (typeof quote === 'number' ? quote : h.avg_price);
-      let previousClose = quote?.previousClose != null ? quote.previousClose : currentPrice;
-      
-      const sourceCurrency = quote?.currency || (h.portfolioType === 'australia' ? 'AUD' : 'USD');
-      const storedCurrency = h.avgPriceCurrency || sourceCurrency;
-
-      // Convert Cost Basis to targetCurrency
-      let convertedAvgPrice = h.avg_price;
-      if (storedCurrency && storedCurrency !== targetCurrency) {
-        const rate = getExchangeRate(storedCurrency, targetCurrency, quotes);
-        convertedAvgPrice = h.avg_price * rate;
-        
-        if (h.portfolioType === 'australia' && storedCurrency !== 'AUD') {
-          convertedAvgPrice *= 1.007; // FX fee
-        }
-      }
-
-      // Convert Current Price to targetCurrency
-      let currentPriceVal = currentPrice;
-      let previousCloseVal = previousClose;
-      if (sourceCurrency && sourceCurrency !== targetCurrency) {
-        const rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
-        currentPriceVal *= rate;
-        previousCloseVal *= rate;
-      }
-
-      totalValue += currentPriceVal * h.shares;
-      totalCost += convertedAvgPrice * h.shares;
-      totalDayChange += (currentPriceVal - previousCloseVal) * h.shares;
-    });
-
-    const totalProfitLoss = totalValue - totalCost;
-    const totalProfitLossPercent = totalCost > 0 ? (totalProfitLoss / totalCost) * 100 : 0;
-    const totalPreviousValue = totalValue - totalDayChange;
-    const totalDayChangePercent = totalPreviousValue > 0 ? (totalDayChange / totalPreviousValue) * 100 : 0;
-
-    return {
-      totalValue,
-      totalCost,
-      totalProfitLoss,
-      totalProfitLossPercent,
-      totalDayChange,
-      totalDayChangePercent
-    };
-  }, [allHoldings, quotes, userSettings.combinedCurrency]);
-
-  const combinedPeriodStats = useMemo(() => {
-    const now = new Date();
-    
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(now.getMonth() - 6);
-    
-    const ytdStart = new Date(now.getFullYear(), 0, 1);
-    
-    const oneYearAgo = new Date();
-    oneYearAgo.setFullYear(now.getFullYear() - 1);
-
-    const stats = {
-      allTimeRealized: 0,
-      sixMonths: { realized: 0, unrealized: 0, total: 0, costBasis: 0, percent: 0 },
-      ytd: { realized: 0, unrealized: 0, total: 0, costBasis: 0, percent: 0 },
-      oneYear: { realized: 0, unrealized: 0, total: 0, costBasis: 0, percent: 0 }
-    };
-
-    if (!user || allTransactions.length === 0) return stats;
-
-    const targetCurrency = userSettings.combinedCurrency || 'USD';
-
-    allHoldings.forEach(h => {
-      if (h.ticker === 'CASH') return;
-
-      const hTransactions = transactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
-      if (hTransactions.length === 0) return;
-
-      const quote = quotes[h.ticker] as any;
-      let currentPriceVal = quote?.price != null ? quote.price : h.avg_price;
-      const sourceCurrency = quote?.currency || (h.portfolioType === 'australia' ? 'AUD' : 'USD');
-      
-      if (sourceCurrency && sourceCurrency !== targetCurrency) {
-        const rate = getExchangeRate(sourceCurrency, targetCurrency, quotes);
-        currentPriceVal *= rate;
-      }
-
-      const storedCurrency = h.avgPriceCurrency || sourceCurrency;
-      let conversionRate = 1;
-      if (storedCurrency && storedCurrency !== targetCurrency) {
-        conversionRate = getExchangeRate(storedCurrency, targetCurrency, quotes);
-        if (h.portfolioType === 'australia' && storedCurrency !== 'AUD') {
-          conversionRate *= 1.007;
-        }
-      }
-
-      const sortedTxs = sortedTransactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
-
-      const buyPool: { date: Date; shares: number; priceInTarget: number }[] = [];
-      const realizedGains: { date: Date; amount: number; cost: number }[] = [];
-
-      sortedTxs.forEach(tx => {
-        const txDate = new Date(tx.date);
-        const txPriceInTarget = tx.price * conversionRate;
-
-        if (tx.type === 'buy') {
-          buyPool.push({
-            date: txDate,
-            shares: tx.shares,
-            priceInTarget: txPriceInTarget
-          });
-        } else if (tx.type === 'sell') {
-          let sharesToSell = tx.shares;
-          while (sharesToSell > 0 && buyPool.length > 0) {
-            const oldestBuy = buyPool[0];
-            if (oldestBuy.shares <= sharesToSell) {
-              const buyCost = oldestBuy.shares * oldestBuy.priceInTarget;
-              const sellValue = oldestBuy.shares * txPriceInTarget;
-              realizedGains.push({
-                date: txDate,
-                amount: sellValue - buyCost,
-                cost: buyCost
-              });
-              sharesToSell -= oldestBuy.shares;
-              buyPool.shift();
-            } else {
-              const buyCost = sharesToSell * oldestBuy.priceInTarget;
-              const sellValue = sharesToSell * txPriceInTarget;
-              realizedGains.push({
-                date: txDate,
-                amount: sellValue - buyCost,
-                cost: buyCost
-              });
-              oldestBuy.shares -= sharesToSell;
-              sharesToSell = 0;
-            }
-          }
-        }
-      });
-
-      realizedGains.forEach(gain => {
-        stats.allTimeRealized += gain.amount;
-        const d = gain.date;
-        if (d >= sixMonthsAgo) {
-          stats.sixMonths.realized += gain.amount;
-          stats.sixMonths.costBasis += gain.cost;
-        }
-        if (d >= ytdStart) {
-          stats.ytd.realized += gain.amount;
-          stats.ytd.costBasis += gain.cost;
-        }
-        if (d >= oneYearAgo) {
-          stats.oneYear.realized += gain.amount;
-          stats.oneYear.costBasis += gain.cost;
-        }
-      });
-
-      buyPool.forEach(lot => {
-        const d = lot.date;
-        const lotCost = lot.shares * lot.priceInTarget;
-        const lotCurrentValue = lot.shares * currentPriceVal;
-        const lotUnrealized = lotCurrentValue - lotCost;
-
-        if (d >= sixMonthsAgo) {
-          stats.sixMonths.unrealized += lotUnrealized;
-          stats.sixMonths.costBasis += lotCost;
-        }
-        if (d >= ytdStart) {
-          stats.ytd.unrealized += lotUnrealized;
-          stats.ytd.costBasis += lotCost;
-        }
-        if (d >= oneYearAgo) {
-          stats.oneYear.unrealized += lotUnrealized;
-          stats.oneYear.costBasis += lotCost;
-        }
-      });
-    });
-
-    const calculatePeriodTotals = (period: { realized: number; unrealized: number; total: number; costBasis: number; percent: number }) => {
-      period.total = period.realized + period.unrealized;
-      if (period.costBasis > 0) {
-        period.percent = (period.total / period.costBasis) * 100;
-      } else if (combinedStats.totalCost > 0) {
-        period.percent = (period.total / combinedStats.totalCost) * 100;
-      } else if (combinedStats.totalValue > 0) {
-        period.percent = (period.total / combinedStats.totalValue) * 100;
-      } else {
-        period.percent = 0;
-      }
-    };
-
-    calculatePeriodTotals(stats.sixMonths);
-    calculatePeriodTotals(stats.ytd);
-    calculatePeriodTotals(stats.oneYear);
-
-    return stats;
-  }, [allHoldings, allTransactions, transactionsByHolding, sortedTransactionsByHolding, quotes, userSettings.combinedCurrency, user, combinedStats.totalCost, combinedStats.totalValue]);
+  // Per-holding breakdown behind the combined summary cards; the cards are its sums
+  // and each card's detail panel lists its rows (src/lib/combinedBreakdown.ts).
+  const combinedBreakdown = useMemo(() => computeCombinedBreakdown({
+    holdings: allHoldings,
+    sortedTransactionsByHolding,
+    hasTransactions: !!user && allTransactions.length > 0,
+    quotes,
+    targetCurrency: userSettings.combinedCurrency || 'USD',
+    fx: (from, to) => getExchangeRate(from, to, quotes),
+  }), [allHoldings, allTransactions, sortedTransactionsByHolding, quotes, userSettings.combinedCurrency, user]);
+  const combinedStats = combinedBreakdown.totals;
+  const combinedPeriodStats = combinedBreakdown.periodStats;
+  // Which combined summary card's details are open (click the card again to close).
+  const [combinedDetail, setCombinedDetail] = useState<CombinedDetailKey | null>(null);
+  const toggleCombinedDetail = (key: CombinedDetailKey) => setCombinedDetail(d => (d === key ? null : key));
 
   const tabPeriodStats = useMemo(() => {
     const now = new Date();
@@ -6802,14 +6604,16 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           <option value="SGD">SGD</option>
                         </select>
                       </div>
-                      <span className="text-2xl font-semibold tracking-tight text-zinc-900">
-                        <AnimatedCountUp value={combinedStats.totalValue} currency={userSettings.combinedCurrency || 'USD'} />
-                      </span>
-                      <span className="text-[11px] text-zinc-400 mt-0.5">All portfolio tabs</span>
+                      <SummaryCardButton active={combinedDetail === 'value'} onClick={() => toggleCombinedDetail('value')} label="Combined Value" className="flex flex-col">
+                        <span className="text-2xl font-semibold tracking-tight text-zinc-900">
+                          <AnimatedCountUp value={combinedStats.totalValue} currency={userSettings.combinedCurrency || 'USD'} />
+                        </span>
+                        <span className="text-[11px] text-zinc-400 mt-0.5">All portfolio tabs</span>
+                      </SummaryCardButton>
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-x-6 gap-y-4">
-                      <div className="space-y-0.5">
+                      <SummaryCardButton active={combinedDetail === 'return'} onClick={() => toggleCombinedDetail('return')} label="Combined Return" className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Combined Return
                         </div>
@@ -6820,9 +6624,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           {combinedStats.totalProfitLossPercent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
                           <AnimatedCountUp value={Math.abs(combinedStats.totalProfitLossPercent)} suffix="% All Time" />
                         </div>
-                      </div>
+                      </SummaryCardButton>
 
-                      <div className="space-y-0.5">
+                      <SummaryCardButton active={combinedDetail === 'realized'} onClick={() => toggleCombinedDetail('realized')} label="Realized Return" className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Realized Return
                         </div>
@@ -6832,9 +6636,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="text-xs font-medium text-zinc-400">
                           Closed Positions
                         </div>
-                      </div>
+                      </SummaryCardButton>
 
-                      <div className="space-y-0.5">
+                      <SummaryCardButton active={combinedDetail === 'day'} onClick={() => toggleCombinedDetail('day')} label="Day Change" className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Day Change
                         </div>
@@ -6845,11 +6649,11 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           {combinedStats.totalDayChangePercent >= 0 ? <TrendingUp size={14} /> : <TrendingUp size={14} className="rotate-180" />}
                           <AnimatedCountUp value={Math.abs(combinedStats.totalDayChangePercent)} suffix="% Today" />
                         </div>
-                      </div>
+                      </SummaryCardButton>
 
                       
 
-                      <div className="space-y-0.5">
+                      <SummaryCardButton active={combinedDetail === 'sixMonths'} onClick={() => toggleCombinedDetail('sixMonths')} label="Total Gain 6M" className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Total Gain 6M
                         </div>
@@ -6866,9 +6670,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             {formatCurrency(combinedPeriodStats.sixMonths.realized, userSettings.combinedCurrency || 'USD', true)}
                           </span>
                         </div>
-                      </div>
+                      </SummaryCardButton>
 
-                      <div className="space-y-0.5">
+                      <SummaryCardButton active={combinedDetail === 'ytd'} onClick={() => toggleCombinedDetail('ytd')} label="Total Gain YTD" className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Total Gain YTD
                         </div>
@@ -6885,9 +6689,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             {formatCurrency(combinedPeriodStats.ytd.realized, userSettings.combinedCurrency || 'USD', true)}
                           </span>
                         </div>
-                      </div>
+                      </SummaryCardButton>
 
-                      <div className="space-y-0.5 font-sans">
+                      <SummaryCardButton active={combinedDetail === 'oneYear'} onClick={() => toggleCombinedDetail('oneYear')} label="Total Gain 1Y" className="space-y-0.5 font-sans">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Total Gain 1Y
                         </div>
@@ -6904,9 +6708,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             {formatCurrency(combinedPeriodStats.oneYear.realized, userSettings.combinedCurrency || 'USD', true)}
                           </span>
                         </div>
-                      </div>
+                      </SummaryCardButton>
                     </div>
                   </div>
+                  {combinedDetail && (
+                    <CombinedDetails detail={combinedDetail} breakdown={combinedBreakdown} currency={userSettings.combinedCurrency || 'USD'} onClose={() => setCombinedDetail(null)} />
+                  )}
                 </div>
               </div>
             </div>
