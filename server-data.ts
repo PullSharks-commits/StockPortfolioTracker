@@ -12,7 +12,7 @@
 
 import type { Express, Request, Response } from 'express';
 import pg from 'pg';
-import { authedUser, createRequireUser } from './server-auth';
+import { authEnabled, authedUser, requireUser } from './server-auth';
 
 type FieldKind = 'text' | 'number' | 'boolean' | 'timestamp' | 'uuid';
 
@@ -155,16 +155,14 @@ function checkDocId(def: CollectionDef, id: string, userId: string) {
 
 export function registerDataRoutes(app: Express) {
   const connectionString = process.env.DATABASE_URL;
-  const authBase = process.env.NEON_AUTH_BASE_URL;
-  if (!connectionString || !authBase) {
-    console.warn('DATABASE_URL / NEON_AUTH_BASE_URL not set: /api/data routes disabled.');
+  if (!connectionString || !authEnabled()) {
+    console.warn('DATABASE_URL not set or sign-in disabled: /api/data routes disabled.');
     return;
   }
 
   const pool = new pg.Pool({ connectionString, max: 5 });
   pool.on('error', (err) => console.error('Postgres pool error:', err));
 
-  const requireUser = createRequireUser(authBase);
 
   const route = (handler: (req: Request, res: Response, userId: string) => Promise<void>) =>
     async (req: Request, res: Response) => {

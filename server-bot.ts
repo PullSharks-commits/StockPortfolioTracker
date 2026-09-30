@@ -7,31 +7,20 @@
 // an explicit allow-list of the bot's endpoints is forwarded. Two of them place real
 // orders (close-position, run-housekeeping); the UI asks for confirmation first.
 
-import type { Express, Request, Response, NextFunction } from 'express';
-import { authedUser, createRequireUser } from './server-auth';
+import type { Express, Response } from 'express';
+import { authEnabled, authedUser, ownerEmail, requireOwner, requireUser } from './server-auth';
 
 const SYMBOL_RE = /^[A-Z0-9][A-Z0-9.\-]{0,11}$/;
 
 export function registerBotRoutes(app: Express) {
-  const authBase = process.env.NEON_AUTH_BASE_URL;
-  const ownerEmail = (process.env.BOT_OWNER_EMAIL || '').trim().toLowerCase();
   const botUrl = (process.env.BOT_DASHBOARD_URL || 'http://127.0.0.1:8765').replace(/\/+$/, '');
 
-  if (!authBase || !ownerEmail) {
+  if (!authEnabled() || !ownerEmail()) {
     // Without an owner there is no safe way to expose order-placing endpoints.
     app.use('/api/bot', (_req, res) => { res.status(503).json({ error: 'Trading bot tab is not configured (set BOT_OWNER_EMAIL).' }); });
-    console.warn('BOT_OWNER_EMAIL / NEON_AUTH_BASE_URL not set: /api/bot routes disabled.');
+    console.warn('BOT_OWNER_EMAIL not set or sign-in disabled: /api/bot routes disabled.');
     return;
   }
-
-  const requireUser = createRequireUser(authBase);
-  const requireOwner = (req: Request, res: Response, next: NextFunction) => {
-    const user = authedUser(req);
-    if (!user.emailVerified || (user.email || '').toLowerCase() !== ownerEmail) {
-      return res.status(403).json({ error: 'The trading bot is only available to its owner.' });
-    }
-    next();
-  };
 
   const forward = async (res: Response, path: string, init: RequestInit & { timeoutMs: number }) => {
     try {

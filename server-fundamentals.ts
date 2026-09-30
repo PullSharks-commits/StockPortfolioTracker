@@ -18,7 +18,7 @@
 
 import type { Express, Request, Response } from 'express';
 import pg from 'pg';
-import { createRequireUser } from './server-auth';
+import { authEnabled, requireUser } from './server-auth';
 
 // ---------------------------------------------------------------------------
 // Metric definitions
@@ -330,11 +330,9 @@ const PAYLOAD_VERSION = 4;
 // Returns the cached loader so other routes (portfolio fundamentals) share its cache.
 export function registerFundamentalsRoutes(app: Express): ((ticker: string) => Promise<any>) | null {
   const connectionString = process.env.DATABASE_URL;
-  const authBase = process.env.NEON_AUTH_BASE_URL;
   const contact = (process.env.SEC_USER_AGENT_EMAIL || '').trim();
-  if (!connectionString || !authBase) return null;
+  if (!connectionString || !authEnabled()) return null;
   const pool = new pg.Pool({ connectionString, max: 3 });
-  const requireUser = createRequireUser(authBase);
   const inFlight = new Map<string, Promise<any>>();
 
   async function load(ticker: string, force: boolean) {

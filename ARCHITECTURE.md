@@ -24,7 +24,7 @@ flowchart LR
   end
 
   subgraph Server["Node server (server.ts, :3000)"]
-    AUTH["server-auth.ts<br/>JWT check"]
+    AUTH["server-auth.ts<br/>JWT check on all /api"]
     DATA["server-data.ts<br/>/api/data/*"]
     BOT["server-bot.ts<br/>/api/bot/*"]
     MKT["market data routes<br/>/api/quotes, /api/historical-bulk, ..."]
@@ -33,6 +33,7 @@ flowchart LR
     CACHE[("SQLite<br/>portfolio.db<br/>price cache")]
     DATA --> AUTH
     BOT --> AUTH
+    MKT --> AUTH
     MKT --> CACHE
   end
 
@@ -63,19 +64,22 @@ flowchart LR
 | | |
 |---|---|
 | Dev | `npm run dev` → `tsx server.ts`; Vite runs as Express middleware (HMR) |
-| Prod | `npm run build` (Vite client → `dist/`, esbuild server → `dist/server.cjs`), `npm start` |
+| Prod | `npm run build` (Vite client → `dist/`, esbuild server → `dist/server.mjs`), `npm start` |
 | Port | `3000`, bound to `0.0.0.0` (reachable from the LAN) |
 | Schema | `npm run db:migrate` applies `db/schema.sql` (idempotent) |
 | Config | `.env` (gitignored); names listed in `.env.example` |
-| Always on | launchd agent `com.sumitnarayan.portfoliotracker` (`launchd/`, runs `scripts/run-server.sh`): starts the dev server at login, restarts it if it exits, keeps the Mac awake while it runs; output in `logs/server.log`. Restart after server changes with `launchctl kickstart -k gui/$(id -u)/com.sumitnarayan.portfoliotracker` |
-| Phone | `tailscale serve --bg 3000` publishes it at `https://<mac>.<tailnet>.ts.net` to the owner's Tailscale devices |
+| Always on | launchd agent `com.sumitnarayan.portfoliotracker` (`launchd/`, runs `scripts/run-server.sh`): runs the production build (rebuilding when sources are newer) from login, restarts it if it exits, keeps the Mac awake while it runs; output in `logs/server.log`. Restart after server changes with `launchctl kickstart -k gui/$(id -u)/com.sumitnarayan.portfoliotracker` |
+| Public | `tailscale funnel --bg 3000` publishes it to the internet at `https://<mac>.<tailnet>.ts.net` (a Neon Auth trusted domain) |
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
 | `server.ts` | Express app: market-data, AI, email and legacy routes; Finnhub/WebSocket relay; Vite/static hosting |
-| `server-auth.ts` | Neon Auth JWT verification middleware (JWKS, EdDSA) |
+| `server-auth.ts` | Neon Auth JWT verification (JWKS), the `/api` sign-in gate, owner check |
+| `server-account.ts` | `/api/me` (who am I, owner?) and account deletion |
+| `server-analyses.ts` | Saved Notes (AI analyses), per user |
+| `server-legal.ts` | Public `/privacy` and `/data-deletion` pages |
 | `server-data.ts` | Authenticated per-user data API over Postgres (`/api/data/*`) |
 | `server-bot.ts` | Owner-only proxy to the TradingBot dashboard (`/api/bot/*`) |
 | `server-fundamentals.ts` | SEC EDGAR company financials, normalised and cached (`/api/fundamentals/:ticker`) |
@@ -86,7 +90,7 @@ flowchart LR
 | `db/import-firebase-export.ts` | One-off copy of a user's Firebase JSON exports into Neon (dry-run by default) |
 | `src/main.tsx` | React entry point |
 | `src/App.tsx` | Almost the entire UI and client logic (~10k lines): state, portfolio math, widgets, modals |
-| `src/backend.ts` | Client data layer: Neon Auth client + Firestore-compatible data helpers |
+| `src/backend.ts` | Client data layer: Better Auth client + Firestore-compatible data helpers |
 | `src/botPortfolio.ts` | Loads the bot's data, maps it to read-only holdings, bot actions |
 | `src/components/` | Extracted widgets: charts, transactions, alerts, bot view, etc. |
 | `src/utils/portfolioCalculations.ts`, `src/lib/` | Portfolio math, currency formatting, Fear & Greed index |
@@ -94,18 +98,30 @@ flowchart LR
 
 ## Authentication
 
+Multi-user: anyone with a Google account can sign in and starts with an empty
+portfolio. Nothing to configure: Neon Auth signs people in with Neon's shared
+Google credentials (Google's consent screen shows Neon's name).
+
 - **Provider:** Neon Auth (managed Better Auth) on the Neon project's `main`
-  branch. Google sign-in uses Neon's shared OAuth credentials; `localhost` is
-  trusted by default, other origins must be added as trusted domains.
+  branch. `localhost` is trusted by default; other origins (the Tailscale address)
+  are added as trusted domains.
 - **Browser:** `authClient.signIn.social({ provider: 'google' })` redirects to
-  Google and back. The session lives in Neon Auth's cookies; `getSession()`
-  returns a short-lived (15 min) EdDSA JWT, which the SDK caches and renews.
-- **Server:** every `/api/data/*` and `/api/bot/*` request carries
-  `Authorization: Bearer <jwt>`. `server-auth.ts` verifies it against
-  `${NEON_AUTH_BASE_URL}/.well-known/jwks.json` and the issuer, and exposes
-  `{ id, email, emailVerified }`.
-- **Users** are stored by Neon Auth in the `neon_auth` schema; app tables key
-  rows by `user_id` = JWT `sub`.
+  Google and back. `getSession()` returns a short-lived (15 min) EdDSA JWT, which
+  the SDK caches and renews. `src/backend.ts` attaches it as `Authorization:
+  Bearer` to every request to `/api` (including plain `fetch` calls); the price
+  WebSocket passes it as `?token=`.
+- **Server:** every `/api` route requires a valid JWT except `/api/health`, company
+  logos and the earnings `.ics` feed. `server-auth.ts` verifies it against
+  `${NEON_AUTH_BASE_URL}/.well-known/jwks.json` and exposes `{ id, email,
+  emailVerified }` via `authedUser(req)`.
+- **Owner** (`BOT_OWNER_EMAIL`, verified): the Trading Bot tab, the Thesis Tracker,
+  the server's own AI keys and custom AI endpoints. Everyone else brings their own
+  AI keys and never sees the owner's tools (`/api/me` tells the client).
+- **Users** are stored by Neon Auth in the `neon_auth` schema; app tables key rows
+  by `user_id` = JWT `sub`.
+- **Leaving:** Settings → Account → Delete my account removes every row for the
+  user and their Neon Auth user (`DELETE /api/me`); `/privacy` and
+  `/data-deletion` are public pages.
 
 ## Data layer
 
@@ -282,6 +298,7 @@ table.
 |---|---|
 | `DATABASE_URL` / `DATABASE_URL_UNPOOLED` | Neon Postgres (pooled for the app, direct for migrations) |
 | `NEON_AUTH_BASE_URL` / `VITE_NEON_AUTH_URL` | Neon Auth base URL (server JWT checks / browser client) |
+| `CONTACT_EMAIL` | Contact shown on /privacy and /data-deletion (default `BOT_OWNER_EMAIL`) |
 | `FINNHUB_API_KEY` | Live price stream and some fallbacks |
 | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | AI features |
 | `RESEND_API_KEY` | `/api/send-email` (price alerts; signed-in users, sent only to their own verified address) |
@@ -294,9 +311,6 @@ table.
 
 - **`src/App.tsx` is ~10,000 lines** holding most UI, state and business
   logic; changes there are high-risk and slow to review.
-- **Legacy server routes from the AI Studio era:** `/api/portfolio*` (a
-  separate SQLite portfolio unrelated to the Neon data), `/api/auth/url`,
-  `/auth/callback` and `express-session` (an unused Google OAuth flow).
 - **User-supplied AI API keys** are saved in plain text in the user's
   `settings` document and sent from the browser with each AI request.
 - **No live sync between browsers:** `onSnapshot` only refreshes on this tab's

@@ -10,7 +10,7 @@
 // is point-in-time (only figures filed by each date), from the valuation module.
 
 import type { Express, Request, Response } from 'express';
-import { createRequireUser } from './server-auth';
+import { authEnabled, requireUser } from './server-auth';
 import { computeValuation, type FundPeriod, type MarketData, type ValuationPoint } from './src/lib/valuation';
 import type { Attribution, HoldingFundamentals } from './src/lib/portfolioFundamentals';
 
@@ -126,9 +126,7 @@ export function registerPortfolioFundamentalsRoutes(
   loadMarketData: (symbol: string) => Promise<MarketData>,
   loadFxToUsd: (currency: string) => Promise<number | null>,
 ) {
-  const authBase = process.env.NEON_AUTH_BASE_URL;
-  if (!loadFundamentals || !authBase) return;
-  const requireUser = createRequireUser(authBase);
+  if (!loadFundamentals || !authEnabled()) return;
   const cache = new Map<string, { at: number; data: HoldingFundamentals }>();
 
   async function one(ticker: string): Promise<HoldingFundamentals> {

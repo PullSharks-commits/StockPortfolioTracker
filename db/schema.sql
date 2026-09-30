@@ -42,6 +42,17 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS alerts_user_idx ON alerts (user_id);
 
+-- Saved AI analyses ("Saved Notes"), per user.
+CREATE TABLE IF NOT EXISTS analyses (
+  id        bigserial PRIMARY KEY,
+  user_id   text NOT NULL,
+  ticker    text,
+  result    text NOT NULL,
+  sentiment text,
+  date      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS analyses_user_idx ON analyses (user_id, date DESC);
+
 -- One settings document per user (tabs, profile, AI config, layout, calendar...),
 -- stored whole as JSON because its shape changes with the UI.
 CREATE TABLE IF NOT EXISTS settings (

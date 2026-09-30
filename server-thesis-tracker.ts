@@ -11,11 +11,11 @@
 // The files are the owner's private notes, so the routes require a verified
 // sign-in as BOT_OWNER_EMAIL (as for the Trading Bot tab).
 
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express, Request, Response } from 'express';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { authedUser, createRequireUser } from './server-auth';
+import { authEnabled, ownerEmail, requireOwner, requireUser } from './server-auth';
 
 export type Rating = 'green' | 'yellow' | 'red';
 
@@ -213,21 +213,11 @@ export async function loadTracker(dir: string): Promise<TrackerSnapshot> {
 }
 
 export function registerThesisTrackerRoutes(app: Express) {
-  const authBase = process.env.NEON_AUTH_BASE_URL;
-  const ownerEmail = (process.env.BOT_OWNER_EMAIL || '').trim().toLowerCase();
   const dir = process.env.THESIS_TRACKER_DIR || path.join(os.homedir(), 'Code', 'ThesisTracker');
-  if (!authBase || !ownerEmail) {
+  if (!authEnabled() || !ownerEmail()) {
     app.use('/api/thesis-tracker', (_req, res) => { res.status(503).json({ error: 'Thesis Tracker is not configured (set BOT_OWNER_EMAIL).' }); });
     return;
   }
-  const requireUser = createRequireUser(authBase);
-  const requireOwner = (req: Request, res: Response, next: NextFunction) => {
-    const user = authedUser(req);
-    if (!user.emailVerified || (user.email || '').toLowerCase() !== ownerEmail) {
-      return res.status(403).json({ error: 'The Thesis Tracker is only available to its owner.' });
-    }
-    next();
-  };
 
   app.get('/api/thesis-tracker', requireUser, requireOwner, async (_req: Request, res: Response) => {
     try {

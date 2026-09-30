@@ -22,6 +22,7 @@ import {
   auth, 
   db, 
   googleProvider, 
+  sessionToken,
   signInWithPopup, 
   signOut, 
   onAuthStateChanged, 
@@ -64,6 +65,7 @@ import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
+import { AccountSection } from './components/AccountSection';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
 import { RATING_EMOJI, RATING_LABEL, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
 import { ThesisPanel } from './components/ThesisPanel';
@@ -1540,6 +1542,7 @@ const SettingsModal = ({
                   </select>
                 </div>
               </div>
+              <AccountSection />
             </section>
           )}
 
@@ -1975,6 +1978,11 @@ const HOLDINGS_ACTIONS_COLUMN_WIDTH = 88;
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  // From /api/me. The owner (BOT_OWNER_EMAIL) also gets the Trading Bot tab and the
+  // Thesis Tracker; everyone else has just their own portfolios.
+  const [account, setAccount] = useState<{ email: string | null; name: string | null; providers: string[]; isOwner: boolean } | null>(null);
+  const isOwnerUser = !!account?.isOwner;
+
 
   const [allHoldings, setAllHoldings] = useState<Holding[]>([]);
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
@@ -3349,12 +3357,16 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!user) { setAccount(null); return; }
+    authedFetch('GET', '/api/me').then(setAccount).catch(err => console.error('Failed to load account', err));
+  }, [user]);
   const handleConnect = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
       console.error('OAuth error:', error);
-      toast.error('Failed to connect to Google');
+      toast.error("Couldn't start Google sign-in");
     }
   };
 
@@ -3363,7 +3375,7 @@ export default function App() {
     setIsRefreshing(true);
     try {
       await Promise.all([
-        user ? refreshBotPortfolio(user.uid) : Promise.resolve(),
+        user && isOwnerUser ? refreshBotPortfolio(user.uid) : Promise.resolve(),
         fetchQuotes(allHoldings),
         fetchMetadata(holdings),
         fetchEarnings(holdings),
@@ -3643,17 +3655,19 @@ export default function App() {
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   useEffect(() => onBotStatus(setBotStatus), []);
   useEffect(() => {
-    if (!user) { clearBotPortfolio(); return; }
+    if (!user || !isOwnerUser) { clearBotPortfolio(); return; }
     refreshBotPortfolio(user.uid);
-  }, [user]);
+  }, [user, isOwnerUser]);
   useEffect(() => {
-    if (!user || activeTab !== 'bot') return;
+    if (!user || !isOwnerUser || activeTab !== 'bot') return;
     refreshBotPortfolio(user.uid);
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') refreshBotPortfolio(user.uid);
     }, 5 * 60_000);
     return () => clearInterval(timer);
-  }, [user, activeTab]);
+  }, [user, isOwnerUser, activeTab]);
+  // Someone who isn't the owner never sees the bot tab.
+  useEffect(() => { if (account && !account.isOwner && activeTab === 'bot') setActiveTab('global'); }, [account, activeTab]);
 
   // Close Position places a real market sell through the bot, so it is confirmed by
   // typing the symbol (same as the bot's own dashboard).
@@ -3867,37 +3881,47 @@ export default function App() {
     }
   }, [selectedChartTicker, chartModalTab]);
 
+  // Bumped whenever a new price stream connects, so the subscription effect below
+  // (re)sends the symbol list to it.
+  const [wsGeneration, setWsGeneration] = useState(0);
   useEffect(() => {
-    // Setup WebSocket for real-time updates
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    // Trades arrive several times a second; applying each one re-renders the whole
-    // app. Collect them and apply at most once per second instead. Per symbol, the
-    // latest price wins and previous close / market state keep the latest value any
-    // trade in the batch carried - the same result as applying them one by one.
+    // Real-time prices, for signed-in users: the server checks the token on connect.
+    if (!user) return;
+    let ws: WebSocket | null = null;
+    let cancelled = false;
     const pendingTrades = new Map<string, { p: number; pc?: number; ms?: string }>();
+    (async () => {
+      const token = await sessionToken().catch(() => null);
+      if (cancelled || !token) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/api/ws?token=${encodeURIComponent(token)}`;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      setWsGeneration(g => g + 1);
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'trade' && data.data) {
-          data.data.forEach((trade: any) => {
-            if (!trade.s || trade.p == null) return;
-            const pending = pendingTrades.get(trade.s);
-            pendingTrades.set(trade.s, {
-              p: trade.p,
-              pc: trade.pc != null ? trade.pc : pending?.pc,
-              ms: trade.ms || pending?.ms,
+      // Trades arrive several times a second; applying each one re-renders the whole
+      // app. Collect them and apply at most once per second instead. Per symbol, the
+      // latest price wins and previous close / market state keep the latest value any
+      // trade in the batch carried - the same result as applying them one by one.
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'trade' && data.data) {
+            data.data.forEach((trade: any) => {
+              if (!trade.s || trade.p == null) return;
+              const pending = pendingTrades.get(trade.s);
+              pendingTrades.set(trade.s, {
+                p: trade.p,
+                pc: trade.pc != null ? trade.pc : pending?.pc,
+                ms: trade.ms || pending?.ms,
+              });
             });
-          });
+          }
+        } catch (e) {
+          console.error('Error parsing WS message', e);
         }
-      } catch (e) {
-        console.error('Error parsing WS message', e);
-      }
-    };
+      };
+    })();
 
     const flushTrades = () => {
       if (pendingTrades.size === 0) return;
@@ -3922,10 +3946,12 @@ export default function App() {
     const flushTimer = setInterval(flushTrades, 1000);
 
     return () => {
+      cancelled = true;
       clearInterval(flushTimer);
-      ws.close();
+      ws?.close();
+      if (wsRef.current === ws) wsRef.current = null;
     };
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     const allBenchmarks = [
@@ -3946,7 +3972,7 @@ export default function App() {
         }, { once: true });
       }
     }
-  }, [holdings, tabSettings]);
+  }, [holdings, tabSettings, wsGeneration]);
 
   const handleAddStock = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -6142,7 +6168,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             <Briefcase className="w-6 h-6 text-white" />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight mb-2">Portfolio Tracker</h1>
-          <p className="text-zinc-500 mb-8">Please sign in to access your portfolio.</p>
+          <p className="text-zinc-500 mb-8">Track your investments across markets. Sign in to start with a blank portfolio, or to pick up where you left off.</p>
           <button
             onClick={handleConnect}
             className="w-full flex items-center justify-center gap-3 bg-white border border-zinc-300 text-zinc-700 px-4 py-3 rounded-xl hover:bg-zinc-50 transition-colors font-medium"
@@ -6155,8 +6181,11 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z"/>
               </g>
             </svg>
-            Sign in with Google
+            Continue with Google
           </button>
+          <p className="mt-6 text-xs text-zinc-400">
+            By continuing you agree to the <a href="/privacy" className="underline hover:text-zinc-600">privacy policy</a>. <a href="/data-deletion" className="underline hover:text-zinc-600">Deleting your data</a>.
+          </p>
         </div>
       </div>
     );
@@ -6879,14 +6908,14 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               <span className="hidden sm:inline">Australia Investment</span>
               {getMarketStatus('australia')}
             </button>
-            <button
+            {isOwnerUser && <button
               onClick={() => setActiveTab('bot')}
               className={`py-3 text-sm font-medium border-b-2 transition-colors flex items-center ${activeTab === 'bot' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'}`}
             >
               <span className="sm:hidden">Bot</span>
               <span className="hidden sm:inline">Trading Bot</span>
               {getMarketStatus('bot')}
-            </button>
+            </button>}
           </div>
           
           <div className={cn("flex flex-wrap lg:flex-nowrap items-center gap-2 pb-2 md:pb-0 w-full md:w-auto md:ml-auto mt-2 md:mt-0 justify-start md:justify-end", activeTab === 'bot' && "hidden")}>

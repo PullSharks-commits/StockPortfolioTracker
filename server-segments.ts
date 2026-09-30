@@ -11,7 +11,7 @@
 import type { Express, Request, Response } from 'express';
 import * as cheerio from 'cheerio';
 import pg from 'pg';
-import { createRequireUser } from './server-auth';
+import { authEnabled, requireUser } from './server-auth';
 import { lookupCik, secFetch } from './server-fundamentals';
 
 const PERIODIC_FORMS = new Set(['10-Q', '10-K', '20-F', '40-F']);
@@ -241,11 +241,9 @@ export async function buildSegments(cik: number, filings: Filing[], contact: str
 
 export function registerSegmentRoutes(app: Express) {
   const connectionString = process.env.DATABASE_URL;
-  const authBase = process.env.NEON_AUTH_BASE_URL;
   const contact = (process.env.SEC_USER_AGENT_EMAIL || '').trim();
-  if (!connectionString || !authBase) return;
+  if (!connectionString || !authEnabled()) return;
   const pool = new pg.Pool({ connectionString, max: 3 });
-  const requireUser = createRequireUser(authBase);
   const inFlight = new Map<string, Promise<any>>();
 
   async function load(ticker: string) {

@@ -15,7 +15,6 @@ import finnhubModule from 'finnhub';
 const finnhub: any = (finnhubModule as any)?.default || finnhubModule;
 import fs from 'fs';
 import path from 'path';
-import session from 'express-session';
 import crypto from 'crypto';
 import dns from 'node:dns/promises';
 import { registerDataRoutes } from './server-data';
@@ -24,7 +23,10 @@ import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
 import { registerPortfolioFundamentalsRoutes } from './server-portfolio-fundamentals';
 import { registerThesisTrackerRoutes } from './server-thesis-tracker';
-import { authedUser, createRequireUser } from './server-auth';
+import { authedUser, isOwner, requireUser, sessionUser } from './server-auth';
+import { registerAnalysesRoutes } from './server-analyses';
+import { registerAccountRoutes } from './server-account';
+import { registerLegalPages } from './server-legal';
 import { Resend } from 'resend';
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -408,19 +410,6 @@ async function initDb() {
     console.log('SQLite database initialized.');
   }
 
-  // Seed data if empty
-  const row = await db.get('SELECT COUNT(*) as count FROM portfolio');
-  if (row && row.count === 0) {
-    try {
-      const seedData = JSON.parse(fs.readFileSync(path.resolve('portfolio.json'), 'utf-8'));
-      for (const item of seedData) {
-        await db.run('INSERT INTO portfolio (ticker, shares, avg_price) VALUES (?, ?, ?)', [item.ticker, item.shares, item.avg_price]);
-      }
-      console.log('Seeded database from portfolio.json');
-    } catch (seedErr) {
-      console.error('Failed to seed database:', seedErr);
-    }
-  }
 }
 initDb().catch(err => {
   console.error('Failed to initialize database:', err);
@@ -429,16 +418,38 @@ initDb().catch(err => {
 async function startServer() {
   console.log('Starting server...');
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/api/ws' });
+  // Live prices for signed-in users only (the browser passes its token as ?token=).
+  const wss = new WebSocketServer({
+    server,
+    path: '/api/ws',
+    verifyClient: (info, done) => {
+      sessionUser(info.req as any).then(user => done(!!user, 401), () => done(false, 401));
+    },
+  });
 
   // Quick health check endpoint before any body-parsing or session middleware
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // Basic hardening now that the app is public.
+  app.use((_req, res, next) => {
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+  registerLegalPages(app);
   app.use(express.json({ limit: '50mb' }));
+  // Everything under /api needs a signed-in user (Neon Auth JWT), except the health
+  // check, company logos (plain <img> requests can't carry a token) and the earnings
+  // calendar feed (calendar apps subscribe to it without signing in).
+  const PUBLIC_API = [/^\/api\/health$/, /^\/api\/logo\//, /^\/api\/calendar\/earnings\.ics$/];
+  app.use('/api', (req, res, next) => (PUBLIC_API.some(re => re.test(req.originalUrl.split('?')[0])) ? next() : requireUser(req, res, next)));
+  registerAnalysesRoutes(app);
+  registerAccountRoutes(app);
   registerDataRoutes(app);
   registerBotRoutes(app);
   const loadFundamentals = registerFundamentalsRoutes(app);
@@ -448,25 +459,6 @@ async function startServer() {
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.set('trust proxy', true);
-  app.use(session({
-    secret: process.env.SESSION_SECRET || 'super-secret-key',
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: true,
-      sameSite: 'none',
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000
-    }
-  }));
-
-  app.get('/api/db-status', (req, res) => {
-    res.json({ 
-      persistent: isMysql && !!mysqlPool,
-      type: isMysql ? 'MySQL' : 'SQLite (Ephemeral)'
-    });
-  });
-
   app.get('/api/search', async (req, res) => {
     const { q } = req.query;
     if (!q || typeof q !== 'string') {
@@ -489,136 +481,10 @@ async function startServer() {
   });
 
   // Auth Routes
-  app.get('/api/auth/url', (req, res) => {
-    const redirectUri = req.query.redirectUri as string;
-    const params = new URLSearchParams({
-      client_id: (process.env.GOOGLE_CLIENT_ID || '').trim(),
-      redirect_uri: redirectUri,
-      response_type: 'code',
-      scope: 'openid email profile',
-      state: redirectUri
-    });
-    res.json({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
-  });
-
-  app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
-    const { code, state, error } = req.query;
-    const redirectUri = state as string;
-
-    if (error) {
-      return res.send(`
-        <html>
-          <body>
-            <h3>Authentication Error</h3>
-            <p>${error}</p>
-          </body>
-        </html>
-      `);
-    }
-
-    try {
-      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          client_id: (process.env.GOOGLE_CLIENT_ID || '').trim(),
-          client_secret: (process.env.GOOGLE_CLIENT_SECRET || '').trim(),
-          code: code as string,
-          grant_type: 'authorization_code',
-          redirect_uri: redirectUri
-        })
-      });
-      const tokenData = await tokenResponse.json();
-
-      if (tokenData.error) {
-        throw new Error(tokenData.error_description || tokenData.error);
-      }
-
-      const userResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` }
-      });
-      const userData = await userResponse.json();
-
-      if (userData.error) {
-        throw new Error(userData.error.message || 'Failed to fetch user info');
-      }
-
-      const token = crypto.randomBytes(32).toString('hex');
-      authTokens.set(token, userData);
-
-      (req as any).session.user = userData;
-      (req as any).session.save((err: any) => {
-        if (err) console.error('Session save error:', err);
-        res.send(`
-          <html>
-            <body>
-              <script>
-                if (window.opener) {
-                  window.opener.postMessage({ 
-                    type: 'OAUTH_AUTH_SUCCESS', 
-                    user: ${JSON.stringify(userData)},
-                    token: '${token}'
-                  }, '*');
-                  window.close();
-                } else {
-                  window.location.href = '/';
-                }
-              </script>
-              <p>Authentication successful. This window should close automatically.</p>
-            </body>
-          </html>
-        `);
-      });
-    } catch (error: any) {
-      console.error('OAuth callback error:', error);
-      res.status(500).send(`
-        <html>
-          <body>
-            <h3>Authentication Failed</h3>
-            <p>${error.message}</p>
-            <p>Please check your Google Client ID and Secret configuration.</p>
-          </body>
-        </html>
-      `);
-    }
-  });
-
-  app.get('/api/auth/user', (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      const user = authTokens.get(token);
-      if (user) {
-        return res.json({ user });
-      }
-    }
-
-    if ((req as any).session?.user) {
-      res.json({ user: (req as any).session.user });
-    } else {
-      res.status(401).json({ error: 'Not authenticated' });
-    }
-  });
-
-  app.post('/api/auth/logout', (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      authTokens.delete(token);
-    }
-    
-    (req as any).session.destroy(() => {
-      res.json({ success: true });
-    });
-  });
-
   // Email route using Resend
   // Alert emails. Signed-in users only, and only ever to their own verified address -
   // otherwise this would relay mail to anyone through our Resend account.
-  const requireUserForEmail = process.env.NEON_AUTH_BASE_URL
-    ? createRequireUser(process.env.NEON_AUTH_BASE_URL)
-    : (_req: any, res: any) => res.status(503).json({ error: 'Auth is not configured' });
-  app.post('/api/send-email', requireUserForEmail, async (req, res) => {
+  app.post('/api/send-email', requireUser, async (req, res) => {
     const { subject, text } = req.body ?? {};
     const user = authedUser(req);
     if (!subject || !text) {
@@ -652,206 +518,6 @@ async function startServer() {
   });
 
 
-  // API Routes
-  async function syncToFile() {
-    try {
-      const rows = await db.query('SELECT ticker, shares, avg_price FROM portfolio');
-      fs.writeFileSync(path.resolve('portfolio.json'), JSON.stringify(rows, null, 2), 'utf-8');
-    } catch (error) {
-      console.error('Error syncing portfolio to file:', error);
-    }
-  }
-
-  app.get('/api/bot/openapi.json', (req, res) => {
-    const specPath = path.resolve('tradingbot-portfolio-openapi.json');
-    if (fs.existsSync(specPath)) {
-      res.sendFile(specPath);
-    } else {
-      res.status(404).json({ error: 'OpenAPI specification not found' });
-    }
-  });
-
-  app.get('/api/portfolio', async (req, res) => {
-    if (req.query.format === 'bot') {
-      const asOf = new Date().toISOString();
-      if (req.query.download === 'true') {
-        res.setHeader('Content-Disposition', 'attachment; filename="portfolio.json"');
-      }
-      return res.json({
-        as_of: asOf,
-        market_open: true,
-        cash_usd: 4085.63,
-        position_value_usd: 6136.29,
-        total_value_usd: 10221.92,
-        positions: [
-          {
-            symbol: 'AMD',
-            qty: 3,
-            avg_cost: 617.85,
-            price: 629.26,
-            market_value: 1887.78,
-            unrealized_pnl: 34.23,
-            entry_date: '2026-09-22',
-            stale_price: false
-          }
-        ]
-      });
-    }
-    try {
-      const rows = await db.query('SELECT * FROM portfolio');
-      res.json(rows);
-    } catch (error) {
-      console.error('Error fetching portfolio:', error);
-      res.status(500).json({ error: 'Failed to fetch portfolio' });
-    }
-  });
-
-  app.post('/api/portfolio', async (req, res) => {
-    const { ticker, shares, avg_price } = req.body;
-    if (!ticker || !shares || !avg_price) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    try {
-      const info = await db.run('INSERT INTO portfolio (ticker, shares, avg_price) VALUES (?, ?, ?)', [ticker.toUpperCase(), shares, avg_price]);
-      
-      await db.run('INSERT INTO transactions (holding_id, type, shares, price, date) VALUES (?, ?, ?, ?, ?)', [
-        info.lastInsertRowid,
-        'buy',
-        shares,
-        avg_price,
-        new Date().toISOString()
-      ]);
-
-      await syncToFile();
-      return res.json({ id: info.lastInsertRowid });
-    } catch (error) {
-      console.error('Error adding to portfolio:', error);
-      res.status(500).json({ error: 'Failed to add to portfolio' });
-    }
-  });
-
-  app.delete('/api/portfolio', async (req, res) => {
-    try {
-      await db.exec('DELETE FROM portfolio');
-      await syncToFile();
-      return res.json({ success: true });
-    } catch (error) {
-      console.error('Error clearing portfolio:', error);
-      res.status(500).json({ error: 'Failed to clear portfolio' });
-    }
-  });
-
-  app.delete('/api/portfolio/:id', async (req, res) => {
-    try {
-      await db.run('DELETE FROM portfolio WHERE id = ?', [req.params.id]);
-      await syncToFile();
-      return res.json({ success: true });
-    } catch (error) {
-      console.error('Error deleting from portfolio:', error);
-      res.status(500).json({ error: 'Failed to delete from portfolio' });
-    }
-  });
-
-  app.put('/api/portfolio/:id', async (req, res) => {
-    const { shares, avg_price } = req.body;
-    if (shares === undefined || avg_price === undefined) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    try {
-      const old = await db.get('SELECT shares, avg_price FROM portfolio WHERE id = ?', [req.params.id]);
-      
-      await db.run('UPDATE portfolio SET shares = ?, avg_price = ? WHERE id = ?', [shares, avg_price, req.params.id]);
-
-      if (old) {
-        const diffShares = shares - old.shares;
-        if (diffShares > 0) {
-          await db.run('INSERT INTO transactions (holding_id, type, shares, price, date) VALUES (?, ?, ?, ?, ?)', [
-            req.params.id, 'buy', diffShares, avg_price, new Date().toISOString()
-          ]);
-        } else if (diffShares < 0) {
-          await db.run('INSERT INTO transactions (holding_id, type, shares, price, date) VALUES (?, ?, ?, ?, ?)', [
-            req.params.id, 'sell', Math.abs(diffShares), avg_price, new Date().toISOString()
-          ]);
-        }
-      }
-
-      await syncToFile();
-      return res.json({ success: true });
-    } catch (error) {
-      console.error('Error updating portfolio:', error);
-      res.status(500).json({ error: 'Failed to update portfolio' });
-    }
-  });
-
-  app.get('/api/portfolio/:id/transactions', async (req, res) => {
-    try {
-      const rows = await db.query('SELECT * FROM transactions WHERE holding_id = ? ORDER BY date DESC', [req.params.id]);
-      res.json(rows);
-    } catch (error) {
-      console.error('Error fetching transactions:', error);
-      res.status(500).json({ error: 'Failed to fetch transactions' });
-    }
-  });
-
-  app.post('/api/portfolio/save', async (req, res) => {
-    try {
-      const rows = await db.query('SELECT ticker, shares, avg_price FROM portfolio');
-      fs.writeFileSync(path.resolve('portfolio.json'), JSON.stringify(rows, null, 2), 'utf-8');
-      res.json({ success: true, count: rows.length });
-    } catch (error) {
-      console.error('Error saving portfolio to file:', error);
-      res.status(500).json({ error: 'Failed to save portfolio to file' });
-    }
-  });
-
-  app.get('/api/analyses', async (req, res) => {
-    try {
-      const ticker = req.query.ticker;
-      if (ticker === 'portfolio') {
-        const rows = await db.query("SELECT * FROM analyses WHERE ticker IS NULL OR ticker = '' ORDER BY date DESC");
-        return res.json(rows);
-      } else if (ticker) {
-        const rows = await db.query('SELECT * FROM analyses WHERE ticker = ? ORDER BY date DESC', [ticker]);
-        return res.json(rows);
-      }
-      const rows = await db.query('SELECT * FROM analyses ORDER BY date DESC');
-      res.json(rows);
-    } catch (error) {
-      console.error('Error fetching analyses:', error);
-      res.status(500).json({ error: 'Failed to fetch analyses' });
-    }
-  });
-
-  app.post('/api/analyses', async (req, res) => {
-    const { ticker, result, sentiment } = req.body;
-    if (!result) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    try {
-      const date = new Date().toISOString();
-      const info = await db.run('INSERT INTO analyses (ticker, result, sentiment, date) VALUES (?, ?, ?, ?)', [
-        ticker || null, result, sentiment || null, date
-      ]);
-      return res.json({ id: info.lastInsertRowid, success: true });
-    } catch (error) {
-      console.error('Error saving analysis:', error);
-      res.status(500).json({ error: 'Failed to save analysis' });
-    }
-  });
-
-  app.delete('/api/analyses/:id', async (req, res) => {
-    try {
-      await db.run('DELETE FROM analyses WHERE id = ?', [req.params.id]);
-      return res.json({ success: true });
-    } catch (error) {
-      console.error('Error deleting analysis:', error);
-      res.status(500).json({ error: 'Failed to delete analysis' });
-    }
-  });
-
   // Helper for multi-provider AI analysis
   async function performAiAnalysis(params: {
     provider?: string;
@@ -864,7 +530,10 @@ async function startServer() {
     tools?: any;
     systemPrompt?: string;
     allowFallback?: boolean;
+    // Only the owner may use the server's own API keys; others bring their own.
+    useServerKeys?: boolean;
   }) {
+    const serverKey = (name: string) => (params.useServerKeys ? process.env[name] : undefined);
     let {
       provider,
       model = 'gemini-3.1-pro-preview',
@@ -918,7 +587,7 @@ async function startServer() {
 
     // Inner helper for executing with Gemini with internal resilience
     const executeWithGemini = async (preferredGeminiModel: string = 'gemini-3.1-pro-preview', geminiApiKeyOverride?: string) => {
-      const geminiKey = geminiApiKeyOverride || process.env.GEMINI_API_KEY;
+      const geminiKey = geminiApiKeyOverride || serverKey('GEMINI_API_KEY');
       if (!geminiKey || geminiKey === "MY_GEMINI_API_KEY") {
         throw {
           status: 500,
@@ -995,9 +664,9 @@ async function startServer() {
 
     // 1. Anthropic (Claude) Provider
     if (provider === 'anthropic' || provider === 'claude') {
-      const anthropicKey = apiKey || process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+      const anthropicKey = apiKey || serverKey('ANTHROPIC_API_KEY') || serverKey('CLAUDE_API_KEY');
       if (!anthropicKey || anthropicKey.trim() === '') {
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           console.warn('Anthropic API key missing, falling back to Gemini 3.1 Pro');
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
@@ -1060,7 +729,7 @@ async function startServer() {
           const errorMsg = data.error?.message || data.message || `Anthropic request failed (${response.status})`;
           const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('credit') || errorMsg.toLowerCase().includes('rate limit');
           
-          if (allowFallback && process.env.GEMINI_API_KEY) {
+          if (allowFallback && serverKey('GEMINI_API_KEY')) {
             console.warn(`Anthropic error (${errorMsg}), falling back to Gemini 3.1 Pro`);
             const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
             return {
@@ -1090,7 +759,7 @@ async function startServer() {
         };
       } catch (err: any) {
         if (err.status && err.code) throw err;
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
             ...geminiRes,
@@ -1111,9 +780,9 @@ async function startServer() {
 
     // 2. OpenAI Provider
     if (provider === 'openai') {
-      const openAiKey = apiKey || process.env.OPENAI_API_KEY;
+      const openAiKey = apiKey || serverKey('OPENAI_API_KEY');
       if (!openAiKey || openAiKey.trim() === '') {
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           console.warn('OpenAI API key missing, falling back to Gemini 3.1 Pro');
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
@@ -1156,7 +825,7 @@ async function startServer() {
           const errorMsg = data.error?.message || data.message || `OpenAI request failed (${response.status})`;
           const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('plan and billing') || errorMsg.toLowerCase().includes('rate limit');
           
-          if (allowFallback && process.env.GEMINI_API_KEY) {
+          if (allowFallback && serverKey('GEMINI_API_KEY')) {
             console.warn(`OpenAI error (${errorMsg}), falling back to Gemini 3.1 Pro`);
             const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
             return {
@@ -1186,7 +855,7 @@ async function startServer() {
         };
       } catch (err: any) {
         if (err.status && err.code) throw err;
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
             ...geminiRes,
@@ -1207,9 +876,9 @@ async function startServer() {
 
     // 3. DeepSeek Provider
     if (provider === 'deepseek') {
-      const deepseekKey = apiKey || process.env.DEEPSEEK_API_KEY;
+      const deepseekKey = apiKey || serverKey('DEEPSEEK_API_KEY');
       if (!deepseekKey || deepseekKey.trim() === '') {
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           console.warn('DeepSeek API key missing, falling back to Gemini 3.1 Pro');
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
@@ -1252,7 +921,7 @@ async function startServer() {
           const isBalance = response.status === 402 || errorMsg.toLowerCase().includes('insufficient balance') || errorMsg.toLowerCase().includes('balance');
           const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('rate limit') || errorMsg.toLowerCase().includes('quota');
 
-          if (allowFallback && process.env.GEMINI_API_KEY) {
+          if (allowFallback && serverKey('GEMINI_API_KEY')) {
             console.warn(`DeepSeek error (${errorMsg}), falling back to Gemini 3.1 Pro`);
             const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
             return {
@@ -1282,7 +951,7 @@ async function startServer() {
         };
       } catch (err: any) {
         if (err.status && err.code) throw err;
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
             ...geminiRes,
@@ -1329,7 +998,7 @@ async function startServer() {
         const data: any = await response.json();
         if (!response.ok) {
           const errorMsg = data.error?.message || data.message || `Custom AI endpoint failed (${response.status})`;
-          if (allowFallback && process.env.GEMINI_API_KEY) {
+          if (allowFallback && serverKey('GEMINI_API_KEY')) {
             const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
             return {
               ...geminiRes,
@@ -1357,7 +1026,7 @@ async function startServer() {
         };
       } catch (err: any) {
         if (err.status && err.code) throw err;
-        if (allowFallback && process.env.GEMINI_API_KEY) {
+        if (allowFallback && serverKey('GEMINI_API_KEY')) {
           const geminiRes = await executeWithGemini('gemini-3.1-pro-preview');
           return {
             ...geminiRes,
@@ -1383,9 +1052,15 @@ async function startServer() {
   // Unified Multi-Model AI Analysis Endpoint
   app.post(['/api/ai-analyze', '/api/gemini-analyze'], async (req, res) => {
     const { contents, prompt, model, provider, apiKey, customEndpoint, config = {}, tools, systemPrompt, allowFallback } = req.body;
-    
+    const owner = isOwner(authedUser(req));
+
     if (!contents && !prompt) {
       return res.status(400).json({ error: 'Contents or prompt is required' });
+    }
+    // A custom endpoint makes this server fetch a URL of the caller's choosing, which
+    // could reach services on this machine; only the owner may set one.
+    if (customEndpoint && !owner) {
+      return res.status(403).json({ error: 'Custom AI endpoints are not available', details: 'Choose a standard provider and add your own API key in Settings.' });
     }
 
     try {
@@ -1399,7 +1074,8 @@ async function startServer() {
         config,
         tools,
         systemPrompt,
-        allowFallback: allowFallback !== undefined ? allowFallback : true
+        allowFallback: allowFallback !== undefined ? allowFallback : true,
+        useServerKeys: owner,
       });
 
       res.json(result);
