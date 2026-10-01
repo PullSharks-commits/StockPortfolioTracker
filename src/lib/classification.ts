@@ -52,7 +52,7 @@ const CURATED: Record<string, ThemeId> = {
   // Payments companies listed as software.
   DLO: 'fintech', XYZ: 'fintech', SQ: 'fintech', AFRM: 'fintech', TOST: 'fintech',
   TSLA: 'clean_energy',
-  SRAD: 'consumer', // owner's choice (sports data & betting)
+  SRAD: 'internet', // sports data & betting apps
 };
 
 // Leveraged / inverse funds: the ticker they track (its theme applies), or a theme.
