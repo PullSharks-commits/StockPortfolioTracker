@@ -16,6 +16,18 @@ const dist = (v: number) => `${v.toFixed(2)}%`;
 const tone = (v: number | null | undefined) => (v == null ? 'text-zinc-900 dark:text-zinc-100' : v > 0 ? 'text-emerald-600' : v < 0 ? 'text-rose-600' : 'text-zinc-900 dark:text-zinc-100');
 const clamp = (v: number) => Math.max(0, Math.min(100, v));
 
+function relativeTime(iso: string | null): string {
+  if (!iso) return 'never';
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
 const REALIZED_WINDOWS: [string, string][] = [['6m', '6 Months'], ['1y', '1 Year'], ['ytd', 'YTD'], ['all_time', 'All-Time']];
 
 // Same windows as the bot's realized_pnl_windows(): by exit date, trailing 182 / 365
@@ -307,6 +319,73 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// At-a-glance strip for the three scheduled jobs (daily run, housekeeping, take-profit
+// watch) - always visible, not hidden behind a toggle like SettingsPanel, since this is
+// exactly the kind of "is anything broken" glance a dashboard should answer without a click.
+// Three distinct states per job, not just pass/fail: a long-lived job like the take-profit
+// watch spends most of a trading session with last_exit_code=null because it simply hasn't
+// exited yet - that's healthy (shown as "running"), different from a short-lived job
+// (daily run, housekeeping) that has never fired and genuinely has no history yet ("no data").
+function JobStatusStrip({ jobs, todaySignal }: { jobs: BotStatus['jobs']; todaySignal: BotStatus['todaySignal'] }) {
+  if (!jobs.length) return null;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {jobs.map((j, i) => {
+        const failed = !j.running && j.last_exit_code !== 0 && j.last_exit_code != null;
+        const ok = !j.running && j.last_exit_code === 0;
+        const label = j.running ? 'running' : ok ? relativeTime(j.last_run_at) : failed ? `failed ${relativeTime(j.last_run_at)}` : 'no data';
+        const title = [
+          `last started: ${j.last_run_at ?? 'never'}`,
+          j.running ? 'currently running' : j.last_exit_code != null ? `last exit code ${j.last_exit_code}` : 'no exit-code history yet',
+        ].join(' · ');
+        return (
+          <React.Fragment key={j.name}>
+            <div
+              title={title}
+              className={clsx(
+                'flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium',
+                j.running && 'bg-sky-50 border-sky-200 text-sky-700 dark:bg-sky-950/20 dark:border-sky-900 dark:text-sky-300',
+                ok && 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-300',
+                failed && 'bg-rose-50 border-rose-200 text-rose-700 dark:bg-rose-950/20 dark:border-rose-900 dark:text-rose-300',
+                !j.running && !ok && !failed && 'bg-zinc-50 border-zinc-200 text-zinc-500 dark:bg-zinc-900 dark:border-zinc-800'
+              )}
+            >
+              <span
+                className={clsx(
+                  'w-1.5 h-1.5 rounded-full flex-none',
+                  j.running && 'bg-sky-500 animate-pulse',
+                  ok && 'bg-emerald-500',
+                  failed && 'bg-rose-500',
+                  !j.running && !ok && !failed && 'bg-zinc-400'
+                )}
+              />
+              <span className="font-semibold">{j.name}</span>
+              <span className="opacity-70 font-mono tabular-nums">{label}</span>
+            </div>
+            {/* The daily run's own signal-scan result, right next to the job it came from - not a separate job, so no dot/running state of its own. */}
+            {i === 0 && todaySignal && (
+              <div
+                title={`todays_signals() as of ${todaySignal.checked_at ?? 'unknown'} - a fresh signal here doesn't guarantee an entry (still subject to max positions, the daily loss limit, and buying power)`}
+                className={clsx(
+                  'flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium',
+                  todaySignal.symbols && todaySignal.symbols.length > 0
+                    ? 'bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/20 dark:border-amber-900 dark:text-amber-300'
+                    : 'bg-zinc-50 border-zinc-200 text-zinc-500 dark:bg-zinc-900 dark:border-zinc-800'
+                )}
+              >
+                <span className="font-semibold">Signal</span>
+                <span className="opacity-70 font-mono tabular-nums">
+                  {todaySignal.symbols == null ? 'no data' : todaySignal.symbols.length === 0 ? 'none today' : todaySignal.symbols.join(', ')}
+                </span>
+              </div>
+            )}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -633,9 +712,6 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
             <>
               Bot snapshot {status.updatedAt ? new Date(status.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
               {status.regime && <> · <span className={status.regime.ok ? 'text-emerald-600' : 'text-rose-600'} title={status.regime.detail}>regime {status.regime.ok ? 'ON' : 'OFF'}</span></>}
-              {status.jobs.map((j) => (
-                <span key={j.name} className={j.last_exit_code !== 0 && j.last_exit_code != null ? 'text-rose-600' : ''} title={`last run ${j.last_run_at ?? 'never'}`}> · {j.name} {j.last_exit_code === 0 ? '✓' : j.last_exit_code == null ? '–' : '✗'}</span>
-              ))}
               {status.errors.length > 0 && <span className="text-amber-600" title={status.errors.join('\n')}> · {status.errors.length} warning{status.errors.length > 1 ? 's' : ''}</span>}
             </>
           )}
@@ -660,6 +736,8 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
           </button>
         </div>
       </div>
+
+      {status?.loaded && !status.error && <JobStatusStrip jobs={status.jobs} todaySignal={status.todaySignal} />}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 

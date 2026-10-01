@@ -13,7 +13,8 @@ export interface BotStatus {
   updatedAt: string | null;
   marketOpen: boolean | null;
   regime: { ok: boolean; detail: string } | null;
-  jobs: { name: string; last_run_at: string | null; last_exit_code: number | null }[];
+  jobs: { name: string; last_run_at: string | null; running: boolean; last_exit_code: number | null }[];
+  todaySignal: { checked_at: string | null; symbols: string[] | null } | null;
   errors: string[];
   error: string | null; // the bot dashboard itself could not be reached
   snapshot: any | null; // the bot's /api/positions response, for the Trading Bot tab
@@ -34,7 +35,7 @@ export interface ClosedTrade {
   note: string | null;
 }
 
-let status: BotStatus = { loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], errors: [], error: null, snapshot: null, closedTrades: [] };
+let status: BotStatus = { loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], todaySignal: null, errors: [], error: null, snapshot: null, closedTrades: [] };
 const statusListeners = new Set<(s: BotStatus) => void>();
 
 export function onBotStatus(listener: (s: BotStatus) => void) {
@@ -127,6 +128,7 @@ async function load(userId: string) {
       marketOpen: snap.market_open ?? null,
       regime: snap.regime ?? null,
       jobs: snap.job_status || [],
+      todaySignal: snap.today_signal ?? null,
       errors: [...(snap.errors || []), ...(snap.realized_error ? [snap.realized_error] : [])],
       error: null,
       snapshot: snap,
@@ -140,7 +142,7 @@ async function load(userId: string) {
 export function clearBotPortfolio() {
   setVirtualDocs('holdings', []);
   setVirtualDocs('transactions', []);
-  setStatus({ loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], errors: [], error: null, snapshot: null, closedTrades: [] });
+  setStatus({ loaded: false, updatedAt: null, marketOpen: null, regime: null, jobs: [], todaySignal: null, errors: [], error: null, snapshot: null, closedTrades: [] });
 }
 
 // --- Actions (place real orders) ----------------------------------------------
