@@ -2481,7 +2481,11 @@ export default function App() {
     };
 
     let provider: AIProvider = providerOverride || config.provider || 'gemini';
-    let model: string = modelOverride || config.model || 'gemini-2.5-flash';
+    // A custom (OpenAI-compatible, e.g. local Ollama) endpoint runs the model named in
+    // "Custom Model Identifier"; `model` may still hold another provider's default.
+    let model: string = modelOverride
+      || (provider === 'custom' && config.customModelName?.trim() ? config.customModelName.trim() : '')
+      || config.model || 'gemini-2.5-flash';
 
     if (modelOverride && !providerOverride) {
       const matched = POPULAR_AI_MODELS.find(m => m.id === modelOverride);
