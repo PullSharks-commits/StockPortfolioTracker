@@ -153,6 +153,31 @@ export async function closeBotPosition(symbol: string): Promise<{ ok: boolean; m
   return { ok: true, message: `Sold ${res.qty ?? ''} ${symbol}${price} (order ${res.close_order_id ?? 'placed'})`.replace(/\s+/g, ' ') };
 }
 
+// Scheduling + connection settings (TradingBot/bot_config.py) - never credentials.
+// Scheduling settings (housekeeping/takeprofit intervals) are re-read live, so saving
+// takes effect within seconds/minutes without restarting anything. Connection settings
+// (region/sandbox/ib_*) apply the next time that process is (re)started.
+export interface BotConfig {
+  housekeeping_interval_minutes: number;
+  takeprofit_poll_interval_minutes: number;
+  webull_region: 'au' | 'us';
+  webull_sandbox: boolean;
+  ib_host: string;
+  ib_port: number;
+  ib_client_id: number;
+}
+
+export async function getBotConfig(): Promise<BotConfig | null> {
+  const res = await authedFetch('GET', '/api/bot/config');
+  return res?.ok ? res.config as BotConfig : null;
+}
+
+export async function saveBotConfig(updates: Partial<BotConfig>): Promise<{ ok: boolean; config?: BotConfig; error?: string }> {
+  const res = await authedFetch('POST', '/api/bot/config', updates);
+  if (!res?.ok) return { ok: false, error: res?.error || 'Could not save settings' };
+  return { ok: true, config: res.config as BotConfig };
+}
+
 export async function runBotHousekeeping(onDone: (result: { ok: boolean; message: string }) => void) {
   const start = await authedFetch('POST', '/api/bot/run-housekeeping');
   if (start?.ok === false) {

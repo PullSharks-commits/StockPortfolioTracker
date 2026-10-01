@@ -3,10 +3,11 @@
 // position showing where the price sits between its stop and target. Prices come
 // from the tracker's live quote stream when available, else the bot's last snapshot.
 
-import React, { useState } from 'react';
-import { ChevronDown, Loader2, RefreshCw, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ChevronDown, Loader2, RefreshCw, Settings, X } from 'lucide-react';
 import { clsx } from 'clsx';
-import type { BotStatus, ClosedTrade } from '../botPortfolio';
+import { getBotConfig, saveBotConfig } from '../botPortfolio';
+import type { BotConfig, BotStatus, ClosedTrade } from '../botPortfolio';
 
 const usd = (v: number | null | undefined) =>
   v == null || Number.isNaN(v) ? '—' : `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -133,6 +134,179 @@ function ClosedTradesPanel({ title, trades, onClose }: { title: string; trades: 
         </div>
         </>
       )}
+    </div>
+  );
+}
+
+// Scheduling + connection settings (bot_config.py) - never credentials (Webull's
+// APP_KEY/SECRET stay in their own file; IBKR has none to hold here at all).
+// Self-contained: loads/saves directly via botPortfolio.ts rather than threading
+// state through App.tsx, since nothing else in the app needs the current values.
+const emptyFields = { housekeeping: '', takeprofit: '', webullRegion: 'au' as 'au' | 'us', webullSandbox: false, ibHost: '', ibPort: '', ibClientId: '' };
+
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [config, setConfig] = useState<BotConfig | null>(null);
+  const [fields, setFields] = useState(emptyFields);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const fieldsFromConfig = (c: BotConfig) => ({
+    housekeeping: String(c.housekeeping_interval_minutes),
+    takeprofit: String(c.takeprofit_poll_interval_minutes),
+    webullRegion: c.webull_region,
+    webullSandbox: c.webull_sandbox,
+    ibHost: c.ib_host,
+    ibPort: String(c.ib_port),
+    ibClientId: String(c.ib_client_id),
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    getBotConfig().then((c) => {
+      if (cancelled) return;
+      if (c) { setConfig(c); setFields(fieldsFromConfig(c)); }
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const dirty = config != null && JSON.stringify(fields) !== JSON.stringify(fieldsFromConfig(config));
+
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    const result = await saveBotConfig({
+      housekeeping_interval_minutes: Number(fields.housekeeping),
+      takeprofit_poll_interval_minutes: Number(fields.takeprofit),
+      webull_region: fields.webullRegion,
+      webull_sandbox: fields.webullSandbox,
+      ib_host: fields.ibHost,
+      ib_port: Number(fields.ibPort),
+      ib_client_id: Number(fields.ibClientId),
+    });
+    setSaving(false);
+    if (result.ok && result.config) {
+      setConfig(result.config);
+      setFields(fieldsFromConfig(result.config));
+      setMessage({ ok: true, text: "Saved. Scheduling takes effect on the bot's next check; connection settings apply the next time that process (re)starts." });
+    } else {
+      setMessage({ ok: false, text: result.error || 'Could not save settings' });
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-4 border-b border-zinc-100 dark:border-zinc-800">
+        <div>
+          <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Bot Settings</h3>
+          <p className="text-xs text-zinc-500 mt-0.5">Scheduling and broker connection - no credentials live here.</p>
+        </div>
+        <button onClick={onClose} className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg" aria-label="Close settings">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="p-5 space-y-6">
+        {loading ? (
+          <div className="text-sm text-zinc-500">Loading…</div>
+        ) : !config ? (
+          <div className="text-sm text-rose-600">Could not load settings - is the bot dashboard reachable?</div>
+        ) : (
+          <>
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3">Scheduling · applies live, no restart</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="text-xs font-medium text-zinc-500">Housekeeping interval (minutes)</span>
+                  <input
+                    type="number" min={5} max={480} step={5}
+                    value={fields.housekeeping}
+                    onChange={(e) => setFields(f => ({ ...f, housekeeping: e.target.value }))}
+                    className="mt-1 w-full px-3 py-1.5 border border-zinc-200 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-sm font-mono"
+                  />
+                  <span className="mt-1 block text-[11px] text-zinc-400">Resolve pending entries, reconcile brackets, time-stops (5-480)</span>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-zinc-500">Take-profit poll interval (minutes)</span>
+                  <input
+                    type="number" min={1} max={120} step={1}
+                    value={fields.takeprofit}
+                    onChange={(e) => setFields(f => ({ ...f, takeprofit: e.target.value }))}
+                    className="mt-1 w-full px-3 py-1.5 border border-zinc-200 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-sm font-mono"
+                  />
+                  <span className="mt-1 block text-[11px] text-zinc-400">Backstop only - the real-time IBKR watch covers this first (1-120)</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3">Connection · applies on next (re)start</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="text-xs font-medium text-zinc-500">Webull region</span>
+                  <select
+                    value={fields.webullRegion}
+                    onChange={(e) => setFields(f => ({ ...f, webullRegion: e.target.value as 'au' | 'us' }))}
+                    className="mt-1 w-full px-3 py-1.5 border border-zinc-200 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-sm"
+                  >
+                    <option value="au">au</option>
+                    <option value="us">us</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 mt-5 sm:mt-6">
+                  <input
+                    type="checkbox"
+                    checked={fields.webullSandbox}
+                    onChange={(e) => setFields(f => ({ ...f, webullSandbox: e.target.checked }))}
+                    className="rounded border-zinc-300"
+                  />
+                  <span className="text-sm text-zinc-700 dark:text-zinc-300">Webull sandbox mode</span>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-zinc-500">IB Gateway host</span>
+                  <input
+                    type="text"
+                    value={fields.ibHost}
+                    onChange={(e) => setFields(f => ({ ...f, ibHost: e.target.value }))}
+                    className="mt-1 w-full px-3 py-1.5 border border-zinc-200 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-sm font-mono"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-zinc-500">IB Gateway port</span>
+                  <input
+                    type="number" min={1} max={65535}
+                    value={fields.ibPort}
+                    onChange={(e) => setFields(f => ({ ...f, ibPort: e.target.value }))}
+                    className="mt-1 w-full px-3 py-1.5 border border-zinc-200 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-sm font-mono"
+                  />
+                  <span className="mt-1 block text-[11px] text-zinc-400">4001 live, 4002 paper (IB Gateway); 7496/7497 for TWS</span>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-zinc-500">IB client ID</span>
+                  <input
+                    type="number" min={1} max={999}
+                    value={fields.ibClientId}
+                    onChange={(e) => setFields(f => ({ ...f, ibClientId: e.target.value }))}
+                    className="mt-1 w-full px-3 py-1.5 border border-zinc-200 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-sm font-mono"
+                  />
+                  <span className="mt-1 block text-[11px] text-zinc-400">Must be unique among anything connected to Gateway at once</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={save}
+                disabled={saving || !dirty}
+                className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+              >
+                {saving && <Loader2 className="w-4 h-4 animate-spin" />} Save
+              </button>
+              {message && <span className={clsx('text-sm', message.ok ? 'text-emerald-600' : 'text-rose-600')}>{message.text}</span>}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -431,6 +605,7 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
   const [tradesWindow, setTradesWindow] = useState<string | null>(null);
   const [showPositions, setShowPositions] = useState(false);
   const [showUnrealized, setShowUnrealized] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const closedTrades = status?.closedTrades ?? [];
   const windowTrades = (key: string) => {
     const start = windowStart(key);
@@ -472,8 +647,21 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
           <button onClick={onRunHousekeeping} disabled={isRunningHousekeeping} className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 hover:bg-amber-50 rounded-lg text-sm font-medium disabled:opacity-50" title="Run the trading bot's housekeeping job now">
             {isRunningHousekeeping && <Loader2 className="w-4 h-4 animate-spin" />} Run Housekeeping
           </button>
+          <button
+            onClick={() => setShowSettings(v => !v)}
+            aria-pressed={showSettings}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-medium',
+              showSettings ? 'bg-indigo-50 border-indigo-300 text-indigo-700 dark:bg-indigo-950/30' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50'
+            )}
+            title="Housekeeping and take-profit poll interval"
+          >
+            <Settings className="w-4 h-4" /> Settings
+          </button>
         </div>
       </div>
+
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 
       {totals && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
