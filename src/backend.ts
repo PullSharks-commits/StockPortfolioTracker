@@ -298,6 +298,13 @@ export async function setDoc(ref: DocRef, data: object, options?: { merge?: bool
   notifyChanged(ref.name);
 }
 
+// Firestore's increment(): updateDoc(ref, { shares: increment(-25) }) adds to the
+// stored number on the server instead of overwriting it with a value computed from
+// this page's (possibly stale) copy.
+export function increment(n: number) {
+  return { $increment: n };
+}
+
 export async function updateDoc(ref: DocRef, data: object) {
   assertWritable(ref, data);
   await api('PATCH', `${ref.name}/${encodeURIComponent(ref.id)}`, data);

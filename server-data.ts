@@ -336,8 +336,24 @@ export function registerDataRoutes(app: Express) {
       return;
     }
 
+    // Firestore-style increment(n): { shares: { $increment: -12.5 } } adds to the
+    // stored value in SQL, so a page holding an out-of-date copy can't overwrite a
+    // newer one (e.g. a cash balance changed from another device).
+    const increments: [string, number][] = [];
+    for (const [field, [column, kind]] of Object.entries(def.fields)) {
+      const v = body[field];
+      if (!isPlainObject(v) || !('$increment' in v)) continue;
+      const n = Number(v.$increment);
+      if (kind !== 'number' || !Number.isFinite(n)) throw new HttpError(400, `Invalid increment for ${field}`);
+      increments.push([column, n]);
+      delete body[field];
+    }
     const { cols, vals } = columnsFrom(def, body);
     const sets = cols.map((c, i) => `${c} = $${i + 1}`);
+    for (const [column, n] of increments) {
+      vals.push(n);
+      sets.push(`${column} = ${column} + $${vals.length}`);
+    }
     if (def.updatedField) sets.push(`${def.updatedField[1]} = now()`);
     if (!sets.length) throw new HttpError(400, 'Nothing to update');
     vals.push(req.params.id, userId);

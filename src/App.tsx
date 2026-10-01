@@ -43,7 +43,8 @@ import {
   User,
   handleFirestoreError,
   OperationType,
-  authedFetch
+  authedFetch,
+  increment
 } from './backend';
 import { StatCard, AllocationChart, PortfolioSummary, AnimatedCountUp } from './components/DashboardComponents';
 import { PerformanceChart } from './components/PerformanceChart';
@@ -4043,11 +4044,10 @@ export default function App() {
         }
         newAvgPrice = Math.max(0, newAvgPrice);
 
-        await updateDoc(doc(db, 'holdings', existingHolding.id), {
-          shares: newShares,
-          avg_price: newAvgPrice,
-          updatedAt: serverTimestamp()
-        });
+        await updateDoc(doc(db, 'holdings', existingHolding.id), isCash
+          // Cash: add the deposit (or subtract the withdrawal) on the server.
+          ? { shares: increment(isSell ? -numShares : numShares), updatedAt: serverTimestamp() }
+          : { shares: newShares, avg_price: newAvgPrice, updatedAt: serverTimestamp() });
 
         // Add transaction
         await addDoc(collection(db, 'transactions'), {
@@ -4090,9 +4090,8 @@ export default function App() {
         const cashValue = numShares * numPrice;
         const cashHolding = holdings.find(h => h.ticker === 'CASH');
         if (cashHolding) {
-          const newCashShares = isSell ? cashHolding.shares + cashValue : cashHolding.shares - cashValue;
           await updateDoc(doc(db, 'holdings', cashHolding.id), {
-            shares: newCashShares,
+            shares: increment(isSell ? cashValue : -cashValue),
             updatedAt: serverTimestamp()
           });
           
@@ -4292,7 +4291,7 @@ export default function App() {
         const cashHolding = holdings.find(h => h.ticker === 'CASH');
         if (cashHolding) {
           await updateDoc(doc(db, 'holdings', cashHolding.id), {
-            shares: cashHolding.shares - cashValue,
+            shares: increment(-cashValue),
             updatedAt: serverTimestamp()
           });
           
@@ -4593,9 +4592,8 @@ export default function App() {
       const cashValue = sharesToSell * sellPrice;
       const cashHolding = holdings.find(h => h.ticker === 'CASH');
       if (cashHolding) {
-        const newCashShares = cashHolding.shares + cashValue;
         await updateDoc(doc(db, 'holdings', cashHolding.id), {
-          shares: newCashShares,
+          shares: increment(cashValue),
           updatedAt: serverTimestamp()
         });
         
@@ -4696,9 +4694,8 @@ export default function App() {
         const cashValue = numShares * numPrice;
         const cashHolding = holdings.find(h => h.ticker === 'CASH');
         if (cashHolding) {
-          const newCashShares = isBuy ? cashHolding.shares + cashValue : cashHolding.shares - cashValue;
           await updateDoc(doc(db, 'holdings', cashHolding.id), {
-            shares: newCashShares,
+            shares: increment(isBuy ? cashValue : -cashValue),
             updatedAt: serverTimestamp()
           });
           
