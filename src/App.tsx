@@ -4730,17 +4730,14 @@ export default function App() {
     if (!earningsAnalysisResult || !selectedEarningsEvent) return;
     setIsSavingEarningsAnalysis(true);
     try {
-      await fetch('/api/analyses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ticker: selectedEarningsEvent.symbol,
-          result: `## Earnings Analysis: ${selectedEarningsEvent.symbol} (${format(parseISO(selectedEarningsEvent.date), 'MMMM d, yyyy')})\n\n${earningsAnalysisResult}`,
-        }),
+      await authedFetch('POST', '/api/analyses', {
+        ticker: selectedEarningsEvent.symbol,
+        result: `## Earnings Analysis: ${selectedEarningsEvent.symbol} (${format(parseISO(selectedEarningsEvent.date), 'MMMM d, yyyy')})\n\n${earningsAnalysisResult}`,
       });
       setEarningsAnalysisSaved(true);
     } catch (err) {
-      console.error('Failed to save earnings analysis');
+      console.error('Failed to save earnings analysis', err);
+      toast.error(`Couldn't save the note: ${err instanceof Error ? err.message : err}`);
     } finally {
       setIsSavingEarningsAnalysis(false);
     }
@@ -4819,18 +4816,15 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     if (!analysisResult) return;
     setIsSavingAnalysis(true);
     try {
-      await fetch('/api/analyses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ticker: analysisTicker || 'portfolio',
-          result: analysisResult,
-          sentiment: analysisSentiment
-        }),
+      await authedFetch('POST', '/api/analyses', {
+        ticker: analysisTicker || 'portfolio',
+        result: analysisResult,
+        sentiment: analysisSentiment,
       });
       setAnalysisSaved(true);
     } catch (err) {
-      console.error('Failed to save analysis');
+      console.error('Failed to save analysis', err);
+      toast.error(`Couldn't save the note: ${err instanceof Error ? err.message : err}`);
     } finally {
       setIsSavingAnalysis(false);
     }
