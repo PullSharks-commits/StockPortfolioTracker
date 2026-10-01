@@ -2474,6 +2474,23 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
+  // Models installed in the local Ollama (owner only), offered in the model pickers.
+  const [localModels, setLocalModels] = useState<{ endpoint: string; names: string[] }>({ endpoint: '', names: [] });
+  useEffect(() => {
+    if (!account?.isOwner) { setLocalModels({ endpoint: '', names: [] }); return; }
+    authedFetch('GET', '/api/ai/local-models')
+      .then((r: any) => setLocalModels({ endpoint: r.available ? r.endpoint : '', names: (r.models || []).map((m: any) => m.name) }))
+      .catch(() => setLocalModels({ endpoint: '', names: [] }));
+  }, [account?.isOwner]);
+
+  // The model set for a custom / local endpoint is offered too, and is the pickers'
+  // default when Custom is the chosen provider.
+  const customModelName = userSettings.aiConfig?.customModelName?.trim() || '';
+  const localModelOptions = [...new Set([...(customModelName ? [customModelName] : []), ...localModels.names])];
+  const defaultAnalysisModel = userSettings.aiConfig?.provider === 'custom' && customModelName
+    ? customModelName
+    : (userSettings.aiConfig?.model && POPULAR_AI_MODELS.some(m => m.id === userSettings.aiConfig!.model) ? userSettings.aiConfig.model : 'claude-3-7-sonnet-20250219');
+
   const resolveAiConfig = (modelOverride?: string, providerOverride?: AIProvider) => {
     const config: AIUserConfig = {
       ...DEFAULT_AI_CONFIG,
@@ -2489,7 +2506,9 @@ export default function App() {
 
     if (modelOverride && !providerOverride) {
       const matched = POPULAR_AI_MODELS.find(m => m.id === modelOverride);
-      if (matched) {
+      if ((config.customModelName?.trim() && modelOverride === config.customModelName.trim()) || localModels.names.includes(modelOverride)) {
+        provider = 'custom'; // a local (Ollama) model or the one set for the custom endpoint
+      } else if (matched) {
         provider = matched.provider;
       } else if (modelOverride.startsWith('claude')) {
         provider = 'anthropic';
@@ -2513,7 +2532,8 @@ export default function App() {
       provider,
       model,
       apiKey,
-      customEndpoint: config.customEndpoint || '',
+      // Ollama models picked without a configured endpoint go to the local Ollama.
+      customEndpoint: config.customEndpoint || (provider === 'custom' && localModels.names.includes(model) ? localModels.endpoint : ''),
       temperature: config.temperature ?? 0.7,
       analysisStyle: config.analysisStyle || 'comprehensive'
     };
@@ -9448,7 +9468,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                       <span className="text-xs font-bold text-zinc-600 dark:text-zinc-400 uppercase tracking-wider">Re-analyze with:</span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      {POPULAR_AI_MODELS.slice(0, 4).map(m => (
+                      {[...localModelOptions.map(name => ({ id: name, name })), ...POPULAR_AI_MODELS.slice(0, 4)].map(m => (
                         <button
                           key={m.id}
                           onClick={() => handleAnalyze(analysisTicker || undefined, m.id)}
@@ -9746,10 +9766,15 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 </button>
               </div>
               <select
-                value={selectedStrategyModel || userSettings.aiConfig?.model || 'claude-3-7-sonnet-20250219'}
+                value={selectedStrategyModel || defaultAnalysisModel}
                 onChange={(e) => setSelectedStrategyModel(e.target.value)}
                 className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
               >
+                {localModelOptions.length > 0 && (
+                  <optgroup label="Local (Ollama / custom endpoint)">
+                    {localModelOptions.map(name => <option key={name} value={name}>{name} (LOCAL)</option>)}
+                  </optgroup>
+                )}
                 {POPULAR_AI_MODELS.map(m => (
                   <option key={m.id} value={m.id}>
                     {m.name} ({m.provider.toUpperCase()})
@@ -9762,7 +9787,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               <button
                 onClick={() => {
                   setShowAnalysisStrategyModal(false);
-                  handleAnalyze(strategyTicker || undefined, selectedStrategyModel || userSettings.aiConfig?.model);
+                  handleAnalyze(strategyTicker || undefined, selectedStrategyModel || defaultAnalysisModel);
                 }}
                 className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-sm"
               >
@@ -9825,10 +9850,15 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 </button>
               </div>
               <select
-                value={selectedEarningsStrategyModel || userSettings.aiConfig?.model || 'claude-3-7-sonnet-20250219'}
+                value={selectedEarningsStrategyModel || defaultAnalysisModel}
                 onChange={(e) => setSelectedEarningsStrategyModel(e.target.value)}
                 className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
               >
+                {localModelOptions.length > 0 && (
+                  <optgroup label="Local (Ollama / custom endpoint)">
+                    {localModelOptions.map(name => <option key={name} value={name}>{name} (LOCAL)</option>)}
+                  </optgroup>
+                )}
                 {POPULAR_AI_MODELS.map(m => (
                   <option key={m.id} value={m.id}>
                     {m.name} ({m.provider.toUpperCase()})
@@ -9841,7 +9871,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               <button
                 onClick={() => {
                   setShowEarningsAnalysisStrategyModal(false);
-                  handleAnalyzeEarnings(strategyEarningsEvent, selectedEarningsStrategyModel || userSettings.aiConfig?.model);
+                  handleAnalyzeEarnings(strategyEarningsEvent, selectedEarningsStrategyModel || defaultAnalysisModel);
                 }}
                 className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-colors flex items-center justify-center gap-2 shadow-sm"
               >

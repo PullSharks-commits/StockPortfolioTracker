@@ -22,7 +22,8 @@ import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
 import { registerPortfolioFundamentalsRoutes } from './server-portfolio-fundamentals';
 import { registerThesisTrackerRoutes } from './server-thesis-tracker';
-import { authedUser, isOwner, requireUser, sessionUser } from './server-auth';
+import { authedUser, isOwner, requireOwner, requireUser, sessionUser } from './server-auth';
+import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
 import { registerAnalysesRoutes } from './server-analyses';
 import { registerAccountRoutes } from './server-account';
 import { isAllowed, registerAccessRoutes, requireInvited } from './server-access';
@@ -539,6 +540,8 @@ async function startServer() {
 
 
   // Helper for multi-provider AI analysis
+  const localModelAgent = new UndiciAgent({ headersTimeout: 30 * 60_000, bodyTimeout: 30 * 60_000 });
+
   async function performAiAnalysis(params: {
     provider?: string;
     model?: string;
@@ -1003,8 +1006,11 @@ async function startServer() {
       }
 
       try {
-        const response = await fetch(endpoint, {
+        const response = await undiciFetch(endpoint, {
           method: 'POST',
+          // Local models (Ollama) can take many minutes on a busy Mac; Node's default
+          // gives up after 5 minutes without a response.
+          dispatcher: localModelAgent,
           headers,
           body: JSON.stringify({
             model: model || 'default',
@@ -1070,6 +1076,20 @@ async function startServer() {
   }
 
   // Unified Multi-Model AI Analysis Endpoint
+  // Models installed in the local Ollama (OLLAMA_URL, default http://127.0.0.1:11434),
+  // for the AI model pickers. Owner only, like custom endpoints.
+  app.get('/api/ai/local-models', requireUser, requireOwner, async (_req, res) => {
+    const base = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+    try {
+      const r = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const data: any = await r.json();
+      const models = (data.models || []).map((m: any) => ({ name: m.name, sizeGb: Math.round((m.size || 0) / 1e8) / 10, parameters: m.details?.parameter_size || null }));
+      res.json({ available: true, endpoint: `${base}/v1/chat/completions`, models });
+    } catch {
+      res.json({ available: false, models: [] }); // Ollama not running or not installed
+    }
+  });
+
   app.post(['/api/ai-analyze', '/api/gemini-analyze'], async (req, res) => {
     const { contents, prompt, model, provider, apiKey, customEndpoint, config = {}, tools, systemPrompt, allowFallback } = req.body;
     const owner = isOwner(authedUser(req));
