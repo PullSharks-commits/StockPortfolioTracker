@@ -1949,13 +1949,19 @@ async function startServer() {
           let industry = 'Unknown';
           let website = '';
           let logo = '';
+          let quoteType = '';
+          let fundCategory = '';
+          let name = '';
 
           if (TICKER_DOMAINS[symbol]) {
             logo = `/api/logo/${symbol}`;
           }
 
           try {
-            const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile'] }, { validateResult: false }));
+            const result: any = await yahooWithRetry(() => yahooFinance.quoteSummary(symbol, { modules: ['assetProfile', 'fundProfile', 'price'] }, { validateResult: false }));
+            quoteType = result?.price?.quoteType || '';
+            fundCategory = result?.fundProfile?.categoryName || '';
+            name = result?.price?.longName || result?.price?.shortName || '';
             if (result && result.assetProfile) {
               sector = result.assetProfile.sector || 'Unknown';
               industry = result.assetProfile.industry || 'Unknown';
@@ -1980,7 +1986,7 @@ async function startServer() {
             logo = `https://www.google.com/s2/favicons?domain=${symbol.toLowerCase()}.com&sz=128`;
           }
 
-          const data = { sector, industry, website, logo };
+          const data = { sector, industry, website, logo, quoteType, fundCategory, name };
           metadata[symbol] = data;
           metadataCache.set(symbol, { data, timestamp: now });
         } catch (err) {

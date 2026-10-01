@@ -5,7 +5,7 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Edit2, FileText, LineChart, MoreHorizontal, Target, Trash2, Zap } from 'lucide-react';
+import { Edit2, FileText, LineChart, MoreHorizontal, Tag, Target, Trash2, Zap } from 'lucide-react';
 
 export interface HoldingActionHandlers {
   onChart?: () => void;
@@ -13,6 +13,7 @@ export interface HoldingActionHandlers {
   onThesis?: () => void;
   thesisLabel?: string;
   onEdit?: () => void;
+  onChangeTheme?: () => void;
   onHistory?: () => void;
   historyLabel?: string;
   onDelete?: () => void;
@@ -36,6 +37,7 @@ export function HoldingActions({ ticker, ...h }: HoldingActionHandlers & { ticke
     h.onAnalyze && { label: 'Analyze with AI', icon: <Zap className="w-4 h-4" />, onSelect: h.onAnalyze },
     h.onThesis && { label: h.thesisLabel || 'Thesis', icon: <Target className="w-4 h-4" />, onSelect: h.onThesis },
     h.onEdit && { label: 'Edit holding', icon: <Edit2 className="w-4 h-4" />, onSelect: h.onEdit },
+    h.onChangeTheme && { label: 'Change theme', icon: <Tag className="w-4 h-4" />, onSelect: h.onChangeTheme },
     h.onHistory && { label: h.historyLabel || 'History', icon: <FileText className="w-4 h-4" />, onSelect: h.onHistory },
     h.onDelete && { label: h.deleteLabel || 'Delete', icon: <Trash2 className="w-4 h-4" />, onSelect: h.onDelete, danger: true },
   ].filter(Boolean) as MenuItem[];

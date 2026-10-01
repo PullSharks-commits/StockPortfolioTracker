@@ -64,6 +64,8 @@ import { BotStatus, clearBotPortfolio, closeBotPosition, onBotStatus, refreshBot
 import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
+import { ThemePicker } from './components/ThemePicker';
+import { THEME_LABEL, type ThemeId, type SecurityMeta, themeOf, autoTheme, assetKind, ASSET_KIND_LABEL, sectorOf, industryOf, marketCapBand, groupOrder, TRAILING_GROUPS, type Grouping } from './lib/classification';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
 import { AccountSection } from './components/AccountSection';
@@ -913,138 +915,17 @@ const TRADINGVIEW_STUDIES = [
   "VbPVisible@tv-volumebyprice" as any
 ];
 
-const getInvestingTheme = (holding: any, metadata: Record<string, any>): string => {
+// Classification metadata for a holding (Yahoo profile from /api/metadata, plus the
+// holding's own crypto flag).
+const securityMeta = (holding: any, metadata: Record<string, any>): SecurityMeta => {
   const ticker = (holding?.ticker || '').toUpperCase().trim();
-  if (ticker === 'CASH' || ticker.startsWith('CASH')) {
-    return 'Cash & Liquid Reserves';
-  }
-
   const meta = metadata[holding?.ticker] || metadata[ticker] || {};
-  const sector = (meta.sector || '').toLowerCase();
-  const industry = (meta.industry || '').toLowerCase();
-  const name = (holding?.name || meta.name || '').toLowerCase();
+  return { ...meta, quoteType: holding?.isCrypto ? 'CRYPTOCURRENCY' : meta.quoteType };
+};
 
-  // 1. Crypto & Web3 Ecosystem
-  if (
-    (holding as any)?.isCrypto ||
-    ticker.endsWith('-USD') ||
-    sector === 'cryptocurrency' ||
-    ['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'DOT', 'COIN', 'BMNR', 'MSTR', 'MARA', 'RIOT', 'BITO', 'SUI', 'PEPE', 'SHIB', 'NEAR'].includes(ticker)
-  ) {
-    return 'Crypto & Web3 Ecosystem';
-  }
-
-  // 2. Semiconductors & AI Hardware
-  if (
-    ['NVDA', 'AMD', 'TSM', 'INTC', 'AVGO', 'ARM', 'ASML', 'QCOM', 'MU', 'LRCX', 'AMAT', 'SMCI', 'ON', 'MRVL', 'TXN', 'ADI', 'MPWR', 'KLAC'].includes(ticker) ||
-    industry.includes('semiconductor') ||
-    industry.includes('chip')
-  ) {
-    return 'Semiconductors & AI Hardware';
-  }
-
-  // 3. Artificial Intelligence & Big Tech
-  if (
-    ['MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'AAPL', 'PLTR', 'PATH', 'AI', 'CRWD', 'PANW', 'SNOW', 'ORCL', 'CRM', 'ADBE', 'NOW', 'IBM', 'DELL', 'HPE'].includes(ticker) ||
-    industry.includes('software') ||
-    industry.includes('cloud') ||
-    industry.includes('artificial intelligence') ||
-    name.includes('cloud') ||
-    name.includes('software')
-  ) {
-    return 'Artificial Intelligence & Big Tech';
-  }
-
-  // 4. Clean Energy & Autonomous Mobility
-  if (
-    ['TSLA', 'RIVN', 'LCID', 'NIO', 'XPEV', 'BYD', 'ENPH', 'SEDG', 'FSLR', 'RUN', 'PLUG', 'NEST', 'BE', 'BLNK', 'CHPT'].includes(ticker) ||
-    industry.includes('electric vehicle') ||
-    industry.includes('solar') ||
-    industry.includes('clean energy') ||
-    industry.includes('renewable')
-  ) {
-    return 'Clean Energy & Autonomous Mobility';
-  }
-
-  // 5. Defense, Aerospace & Security
-  if (
-    ['LMT', 'RTX', 'NOC', 'GD', 'BA', 'ITA', 'XAR', 'PPA', 'KTOS', 'HWM', 'RHM', 'LHX'].includes(ticker) ||
-    industry.includes('aerospace') ||
-    industry.includes('defense')
-  ) {
-    return 'Defense, Aerospace & Security';
-  }
-
-  // 6. Healthcare, Biotech & Longevity
-  if (
-    ['JNJ', 'PFE', 'UNH', 'LLY', 'NVO', 'ABBV', 'MRK', 'AMGN', 'GILD', 'ISRG', 'MODA', 'VRTX', 'REGN', 'AZN', 'BMY'].includes(ticker) ||
-    sector.includes('health') ||
-    industry.includes('biotech') ||
-    industry.includes('pharmaceutical') ||
-    industry.includes('medical')
-  ) {
-    return 'Healthcare, Biotech & Longevity';
-  }
-
-  // 7. Banking, Payments & Fintech
-  if (
-    ['JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'V', 'MA', 'PYPL', 'SQ', 'HOOD', 'AXP', 'BLK', 'FINN', 'NU'].includes(ticker) ||
-    sector.includes('financial') ||
-    industry.includes('bank') ||
-    industry.includes('fintech') ||
-    industry.includes('credit')
-  ) {
-    return 'Banking, Payments & Fintech';
-  }
-
-  // 8. Energy & Hard Assets
-  if (
-    ['XOM', 'CVX', 'SHEL', 'TTE', 'COP', 'SLB', 'HAL', 'OXY', 'EQNR', 'GLD', 'SLV', 'IAU', 'USO', 'DBA', 'RIO', 'BHP', 'VALE', 'FCX', 'NEM'].includes(ticker) ||
-    sector.includes('energy') ||
-    sector.includes('basic materials') ||
-    industry.includes('oil') ||
-    industry.includes('mining') ||
-    industry.includes('gold') ||
-    industry.includes('metal')
-  ) {
-    return 'Energy & Hard Assets';
-  }
-
-  // 9. Real Estate & Infrastructure
-  if (
-    ['O', 'AMT', 'CCI', 'PLD', 'EQIX', 'SPG', 'WY', 'DLR', 'VNQ', 'IYR'].includes(ticker) ||
-    sector.includes('real estate') ||
-    industry.includes('reit')
-  ) {
-    return 'Real Estate & Infrastructure';
-  }
-
-  // 10. Consumer Brands & Retail
-  if (
-    ['WMT', 'COST', 'TGT', 'PG', 'KO', 'PEP', 'DIS', 'NFLX', 'SBUX', 'NKE', 'MCD', 'HD', 'LOW', 'CMG', 'BKNG', 'ABNB', 'MELI'].includes(ticker) ||
-    sector.includes('consumer') ||
-    industry.includes('retail') ||
-    industry.includes('beverage') ||
-    industry.includes('restaurant')
-  ) {
-    return 'Consumer Brands & Retail';
-  }
-
-  // 11. ETFs & Index Funds
-  if (
-    ['SPY', 'QQQ', 'IVV', 'VOO', 'VTI', 'IWM', 'EFA', 'VEA', 'VWO', 'SCHD', 'JEPI', 'XYLD', 'VYM', 'VT', 'SPLG', 'DIA', 'NIFTY50', '^NSEI'].includes(ticker) ||
-    industry.includes('etf') ||
-    sector.includes('etf') ||
-    sector.includes('index')
-  ) {
-    return 'ETFs & Index Funds';
-  }
-
-  if (meta.sector && meta.sector !== 'Unknown') {
-    return meta.sector;
-  }
-
-  return 'Global Growth & Diversified';
+const getInvestingTheme = (holding: any, metadata: Record<string, any>, overrides: Record<string, string | null> = {}): string => {
+  const lookup = (t: string) => metadata[t] || {};
+  return THEME_LABEL[themeOf(holding?.ticker || '', securityMeta(holding, metadata), overrides, lookup).theme];
 };
 
 const SortableHeader = ({ id, label, sortKey, align, sortConfig, onSort }: any) => {
@@ -1107,6 +988,7 @@ const SortableHoldingRow = ({
   handleDelete,
   handleThesis,
   hasThesis,
+  handleChangeTheme,
   isSortable = true
 }: any) => {
   const {
@@ -1179,6 +1061,7 @@ const SortableHoldingRow = ({
               onThesis={handleThesis && hasThesis?.(holding.ticker) ? () => handleThesis(holding.ticker) : undefined}
               thesisLabel="View thesis"
               onEdit={() => handleEditClick(holding)}
+              onChangeTheme={handleChangeTheme && holding.ticker !== 'CASH' ? () => handleChangeTheme(holding.ticker) : undefined}
               onHistory={() => handleViewHistory(holding)}
               historyLabel={holding.ticker !== 'CASH' && holding.shares > 0 ? 'History & sell lots' : 'History'}
               onDelete={() => handleDelete(holding.id)}
@@ -2474,6 +2357,9 @@ export default function App() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  // The user's own theme per ticker (holding ⋯ menu → Change theme), over the automatic one.
+  const [themeOverrides, setThemeOverrides] = useState<Record<string, string | null>>({});
+  const [themePickerTicker, setThemePickerTicker] = useState<string | null>(null);
 
   // Models installed in the local Ollama (owner only), offered in the model pickers.
   const [localModels, setLocalModels] = useState<{ endpoint: string; names: string[] }>({ endpoint: '', names: [] });
@@ -2592,6 +2478,7 @@ export default function App() {
           setTabSettings(loadedTabs);
         }
         setHiddenCalendarEvents(data.hiddenCalendarEvents || []);
+        setThemeOverrides(data.themeOverrides || {});
         if (data.customCalendarEvents) setCustomCalendarEvents(data.customCalendarEvents);
         if (data.user) setUserSettings({
           displayName: data.user.displayName || '',
@@ -2729,6 +2616,24 @@ export default function App() {
       setIsSavingSettings(false);
       if (autoClose) {
       }
+    }
+  };
+
+  // theme null = back to the automatic theme.
+  const setHoldingTheme = async (ticker: string, theme: ThemeId | null) => {
+    if (!user) return;
+    const key = ticker.toUpperCase().trim();
+    const next = { ...themeOverrides };
+    next[key] = theme; // null, not delete: saved maps merge, so a missing key wouldn't clear it
+    const previous = themeOverrides;
+    setThemeOverrides(next);
+    try {
+      await setDoc(doc(db, 'settings', user.uid), { themeOverrides: next }, { merge: true });
+      toast.success(theme ? `${key} → ${THEME_LABEL[theme]}` : `${key} back to its automatic theme`);
+    } catch (err) {
+      console.error('Failed to save theme:', err);
+      setThemeOverrides(previous);
+      toast.error('Failed to save theme');
     }
   };
 
@@ -2926,7 +2831,7 @@ export default function App() {
 
     const rows = itemsToExport.map((hItem: any) => {
       const h = hItem;
-      const theme = getInvestingTheme(h, metadata);
+      const theme = getInvestingTheme(h, metadata, themeOverrides);
       const name = h.name || (metadata[h.ticker] as any)?.name || h.ticker;
       return [
         escapeCsv(h.ticker),
@@ -7801,59 +7706,16 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         {tableGrouping !== 'none' ? (
                           <>
                             {(() => {
-                              const getMarketCapGroup = (mc: number | undefined, currency: string) => {
-                                if (mc === undefined || mc === null || mc <= 0) return 'Unknown / Cash';
-                                let usdToTargetRate = 1;
-                                if (currency !== 'USD') {
-                                  usdToTargetRate = getExchangeRate('USD', currency, quotes) || 1;
-                                }
-                                const megaThreshold = 200e9 * usdToTargetRate;
-                                const largeThreshold = 10e9 * usdToTargetRate;
-                                const midThreshold = 2e9 * usdToTargetRate;
-                                if (mc >= megaThreshold) return 'Mega Cap (>$200B)';
-                                if (mc >= largeThreshold) return 'Large Cap ($10B - $200B)';
-                                if (mc >= midThreshold) return 'Mid Cap ($2B - $10B)';
-                                return 'Small/Micro Cap (<$2B)';
-                              };
-
+                              const toUsd = activeCurrency === 'USD' ? 1 : (getExchangeRate(activeCurrency, 'USD', quotes) || 1);
+                              const lookupMeta = (t: string) => metadata[t] || {};
                               const groupedMap = sortedHoldings.reduce((acc, holding) => {
-                                let groupKey = 'Unknown';
-                                if (tableGrouping === 'theme') {
-                                  groupKey = getInvestingTheme(holding, metadata);
-                                } else if (tableGrouping === 'assetType') {
-                                  if (holding.ticker === 'CASH') {
-                                    groupKey = 'Cash & Liquid Assets';
-                                  } else if (
-                                    (holding as any).isCrypto || 
-                                    holding.ticker?.endsWith('-USD') || 
-                                    metadata[holding.ticker]?.sector === 'Cryptocurrency' || 
-                                    ['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE'].includes(holding.ticker?.toUpperCase())
-                                  ) {
-                                    groupKey = 'Cryptocurrency';
-                                  } else if (
-                                    metadata[holding.ticker]?.industry?.toLowerCase().includes('etf') || 
-                                    metadata[holding.ticker]?.sector?.toLowerCase().includes('etf') || 
-                                    ['SPY', 'QQQ', 'IVV', 'VOO', 'VTI', 'IWM', 'EFA', 'VEA', 'VWO'].includes(holding.ticker?.toUpperCase())
-                                  ) {
-                                    groupKey = 'ETFs & Index Funds';
-                                  } else {
-                                    groupKey = 'Stocks & Equities';
-                                  }
-                                } else if (tableGrouping === 'sector') {
-                                  groupKey = holding.ticker === 'CASH' ? 'Cash' : (metadata[holding.ticker]?.sector || 'Unknown');
-                                } else if (tableGrouping === 'industry') {
-                                  const mag7Tickers = ['MSFT', 'AAPL', 'NVDA', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA'];
-                                  const cryptoTickers = ['BMNR', 'COIN'];
-                                  if (holding.ticker && mag7Tickers.includes(holding.ticker.toUpperCase())) {
-                                    groupKey = 'mag7';
-                                  } else if (holding.ticker && cryptoTickers.includes(holding.ticker.toUpperCase())) {
-                                    groupKey = 'crypto_proxies';
-                                  } else {
-                                    groupKey = holding.ticker === 'CASH' ? 'Cash' : (metadata[holding.ticker]?.industry || 'Unknown');
-                                  }
-                                } else if (tableGrouping === 'marketCap') {
-                                  groupKey = holding.ticker === 'CASH' ? 'Cash' : getMarketCapGroup(holding.marketCap, activeCurrency);
-                                }
+                                const meta = securityMeta(holding, metadata);
+                                const groupKey =
+                                  tableGrouping === 'theme' ? THEME_LABEL[themeOf(holding.ticker, meta, themeOverrides, lookupMeta).theme]
+                                  : tableGrouping === 'assetType' ? ASSET_KIND_LABEL[assetKind(holding.ticker, meta)]
+                                  : tableGrouping === 'sector' ? sectorOf(holding.ticker, meta)
+                                  : tableGrouping === 'industry' ? industryOf(holding.ticker, meta)
+                                  : marketCapBand(holding.ticker, meta, holding.marketCap ? holding.marketCap * toUsd : null);
                                 if (!acc[groupKey]) {
                                   acc[groupKey] = {
                                     holdings: [],
@@ -7880,45 +7742,18 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 totalRealizedProfitLoss: number,
                               }>);
 
+                              // Fixed order where the groups have one (themes, asset types, cap bands);
+                              // otherwise largest first, with Cash / Funds / Other buckets last.
+                              const order = groupOrder(tableGrouping as Grouping);
+                              const rank = (g: string) => {
+                                const i = order.indexOf(g);
+                                if (i !== -1) return i;
+                                const t = TRAILING_GROUPS.indexOf(g);
+                                return t === -1 ? -1 : 1000 + t;
+                              };
                               return Object.entries(groupedMap).sort((a, b) => {
-                                if (tableGrouping === 'theme') {
-                                  const order = [
-                                    'Artificial Intelligence & Big Tech',
-                                    'Semiconductors & AI Hardware',
-                                    'Crypto & Web3 Ecosystem',
-                                    'Clean Energy & Autonomous Mobility',
-                                    'Defense, Aerospace & Security',
-                                    'ETFs & Index Funds',
-                                    'Healthcare, Biotech & Longevity',
-                                    'Banking, Payments & Fintech',
-                                    'Energy & Hard Assets',
-                                    'Consumer Brands & Retail',
-                                    'Real Estate & Infrastructure',
-                                    'Global Growth & Diversified',
-                                    'Cash & Liquid Reserves',
-                                  ];
-                                  const idxA = order.indexOf(a[0]);
-                                  const idxB = order.indexOf(b[0]);
-                                  const finalIdxA = idxA === -1 ? 999 : idxA;
-                                  const finalIdxB = idxB === -1 ? 999 : idxB;
-                                  if (finalIdxA !== finalIdxB) return finalIdxA - finalIdxB;
-                                }
-                                if (tableGrouping === 'assetType') {
-                                  const order = ['Stocks & Equities', 'ETFs & Index Funds', 'Cryptocurrency', 'Cash & Liquid Assets'];
-                                  const idxA = order.indexOf(a[0]);
-                                  const idxB = order.indexOf(b[0]);
-                                  const finalIdxA = idxA === -1 ? 999 : idxA;
-                                  const finalIdxB = idxB === -1 ? 999 : idxB;
-                                  return finalIdxA - finalIdxB;
-                                }
-                                if (tableGrouping === 'marketCap') {
-                                  const order = ['Mega Cap (>$200B)', 'Large Cap ($10B - $200B)', 'Mid Cap ($2B - $10B)', 'Small/Micro Cap (<$2B)', 'Cash', 'Unknown / Cash'];
-                                  const idxA = order.indexOf(a[0]);
-                                  const idxB = order.indexOf(b[0]);
-                                  const finalIdxA = idxA === -1 ? 999 : idxA;
-                                  const finalIdxB = idxB === -1 ? 999 : idxB;
-                                  return finalIdxA - finalIdxB;
-                                }
+                                const ra = rank(a[0]), rb = rank(b[0]);
+                                if (ra !== rb && (ra !== -1 || rb !== -1)) return ra === -1 ? -1 : rb === -1 ? 1 : ra - rb;
                                 return b[1].value - a[1].value;
                               }).map(([groupName, groupData]) => {
                                 const groupFg = calculateGroupFearGreed(groupData.holdings, fearGreedData);
@@ -7928,7 +7763,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                   <td colSpan={displayedColumns.length + 1} className="px-6 py-2.5 bg-zinc-100/30">
                                     <div className="flex justify-between items-center w-full">
                                       <div className="flex items-center gap-2">
-                                        <span className="text-xs font-bold uppercase tracking-wider text-zinc-800">{groupName === 'mag7' ? 'Magnificent Seven (Mag7)' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName}</span>
+                                        <span className="text-xs font-bold uppercase tracking-wider text-zinc-800">{groupName}</span>
                                         {groupFg && (
                                           <span 
                                             className={cn(
@@ -7967,6 +7802,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                     handleDelete={handleDelete}
                                     handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
                                     hasThesis={hasThesis}
+                                    handleChangeTheme={setThemePickerTicker}
                                     isSortable={false}
                                   />
                                 ))}
@@ -7977,7 +7813,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                       case 'ticker':
                                         return (
                                           <td key={colId} className="px-3 py-3 text-left font-sans font-bold text-zinc-500 uppercase tracking-wider text-[10px] sticky left-0 z-10 bg-zinc-100 dark:bg-zinc-800">
-                                            Total {groupName === 'mag7' ? 'Mag7' : groupName === 'crypto_proxies' ? 'Crypto Proxies' : groupName === 'Cash' ? 'Cash' : groupName}
+                                            Total {groupName}
                                           </td>
                                         );
                                       case 'fearGreed':
@@ -8114,6 +7950,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 handleDelete={handleDelete}
                                 handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
                                 hasThesis={hasThesis}
+                                handleChangeTheme={setThemePickerTicker}
                               />
                             ))}
                           </SortableContext>
@@ -8607,6 +8444,20 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       <Toaster position="top-right" richColors />
       <ConfirmDialogHost />
+      {themePickerTicker && (() => {
+        const holding = sortedHoldings.find(h => h.ticker === themePickerTicker) || { ticker: themePickerTicker };
+        const meta = securityMeta(holding, metadata);
+        const lookup = (t: string) => metadata[t] || {};
+        return (
+          <ThemePicker
+            ticker={themePickerTicker}
+            current={themeOf(themePickerTicker, meta, themeOverrides, lookup).theme}
+            auto={autoTheme(themePickerTicker, meta, lookup)}
+            onPick={theme => { setThemePickerTicker(null); setHoldingTheme(themePickerTicker, theme); }}
+            onClose={() => setThemePickerTicker(null)}
+          />
+        );
+      })()}
       {thesisPanelTicker && trackerHoldings?.[thesisPanelTicker] && (
         <ThesisPanel holding={trackerHoldings[thesisPanelTicker]} onClose={() => setThesisPanelTicker(null)} />
       )}
