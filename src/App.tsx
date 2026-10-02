@@ -5780,6 +5780,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     return losses.length > 0 ? Math.max(...losses) : 1000;
   }, [chartView, chartData, sectorData]);
 
+  // Shared area scale for the scatter bubbles (logo ∝ cost, ring ∝ gain or loss).
+  const maxScatterExtent = useMemo(() => {
+    const data = chartView === 'asset' ? chartData : sectorData;
+    return Math.max(1, ...data.map(d => Math.max(0, d.cost) + Math.abs(d.profitLoss || 0)));
+  }, [chartView, chartData, sectorData]);
+
   const scatterPlotData = useMemo(() => {
     const rawData = chartView === 'asset' ? chartData : sectorData;
     // Always sort descending by value so larger bubbles render first (at bottom of SVG stack)
@@ -7096,11 +7102,11 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             <span className="font-semibold text-zinc-700 dark:text-zinc-200">In Profit (Green ring = Profit)</span>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <span className="w-3.5 h-3.5 rounded-full border-[2.5px] border-rose-300 bg-rose-400/40 inline-block shrink-0" />
-                            <span className="font-semibold text-zinc-700 dark:text-zinc-200">In Loss</span>
+                            <span className="w-3.5 h-3.5 rounded-full border border-rose-400 inline-block shrink-0" style={{ background: 'conic-gradient(rgba(239, 68, 68, 0.6) 0 35%, transparent 35% 100%)' }} />
+                            <span className="font-semibold text-zinc-700 dark:text-zinc-200">In Loss (Red wedge = Loss)</span>
                           </div>
                           <div className="flex items-center gap-1.5 text-zinc-400 text-[10px]">
-                            <span>• Icon size ∝ Investment Cost | Icon + Green ring ∝ Market Value</span>
+                            <span>• Logo area ∝ Investment Cost | Green ring area ∝ Gain | Red wedge = share of cost lost</span>
                           </div>
                         </div>
                         <ResponsiveContainer width="100%" height="100%">
@@ -7147,6 +7153,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                     minCost={minScatterCost}
                                     maxProfit={maxScatterProfit}
                                     maxLoss={maxScatterLoss}
+                                    maxExtent={maxScatterExtent}
                                     activeCurrency={activeCurrency}
                                     isSelected={filterGroup === pointName}
                                     isHovered={isHovered}

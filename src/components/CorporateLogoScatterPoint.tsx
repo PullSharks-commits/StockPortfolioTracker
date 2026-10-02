@@ -36,6 +36,7 @@ export interface CorporateLogoScatterPointProps {
   minCost?: number;
   maxProfit?: number;
   maxLoss?: number;
+  maxExtent?: number; // largest cost + |profit/loss| among the plotted points
   activeCurrency?: string;
 }
 
@@ -119,63 +120,29 @@ export const CorporateLogoScatterPoint: React.FC<CorporateLogoScatterPointProps>
   // Find logo URL from metadata or server endpoint
   const logoUrl = metadata?.[ticker]?.logo || metadata?.[name]?.logo || (!isCash && ticker ? `/api/logo/${ticker}` : '');
 
-  // 1. Investment Size (Cost) calculation:
-  // The size of the inner icon is strictly proportional to the investment cost.
+  // Sizes are areas on one shared scale, so they compare across bubbles:
+  // logo area ∝ investment cost, ring area ∝ the gain (green) or loss (red).
+  // In profit the whole bubble's area is therefore ∝ market value.
   const cost = Math.max(0, payload?.cost ?? 0);
-  const maxCost = props.maxCost && props.maxCost > 0 ? props.maxCost : (props.maxValue || 10000);
-  const minCost = props.minCost && props.minCost >= 0 ? props.minCost : 0;
-
-  // Square-root mapping so icon area is proportional to investment cost
-  const costRatio = maxCost > minCost
-    ? Math.min(1, Math.max(0, (cost - minCost) / (maxCost - minCost)))
-    : 0.5;
-  const costScale = Math.sqrt(costRatio);
-
-  // Icon radius scaled proportionally to investment size (10px - 28px)
-  const minIconRadius = 10;
-  const maxIconRadius = 28;
-  let rIcon = Math.round(minIconRadius + costScale * (maxIconRadius - minIconRadius));
-
-  // 2. Current Market Value & Profit/Loss calculation:
-  // Market Value = Investment Cost + Profit (or - Loss).
-  // Total bubble size (icon size + green ring) is proportional to current market value.
   const marketValue = Math.max(0, payload?.value ?? 0);
-  const maxValue = props.maxValue && props.maxValue > 0 ? props.maxValue : maxCost;
-  const minValue = props.minValue && props.minValue >= 0 ? props.minValue : 0;
-
-  const valueRatio = maxValue > minValue
-    ? Math.min(1, Math.max(0, (marketValue - minValue) / (maxValue - minValue)))
-    : costRatio;
-  const valueScale = Math.sqrt(valueRatio);
-  const rValueTheoretical = Math.round(minIconRadius + valueScale * (maxIconRadius - minIconRadius));
-
   const profitLoss = payload?.profitLoss ?? (marketValue - cost);
   const isProfit = profitLoss > 0;
   const isLoss = profitLoss < 0;
 
-  const maxProfit = props.maxProfit && props.maxProfit > 0 ? props.maxProfit : 1000;
-  const maxLoss = props.maxLoss && props.maxLoss > 0 ? props.maxLoss : 1000;
+  // The largest cost + |gain or loss| on the chart gets MAX_RADIUS.
+  const MAX_RADIUS = 36;
+  const MIN_ICON_RADIUS = 7; // keeps tiny positions' logos legible (only these break proportion)
+  const maxExtent = props.maxExtent && props.maxExtent > 0 ? props.maxExtent : Math.max(cost + Math.abs(profitLoss), 1);
+  const pxPerUnitArea = (MAX_RADIUS * MAX_RADIUS) / maxExtent; // radius² per currency unit
 
-  const profitRatio = isProfit ? Math.min(1, Math.max(0, profitLoss / maxProfit)) : 0;
-  const lossRatio = isLoss ? Math.min(1, Math.max(0, Math.abs(profitLoss) / maxLoss)) : 0;
-
-  const profitScale = Math.pow(profitRatio, 0.5);
-  const lossScale = Math.pow(lossRatio, 0.5);
-
-  let rTotal = rIcon;
-  if (isProfit) {
-    // When in profit: Icon = Cost, Green Ring = Profit, Total Bubble = Market Value
-    const dynamicRing = Math.max(3, rValueTheoretical - rIcon);
-    const greenRingWidth = Math.max(3, Math.round(dynamicRing + profitScale * 3.5));
-    rTotal = rIcon + greenRingWidth;
-  } else if (isLoss) {
-    // When in loss: Red boundary ring indicates loss
-    const redRingWidth = Math.max(2.5, Math.round(2 + lossScale * 3));
-    rTotal = rIcon + redRingWidth;
-  } else {
-    // Neutral or cash (zero profit/loss)
-    rTotal = rIcon + 2;
-  }
+  let rIcon = Math.max(MIN_ICON_RADIUS, Math.sqrt(cost * pxPerUnitArea));
+  // Ring radius from the icon outwards, so the ring's own area ∝ |profit/loss|
+  // whatever the icon size (including floored icons).
+  // Gains grow outward: a green ring whose area ∝ the gain. Losses eat into what was
+  // invested: a red wedge over the logo covering the share lost (so its area ∝ the
+  // loss too), and the bubble keeps its cost size with just an outline.
+  let rTotal = isProfit ? Math.sqrt(rIcon * rIcon + profitLoss * pxPerUnitArea) : rIcon + 1.5;
+  const lossFraction = isLoss && cost > 0 ? Math.min(1, -profitLoss / cost) : 0;
 
   if (isSelected || isHovered) {
     rTotal += 3;
@@ -192,7 +159,8 @@ export const CorporateLogoScatterPoint: React.FC<CorporateLogoScatterPointProps>
   const translucentRedFill = isHovered ? 'rgba(248, 113, 113, 0.55)' : 'rgba(248, 113, 113, 0.38)';
   const translucentRedBorder = isHovered ? 'rgba(239, 68, 68, 0.95)' : 'rgba(248, 113, 113, 0.75)';
 
-  const labelWidth = Math.max(32, ticker.length * 6.5 + 10);
+  const lossLabelLength = isLoss ? `-${currencySymbol}${formatCompact(Math.abs(profitLoss))} · -${Math.round(lossFraction * 100)}%`.length : 0;
+  const labelWidth = Math.max(32, ticker.length * 6.5 + 10, lossLabelLength * 4.6 + 8);
 
   return (
     <g 
@@ -231,8 +199,8 @@ export const CorporateLogoScatterPoint: React.FC<CorporateLogoScatterPointProps>
         </g>
       )}
 
-      {/* Outer Soft Translucent Halo Glow */}
-      {isProfit && (
+      {/* Soft halo on hover/selection only, so at rest the ring's size is exact */}
+      {isProfit && (isSelected || isHovered) && (
         <circle
           cx={drawCx}
           cy={drawCy}
@@ -241,11 +209,11 @@ export const CorporateLogoScatterPoint: React.FC<CorporateLogoScatterPointProps>
           className="pointer-events-none transition-all duration-300"
         />
       )}
-      {isLoss && (
+      {isLoss && (isSelected || isHovered) && (
         <circle
           cx={drawCx}
           cy={drawCy}
-          r={rTotal + (isSelected || isHovered ? 4.5 : 2)}
+          r={rTotal + 4.5}
           fill={isHovered ? "rgba(248, 113, 113, 0.32)" : "rgba(248, 113, 113, 0.2)"}
           className="pointer-events-none transition-all duration-300"
         />
@@ -293,6 +261,25 @@ export const CorporateLogoScatterPoint: React.FC<CorporateLogoScatterPointProps>
         </div>
       </foreignObject>
 
+      {/* Loss wedge: from 12 o'clock clockwise, covering the share of the cost lost */}
+      {lossFraction > 0 && (
+        lossFraction >= 0.999 ? (
+          <circle cx={drawCx} cy={drawCy} r={rIcon} fill="rgba(239, 68, 68, 0.55)" className="pointer-events-none" />
+        ) : (
+          <path
+            d={(() => {
+              const a = lossFraction * 2 * Math.PI;
+              const x = drawCx + rIcon * Math.sin(a), y = drawCy - rIcon * Math.cos(a);
+              return `M ${drawCx} ${drawCy} L ${drawCx} ${drawCy - rIcon} A ${rIcon} ${rIcon} 0 ${lossFraction > 0.5 ? 1 : 0} 1 ${x} ${y} Z`;
+            })()}
+            fill={isHovered ? 'rgba(239, 68, 68, 0.62)' : 'rgba(239, 68, 68, 0.5)'}
+            stroke="rgba(220, 38, 38, 0.9)"
+            strokeWidth={0.75}
+            className="pointer-events-none"
+          />
+        )
+      )}
+
       {/* Inner contour separating the logo from the ring */}
       <circle
         cx={drawCx}
@@ -335,7 +322,7 @@ export const CorporateLogoScatterPoint: React.FC<CorporateLogoScatterPointProps>
           )}
           {isLoss && Math.abs(profitLoss) >= 1 && (
             <tspan x={drawCx} dy="8.5" fontSize={rTotal >= 20 ? "7.5" : "7"} fontWeight={700} fill="#dc2626" className="dark:fill-rose-400">
-              {`-${currencySymbol}${formatCompact(Math.abs(profitLoss))}`}
+              {`-${currencySymbol}${formatCompact(Math.abs(profitLoss))}${lossFraction > 0 ? ` · -${Math.round(lossFraction * 100)}%` : ''}`}
             </tspan>
           )}
         </text>
