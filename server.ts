@@ -11,6 +11,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import YahooFinance from 'yahoo-finance2';
 const yahooFinance = new YahooFinance();
 import finnhubModule from 'finnhub';
+import { isMarketOpen } from './server-market-clock';
 const finnhub: any = (finnhubModule as any)?.default || finnhubModule;
 import fs from 'fs';
 import path from 'path';
@@ -2004,7 +2005,22 @@ async function startServer() {
 
 
   // --- WebSocket Setup ---
-  const subscribedSymbols = new Set<string>();
+  // Each open page's symbols. Prices go only to the pages that asked for them (so users
+  // don't receive each other's tickers), and only symbols some open page wants are
+  // streamed or polled.
+  const clientSymbols = new Map<WebSocket, Set<string>>();
+  const activeSymbols = () => {
+    const all = new Set<string>();
+    clientSymbols.forEach(syms => syms.forEach(sym => all.add(sym)));
+    return all;
+  };
+  const sendTrades = (trades: { s: string }[], only?: WebSocket) => {
+    for (const [client, syms] of clientSymbols) {
+      if ((only && client !== only) || client.readyState !== WebSocket.OPEN) continue;
+      const mine = trades.filter(t => syms.has(t.s));
+      if (mine.length) client.send(JSON.stringify({ type: 'trade', data: mine }));
+    }
+  };
   let finnhubWs: any = null;
   let finnhubReconnectAttempts = 0;
   let finnhubReconnectTimeout: NodeJS.Timeout | null = null;
@@ -2024,7 +2040,7 @@ async function startServer() {
       finnhubWs.on('open', () => {
         console.log('Connected to Finnhub WebSocket');
         finnhubReconnectAttempts = 0; // Reset attempts on success
-        subscribedSymbols.forEach(sym => {
+        activeSymbols().forEach(sym => {
           try {
             finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: sym }));
           } catch {}
@@ -2042,12 +2058,7 @@ async function startServer() {
               t: t.t
             }));
             
-            const broadcastMsg = JSON.stringify({ type: 'trade', data: trades });
-            wss.clients.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(broadcastMsg);
-              }
-            });
+            sendTrades(trades);
           }
         } catch (e) {
           console.error('Finnhub WS message error:', e);
@@ -2091,11 +2102,11 @@ async function startServer() {
     setupFinnhubWs();
   }
 
-  async function fetchYahooQuotes() {
-    // Only poll Yahoo if Finnhub is NOT active or for symbols not yet trading
-    if (subscribedSymbols.size === 0) return;
-    
-    const symbols = Array.from(subscribedSymbols)
+  // Yahoo quotes (incl. pre-market / after-hours prices) pushed to open pages. Without
+  // arguments: the symbols open pages want whose market is trading now. With them:
+  // just those symbols, for one page (its first look, whatever the clock says).
+  async function fetchYahooQuotes(requested?: string[], only?: WebSocket) {
+    const symbols = (requested ?? [...activeSymbols()].filter(sym => isMarketOpen(sym)))
       .map(s => String(s).trim().toUpperCase())
       .filter(s => s && s !== 'CASH');
     
@@ -2141,14 +2152,7 @@ async function startServer() {
             };
           });
 
-        if (trades.length > 0) {
-          const messageStr = JSON.stringify({ type: 'trade', data: trades });
-          wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(messageStr);
-            }
-          });
-        }
+        if (trades.length > 0) sendTrades(trades, only);
       } catch (err: any) {
         const errorCode = err.code || err.cause?.code;
         const errorMessage = err.message || '';
@@ -2161,31 +2165,49 @@ async function startServer() {
     }
   }
 
-  // Poll Yahoo Finance every 15 seconds for "real-time" updates including extended hours
-  setInterval(fetchYahooQuotes, 15000);
+  // Every 15 s while a wanted symbol's market is open (US 4:00-20:00 ET incl. extended
+  // hours, ASX 10:00-16:15 Sydney, ...). Closed markets aren't polled: their prices
+  // come when a page loads or the user taps Refresh (/api/quotes).
+  setInterval(() => { if (clientSymbols.size > 0) fetchYahooQuotes(); }, 15000);
 
   wss.on('connection', (ws) => {
+    clientSymbols.set(ws, new Set());
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
         if (data.type === 'subscribe' && Array.isArray(data.symbols)) {
-          data.symbols.forEach((sym: string) => {
-            const cleanSym = sym && typeof sym === 'string' ? sym.trim().toUpperCase() : '';
-            if (cleanSym && cleanSym !== 'CASH' && !subscribedSymbols.has(cleanSym)) {
-              subscribedSymbols.add(cleanSym);
-              if (finnhubWs && finnhubWs.readyState === WebSocket.OPEN) {
-                finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: cleanSym }));
-              }
-            }
-          });
-          // Immediately fetch for new subscriptions
-          fetchYahooQuotes();
+          // The page sends its full list each time; it replaces the previous one.
+          const before = activeSymbols();
+          const previous = clientSymbols.get(ws) ?? new Set<string>();
+          const wanted = new Set<string>(data.symbols
+            .map((sym: unknown) => (typeof sym === 'string' ? sym.trim().toUpperCase() : ''))
+            .filter((sym: string) => sym && sym !== 'CASH'));
+          clientSymbols.set(ws, wanted);
+          syncFinnhub(before);
+          // Prices for the symbols this page just added, open market or not.
+          const added = [...wanted].filter(sym => !previous.has(sym));
+          if (added.length) fetchYahooQuotes(added, ws);
         }
       } catch (e) {
         console.error('WS message error', e);
       }
     });
+    ws.on('close', () => {
+      const before = activeSymbols();
+      clientSymbols.delete(ws);
+      syncFinnhub(before);
+    });
   });
+
+  // Keep the Finnhub stream subscribed to exactly the symbols open pages want.
+  function syncFinnhub(before: Set<string>) {
+    if (!finnhubWs || finnhubWs.readyState !== WebSocket.OPEN) return; // 'open' subscribes everything
+    const after = activeSymbols();
+    try {
+      after.forEach(sym => { if (!before.has(sym)) finnhubWs.send(JSON.stringify({ type: 'subscribe', symbol: sym })); });
+      before.forEach(sym => { if (!after.has(sym)) finnhubWs.send(JSON.stringify({ type: 'unsubscribe', symbol: sym })); });
+    } catch {}
+  }
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {

@@ -3891,8 +3891,10 @@ export default function App() {
       tabSettings['australia']?.benchmark || '^AXJO',
       tabSettings['bot']?.benchmark || 'SPY'
     ];
-    if (holdings.length > 0 || allBenchmarks.length > 0) {
-      const symbols = Array.from(new Set([...holdings.map(h => h.ticker), ...allBenchmarks]))
+    // Every tab's holdings (the combined cards use them all). The server replaces this
+    // page's list with each message, and streams/polls only what open pages ask for.
+    if (allHoldings.length > 0 || allBenchmarks.length > 0) {
+      const symbols = Array.from(new Set([...allHoldings.map(h => h.ticker), ...allBenchmarks]))
         .filter(s => s && s.trim().toUpperCase() !== 'CASH');
       const subscribeMsg = JSON.stringify({ type: 'subscribe', symbols });
       
@@ -3904,7 +3906,7 @@ export default function App() {
         }, { once: true });
       }
     }
-  }, [holdings, tabSettings, wsGeneration]);
+  }, [allHoldings, tabSettings, wsGeneration]);
 
   const handleAddStock = async (e: React.FormEvent) => {
     e.preventDefault();
