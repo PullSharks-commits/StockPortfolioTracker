@@ -19,6 +19,7 @@ import crypto from 'crypto';
 import dns from 'node:dns/promises';
 import { registerDataRoutes } from './server-data';
 import { registerBotRoutes } from './server-bot';
+import { registerWhatsMovingRoutes } from './server-whats-moving';
 import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
 import { registerPortfolioFundamentalsRoutes } from './server-portfolio-fundamentals';
@@ -475,6 +476,7 @@ async function startServer() {
   registerAccountRoutes(app);
   registerDataRoutes(app);
   registerBotRoutes(app);
+  registerWhatsMovingRoutes(app, { yahooFinance, yahooWithRetry: fn => yahooWithRetry(fn), finnhubApiKey: process.env.FINNHUB_API_KEY });
   const loadFundamentals = registerFundamentalsRoutes(app);
   registerPortfolioFundamentalsRoutes(app, loadFundamentals, loadCompanyMarketData, loadFxToUsd);
   registerSegmentRoutes(app);

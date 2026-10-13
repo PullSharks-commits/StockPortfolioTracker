@@ -5,10 +5,11 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Edit2, FileText, LineChart, MoreHorizontal, Tag, Target, Trash2, Zap } from 'lucide-react';
+import { Edit2, FileText, LineChart, MoreHorizontal, Newspaper, Tag, Target, Trash2, Zap } from 'lucide-react';
 
 export interface HoldingActionHandlers {
   onChart?: () => void;
+  onWhatsMoving?: () => void;
   onAnalyze?: () => void;
   onThesis?: () => void;
   thesisLabel?: string;
@@ -74,6 +75,16 @@ export function HoldingActions({ ticker, ...h }: HoldingActionHandlers & { ticke
 
   return (
     <div className="flex items-center justify-end gap-1" onClick={stop}>
+      {h.onWhatsMoving && (
+        <button
+          onClick={h.onWhatsMoving}
+          className="p-1.5 text-zinc-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+          title={`What's moving ${ticker} today?`}
+          aria-label={`What's moving ${ticker} today?`}
+        >
+          <Newspaper className="w-4 h-4" />
+        </button>
+      )}
       {h.onChart && (
         <button
           onClick={h.onChart}

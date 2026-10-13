@@ -65,6 +65,7 @@ import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
 import { ThemePicker } from './components/ThemePicker';
+import { WhatsMovingPanel, type AiAnswer } from './components/WhatsMovingPanel';
 import { THEME_LABEL, type ThemeId, type SecurityMeta, themeOf, autoTheme, assetKind, ASSET_KIND_LABEL, sectorOf, industryOf, marketCapBand, groupOrder, TRAILING_GROUPS, type Grouping } from './lib/classification';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
@@ -989,6 +990,7 @@ const SortableHoldingRow = ({
   handleThesis,
   hasThesis,
   handleChangeTheme,
+  handleWhatsMoving,
   isSortable = true
 }: any) => {
   const {
@@ -1057,6 +1059,7 @@ const SortableHoldingRow = ({
             <HoldingActions
               ticker={holding.ticker}
               onChart={() => setSelectedChartTicker(holding.ticker)}
+              onWhatsMoving={handleWhatsMoving && holding.ticker !== 'CASH' ? () => handleWhatsMoving(holding.ticker) : undefined}
               onAnalyze={holding.ticker !== 'CASH' ? () => promptAnalysisStrategy(holding.ticker) : undefined}
               onThesis={handleThesis && hasThesis?.(holding.ticker) ? () => handleThesis(holding.ticker) : undefined}
               thesisLabel="View thesis"
@@ -1859,7 +1862,7 @@ const columnPriority = (colId: string) => {
 // Minimum widths measured with real data (headers may wrap), plus a small margin.
 const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 165, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124, revenueGrowth: 112, operatingMargin: 112, psRatio: 84, peRatio: 84 };
 const HOLDINGS_DRAG_COLUMN_WIDTH = 40;
-const HOLDINGS_ACTIONS_COLUMN_WIDTH = 88;
+const HOLDINGS_ACTIONS_COLUMN_WIDTH = 118;
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -2360,6 +2363,7 @@ export default function App() {
   // The user's own theme per ticker (holding ⋯ menu → Change theme), over the automatic one.
   const [themeOverrides, setThemeOverrides] = useState<Record<string, string | null>>({});
   const [themePickerTicker, setThemePickerTicker] = useState<string | null>(null);
+  const [whatsMovingTicker, setWhatsMovingTicker] = useState<string | null>(null);
 
   // Models installed in the local Ollama (owner only), offered in the model pickers.
   const [localModels, setLocalModels] = useState<{ endpoint: string; names: string[] }>({ endpoint: '', names: [] });
@@ -4645,6 +4649,28 @@ export default function App() {
     } finally {
       setIsSavingEarningsAnalysis(false);
     }
+  };
+
+  // "What's moving?": the user's default AI model explains today's move from the
+  // headlines the panel loaded (Gemini may also search the web).
+  const explainMove = async (prompt: string): Promise<AiAnswer> => {
+    const activeAi = resolveAiConfig();
+    const res = await fetch('/api/ai-analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: activeAi.provider,
+        model: activeAi.model,
+        apiKey: activeAi.apiKey,
+        customEndpoint: activeAi.customEndpoint,
+        prompt,
+        systemPrompt: 'You are a concise markets reporter. Explain daily stock moves from the news provided, plainly and without speculation.',
+        tools: activeAi.provider === 'gemini' ? [{ googleSearch: {} }] : undefined,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.details || body.error || 'The AI request failed.');
+    return { text: body.text || 'No answer.', model: body.model, fallbackNotice: body.fallbackNotice };
   };
 
   const handleAnalyzeEarnings = async (event: EarningsEvent, modelOverride?: string) => {
@@ -7812,6 +7838,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                     handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
                                     hasThesis={hasThesis}
                                     handleChangeTheme={setThemePickerTicker}
+                                    handleWhatsMoving={setWhatsMovingTicker}
                                     isSortable={false}
                                   />
                                 ))}
@@ -7960,6 +7987,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
                                 hasThesis={hasThesis}
                                 handleChangeTheme={setThemePickerTicker}
+                                handleWhatsMoving={setWhatsMovingTicker}
                               />
                             ))}
                           </SortableContext>
@@ -8074,6 +8102,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                         <HoldingActions
                                           ticker={holding.ticker}
                                           onChart={() => setSelectedChartTicker(holding.ticker)}
+                                          onWhatsMoving={() => setWhatsMovingTicker(holding.ticker)}
                                           onAnalyze={() => promptAnalysisStrategy(holding.ticker)}
                                           onHistory={() => handleViewHistory(holding)}
                                           historyLabel={holding.shares > 0 ? 'History & sell lots' : 'History'}
@@ -8453,6 +8482,14 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       <Toaster position="top-right" richColors />
       <ConfirmDialogHost />
+      {whatsMovingTicker && (
+        <WhatsMovingPanel
+          ticker={whatsMovingTicker}
+          onClose={() => setWhatsMovingTicker(null)}
+          modelLabel={resolveAiConfig().model}
+          explain={explainMove}
+        />
+      )}
       {themePickerTicker && (() => {
         const holding = sortedHoldings.find(h => h.ticker === themePickerTicker) || { ticker: themePickerTicker };
         const meta = securityMeta(holding, metadata);
