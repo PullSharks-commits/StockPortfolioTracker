@@ -1390,6 +1390,37 @@ async function startServer() {
       }
     }
 
+    // Fallback to IBKR - through the trading bot's dashboard (positions_dashboard.py's
+    // /api/ibkr-quotes, served from IB Gateway) - for whatever Yahoo couldn't price. Tried
+    // before Finnhub because it also covers FX rates (AUD=X ...), which Finnhub can't: on
+    // 2026-10-13 Yahoo 429'd a shared hotel IP and every non-USD holding was converted at
+    // stale hard-coded rates. Skipped quietly if the bot dashboard or IB Gateway is down.
+    const ibkrMissing = symbolList.filter(s => !quotes[s]);
+    if (ibkrMissing.length > 0) {
+      try {
+        const botUrl = (process.env.BOT_DASHBOARD_URL || 'http://127.0.0.1:8765').replace(/\/+$/, '');
+        const r = await fetch(`${botUrl}/api/ibkr-quotes?symbols=${encodeURIComponent(ibkrMissing.join(','))}`,
+          { signal: AbortSignal.timeout(25_000) });
+        const body: any = await r.json();
+        for (const [sym, q] of Object.entries<any>(body.quotes || {})) {
+          const quoteData = {
+            price: q.price,
+            previousClose: q.previousClose ?? undefined,
+            marketState: q.dataType === 'live' ? 'REGULAR' : 'CLOSED',
+            changePercent: q.changePercent ?? undefined,
+            currency: sym.endsWith('=X') ? sym.slice(0, 3) : (q.currency || 'USD'),
+            source: 'ibkr',
+          };
+          quotes[sym] = quoteData;
+          quoteCache.set(sym, { data: quoteData, timestamp: now });
+        }
+        if (!body.ok && body.error) console.warn(`[API] IBKR quote fallback unavailable: ${body.error}`);
+        else if (Object.keys(body.quotes || {}).length) console.log(`[API] IBKR quote fallback priced ${Object.keys(body.quotes).length}/${ibkrMissing.length} symbols Yahoo missed`);
+      } catch (err: any) {
+        console.warn(`[API] IBKR quote fallback failed: ${err?.message || err}`);
+      }
+    }
+
     // Fallback to Finnhub for any missing symbols if key is available
     const missingSymbols = symbolList.filter(s => !quotes[s]);
     if (missingSymbols.length > 0 && finnhubClient) {

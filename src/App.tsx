@@ -80,6 +80,10 @@ import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import { formatCurrency, getCurrencySymbol } from './lib/currency';
 import { calculateGroupFearGreed } from './lib/fearGreed';
 
+// Currencies converted at the hard-coded estimates below because no live rate was loaded
+// (Yahoo and the IBKR fallback both failed) - the app shows a warning while it's non-empty.
+const estimatedFxCurrencies = new Set<string>();
+
 const getExchangeRate = (fromCurrency: string, toCurrency: string, quotes: any) => {
   if (fromCurrency === toCurrency) return 1;
   
@@ -93,7 +97,11 @@ const getExchangeRate = (fromCurrency: string, toCurrency: string, quotes: any) 
     }
 
     const rate = quotes[`${currency}=X`]?.price;
-    if (rate) return 1 / rate;
+    if (rate) {
+      estimatedFxCurrencies.delete(currency);
+      return 1 / rate;
+    }
+    if (['AUD', 'INR', 'EUR', 'GBP', 'CAD', 'SGD'].includes(currency)) estimatedFxCurrencies.add(currency);
     
     if (currency === 'AUD') return 1 / 1.5;
     if (currency === 'INR') return 1 / 83.0;
@@ -2364,6 +2372,12 @@ export default function App() {
   const [themeOverrides, setThemeOverrides] = useState<Record<string, string | null>>({});
   const [themePickerTicker, setThemePickerTicker] = useState<string | null>(null);
   const [whatsMovingTicker, setWhatsMovingTicker] = useState<string | null>(null);
+  // Mirrors estimatedFxCurrencies after each render (it's filled while totals are computed).
+  const [fxEstimated, setFxEstimated] = useState<string[]>([]);
+  useEffect(() => {
+    const list = Array.from(estimatedFxCurrencies).sort();
+    if (list.join() !== fxEstimated.join()) setFxEstimated(list);
+  });
 
   // Models installed in the local Ollama (owner only), offered in the model pickers.
   const [localModels, setLocalModels] = useState<{ endpoint: string; names: string[] }>({ endpoint: '', names: [] });
@@ -8482,6 +8496,14 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       <Toaster position="top-right" richColors />
       <ConfirmDialogHost />
+      {fxEstimated.length > 0 && (
+        <div
+          role="status"
+          className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] px-4 py-2 rounded-lg border text-xs font-medium shadow bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/60 dark:border-amber-900 dark:text-amber-200"
+        >
+          No live exchange rate for {fxEstimated.join(', ')} - converted at rough built-in estimates, so totals across currencies may be off. Refresh to retry.
+        </div>
+      )}
       {whatsMovingTicker && (
         <WhatsMovingPanel
           ticker={whatsMovingTicker}
