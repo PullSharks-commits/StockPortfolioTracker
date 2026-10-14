@@ -7,6 +7,7 @@ import { Loader2, AlertCircle } from 'lucide-react';
 import { formatCurrency } from '../lib/currency';
 import { db, collection, query, where, getDocs } from '../backend';
 import type { User } from '../backend';
+import { simulatePerformance, symbolCurrency } from '../lib/performanceSimulation';
 
 interface Holding {
   id: string;
@@ -159,7 +160,11 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
 
         // Collect all tickers needed
         const tickers = Array.from(new Set(transactions.map(t => t.ticker).filter(Boolean)));
-        const allSymbols = Array.from(new Set([...tickers, ...Object.keys(BENCHMARKS)]));
+        // Yahoo prices come in each listing's currency; trades on this tab are in the
+        // tab's currency. "<CUR>=X" is that currency per US dollar.
+        const fxSymbols = Array.from(new Set([...tickers, ...Object.keys(BENCHMARKS)].map(symbolCurrency).concat(activeCurrency)))
+          .filter(c => c !== 'USD').map(c => `${c}=X`);
+        const allSymbols = Array.from(new Set([...tickers, ...Object.keys(BENCHMARKS), ...fxSymbols]));
 
         // Find the earliest transaction date
         const sortedDates = transactions
@@ -246,193 +251,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
           historicalData = {};
         }
 
-        // Convert historical data into a fast map: historical[symbol][date_string_yyyy_mm_dd] = price
-        const priceMap: Record<string, Record<string, number>> = {};
-        allSymbols.forEach(sym => {
-          priceMap[sym] = {};
-          const prices = historicalData[sym] || [];
-          prices.forEach((p: any) => {
-            if (p.date && p.close) {
-              const d = p.date.split('T')[0];
-              priceMap[sym][d] = p.close;
-            }
-          });
-        });
-
-        // Group transactions by date string (yyyy-mm-dd)
-        const txByDate: Record<string, Transaction[]> = {};
-        transactions.forEach(tx => {
-          const d = tx.date.split('T')[0];
-          if (!txByDate[d]) txByDate[d] = [];
-          txByDate[d].push(tx);
-        });
-
-        const chartData = [];
-        let currentDate = startOfDay(earliestDate);
-        const today = startOfDay(new Date());
-        
-        const currentHoldings: Record<string, number> = {};
-        const currentBenchmarkHoldings: Record<string, number> = {};
-        
-        let portfolioIndex = 100;
-        const benchmarkIndices: Record<string, number> = {};
-        Object.keys(BENCHMARKS).forEach(idx => benchmarkIndices[idx] = 100);
-
-        const lastKnownPrices: Record<string, number> = {};
-        allSymbols.forEach(sym => {
-          const datePrices = priceMap[sym] ? Object.values(priceMap[sym]) : [];
-          if (datePrices.length > 0) {
-            lastKnownPrices[sym] = datePrices[0];
-          } else {
-            const tx = transactions.find(t => t.ticker === sym);
-            if (tx) {
-              lastKnownPrices[sym] = tx.price;
-            } else {
-              const h = holdings.find(h => h.ticker === sym);
-              if (h) {
-                lastKnownPrices[sym] = h.avg_price || 0;
-              } else {
-                lastKnownPrices[sym] = 0;
-              }
-            }
-          }
-        });
-
-        let prevPortfolioBase = 0;
-        const prevBenchmarkBases: Record<string, number> = {};
-        let grossInvested = 0;
-        let cumulativeWithdrawn = 0;
-
-        while (currentDate <= today) {
-          const dateStr = format(currentDate, 'yyyy-MM-dd');
-
-          // Update last known prices for today if available
-          allSymbols.forEach(sym => {
-            if (priceMap[sym] && priceMap[sym][dateStr] !== undefined) {
-              lastKnownPrices[sym] = priceMap[sym][dateStr];
-            }
-          });
-
-          // Process intra-day transactions (cash flows) as sub-period boundaries
-          const dailyTxs = txByDate[dateStr] || [];
-          if (dailyTxs.length > 0) {
-            dailyTxs.forEach(tx => {
-              const sym = tx.ticker;
-              if (!sym) return;
-
-              // Value of portfolio immediately before this transaction
-              let valBeforeTx = 0;
-              Object.keys(currentHoldings).forEach(s => {
-                const price = lastKnownPrices[s] || 0;
-                valBeforeTx += currentHoldings[s] * price;
-              });
-
-              // Benchmark values immediately before this transaction
-              const benchValBeforeTx: Record<string, number> = {};
-              Object.keys(currentBenchmarkHoldings).forEach(idx => {
-                const price = lastKnownPrices[idx] || 0;
-                benchValBeforeTx[idx] = currentBenchmarkHoldings[idx] * price;
-              });
-
-              // Complete sub-period return right before this transaction if base > 0
-              if (prevPortfolioBase > 0 && valBeforeTx > 0) {
-                const subHpr = (valBeforeTx - prevPortfolioBase) / prevPortfolioBase;
-                portfolioIndex *= (1 + subHpr);
-              }
-
-              Object.keys(benchmarkIndices).forEach(idx => {
-                if ((prevBenchmarkBases[idx] || 0) > 0 && (benchValBeforeTx[idx] || 0) > 0) {
-                  const benchHpr = (benchValBeforeTx[idx] - prevBenchmarkBases[idx]) / prevBenchmarkBases[idx];
-                  benchmarkIndices[idx] *= (1 + benchHpr);
-                }
-              });
-
-              // Calculate cash flow for this transaction
-              const txValue = tx.price * tx.shares;
-              const isBuy = tx.type.toLowerCase() === 'buy';
-              const flow = isBuy ? txValue : -txValue;
-
-              if (isBuy) {
-                currentHoldings[sym] = (currentHoldings[sym] || 0) + tx.shares;
-                grossInvested += txValue;
-              } else {
-                currentHoldings[sym] = Math.max(0, (currentHoldings[sym] || 0) - tx.shares);
-                cumulativeWithdrawn += txValue;
-              }
-
-              // Adjust benchmark holdings by cash flow
-              Object.keys(BENCHMARKS).forEach(idx => {
-                const benchPrice = lastKnownPrices[idx] || 1;
-                if (isBuy) {
-                  currentBenchmarkHoldings[idx] = (currentBenchmarkHoldings[idx] || 0) + (txValue / benchPrice);
-                } else {
-                  currentBenchmarkHoldings[idx] = Math.max(0, (currentBenchmarkHoldings[idx] || 0) - (txValue / benchPrice));
-                }
-              });
-
-              // Establish new beginning base value immediately after the cash flow
-              prevPortfolioBase = valBeforeTx + flow;
-              Object.keys(BENCHMARKS).forEach(idx => {
-                prevBenchmarkBases[idx] = (benchValBeforeTx[idx] || 0) + flow;
-              });
-            });
-          }
-
-          // Calculate end-of-day market values
-          let endOfDayPortfolioValue = 0;
-          Object.keys(currentHoldings).forEach(sym => {
-            const price = lastKnownPrices[sym] || 0;
-            endOfDayPortfolioValue += currentHoldings[sym] * price;
-          });
-
-          const endOfDayBenchmarkValues: Record<string, number> = {};
-          Object.keys(currentBenchmarkHoldings).forEach(idx => {
-            const price = lastKnownPrices[idx] || 0;
-            endOfDayBenchmarkValues[idx] = currentBenchmarkHoldings[idx] * price;
-          });
-
-          // End-of-day sub-period return (from last cash flow / start of day to market close)
-          if (prevPortfolioBase > 0 && endOfDayPortfolioValue > 0) {
-            const subHpr = (endOfDayPortfolioValue - prevPortfolioBase) / prevPortfolioBase;
-            portfolioIndex *= (1 + subHpr);
-          }
-
-          Object.keys(benchmarkIndices).forEach(idx => {
-            if ((prevBenchmarkBases[idx] || 0) > 0 && (endOfDayBenchmarkValues[idx] || 0) > 0) {
-              const benchHpr = (endOfDayBenchmarkValues[idx] - prevBenchmarkBases[idx]) / prevBenchmarkBases[idx];
-              benchmarkIndices[idx] *= (1 + benchHpr);
-            }
-          });
-
-          // Save point to chart data
-          if (endOfDayPortfolioValue > 0 || chartData.length > 0) {
-            chartData.push({
-              date: dateStr,
-              displayDate: format(currentDate, 'MMM d, yy'),
-              timestamp: currentDate.getTime(),
-              Portfolio: Number(endOfDayPortfolioValue.toFixed(2)),
-              PortfolioIndex: portfolioIndex,
-              grossInvested: grossInvested,
-              cumulativeWithdrawn: cumulativeWithdrawn,
-              ...Object.keys(BENCHMARKS).reduce((acc, idx) => {
-                const name = BENCHMARKS[idx as keyof typeof BENCHMARKS];
-                return { 
-                  ...acc, 
-                  [name]: Number((endOfDayBenchmarkValues[idx] || 0).toFixed(2)),
-                  [`${name}Index`]: benchmarkIndices[idx]
-                };
-              }, {})
-            });
-          }
-
-          // Set beginning base value for next sub-period
-          prevPortfolioBase = endOfDayPortfolioValue;
-          Object.keys(endOfDayBenchmarkValues).forEach(idx => {
-            prevBenchmarkBases[idx] = endOfDayBenchmarkValues[idx];
-          });
-
-          currentDate = addDays(currentDate, 1);
-        }
+        const chartData = simulatePerformance({ transactions, historicalData, holdings, allSymbols, earliestDate, benchmarks: BENCHMARKS, activeCurrency });
 
         if (isMounted) {
           setData(chartData);
@@ -452,7 +271,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     return () => {
       isMounted = false;
     };
-  }, [simulationKey]); // Use simulationKey instead of raw holdings
+  }, [simulationKey, activeCurrency]); // Use simulationKey instead of raw holdings
 
   const visibleData = useMemo(() => {
     if (data.length === 0) return [];
