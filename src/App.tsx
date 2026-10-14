@@ -65,6 +65,7 @@ import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
 import { ThemePicker } from './components/ThemePicker';
+import { ClosedPositions, type ClosedHolding } from './components/ClosedPositions';
 import { WhatsMovingPanel, type AiAnswer } from './components/WhatsMovingPanel';
 import { THEME_LABEL, type ThemeId, type SecurityMeta, themeOf, autoTheme, assetKind, ASSET_KIND_LABEL, sectorOf, industryOf, marketCapBand, groupOrder, TRAILING_GROUPS, type Grouping } from './lib/classification';
 import { CompanyFundamentals } from './components/CompanyFundamentals';
@@ -5756,11 +5757,21 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     return sortableItems;
   }, [portfolioStats.enrichedHoldings, fundamentalsByTicker, sortConfig, filterGroup, chartView, metadata]);
 
+  // 0-share holdings: never traded = watched; traded and fully sold = closed positions.
   const sortedWatchlist = useMemo(() => {
     return portfolioStats.enrichedHoldings
-      .filter(h => h.shares === 0)
+      .filter(h => h.shares === 0 && !(sortedTransactionsByHolding.get(h.id)?.length))
       .sort((a, b) => a.ticker.localeCompare(b.ticker));
-  }, [portfolioStats.enrichedHoldings]);
+  }, [portfolioStats.enrichedHoldings, sortedTransactionsByHolding]);
+  const closedPositions = useMemo<ClosedHolding[]>(() => holdings
+    .filter(h => h.shares === 0 && (sortedTransactionsByHolding.get(h.id)?.length ?? 0) > 0)
+    .map(h => ({
+      id: h.id,
+      ticker: h.ticker,
+      currency: h.avgPriceCurrency || (h.portfolioType === 'australia' ? 'AUD' : 'USD'),
+      logo: metadata[h.ticker]?.logo,
+      trades: (sortedTransactionsByHolding.get(h.id) ?? []).map(t => ({ type: t.type, shares: t.shares, price: t.price, date: t.date })),
+    })), [holdings, sortedTransactionsByHolding, metadata]);
 
   const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#10b981', '#06b6d4', '#3b82f6'];
 
@@ -8011,6 +8022,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                   </DndContext>
                 </div>
               )}
+              <ClosedPositions
+                holdings={closedPositions}
+                onChart={setSelectedChartTicker}
+                onHistory={id => { const h = holdings.find(x => x.id === id); if (h) handleViewHistory(h); }}
+                onDelete={handleDelete}
+              />
                     </SortableWidget>
                   );
                 }
@@ -8056,7 +8073,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className="p-12 text-center text-zinc-500">
                           <Eye className="w-12 h-12 mx-auto text-zinc-300 mb-3" />
                           <p>Your watchlist is empty.</p>
-                          <p className="text-sm mt-1">Search above or sell all shares of a position to add here.</p>
+                          <p className="text-sm mt-1">Search above to add a stock. Positions you've sold are under Closed positions.</p>
                         </div>
                       ) : (
                         <div className="overflow-x-auto">
