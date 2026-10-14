@@ -3,11 +3,11 @@
 // what makes up Total Gain 6M / YTD / 1Y. Rows come from the same breakdown the cards
 // sum (src/lib/combinedBreakdown.ts), so each panel adds up to its card.
 
-import React from 'react';
+import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import { clsx } from 'clsx';
 import { formatCurrency } from '../lib/currency';
-import type { CombinedBreakdown, HoldingBreakdown, PeriodKey } from '../lib/combinedBreakdown';
+import { inRealizedWindow, realizedByWindow, type CombinedBreakdown, type HoldingBreakdown, type PeriodKey, type RealizedWindow } from '../lib/combinedBreakdown';
 
 export type CombinedDetailKey = 'value' | 'return' | 'realized' | 'day' | PeriodKey;
 
@@ -65,6 +65,7 @@ export function CombinedDetails({ detail, breakdown, currency, onClose }: {
 }) {
   const money = (v: number | null | undefined, sign = false) => (v == null ? '—' : formatCurrency(v, currency, sign));
   const { rows, sales, totals, periodStats } = breakdown;
+  const [realizedWindow, setRealizedWindow] = useState<RealizedWindow>('all');
   const tabCell = (r: { tab: string }): React.ReactNode => <span className="text-xs text-zinc-500">{TAB_LABEL[r.tab] ?? r.tab}</span>;
   const assetCell = (r: HoldingBreakdown) => (r.isCash ? `Cash` : r.ticker);
   const nonCash = rows.filter(r => !r.isCash && Math.abs(r.shares) > 0);
@@ -102,10 +103,28 @@ export function CombinedDetails({ detail, breakdown, currency, onClose }: {
       { label: '', cell: r => <Bar v={r.pl} max={max} />, wide: true, secondary: true },
     ]} />;
   } else if (detail === 'realized') {
-    const wins = sales.filter(s => s.gain > 0.005).length, losses = sales.filter(s => s.gain < -0.005).length;
-    title = 'Realized return · every sale';
-    summary = <>{sales.length} sale{sales.length === 1 ? '' : 's'} · {wins} at a gain, {losses} at a loss · total <span className={tone(periodStats.allTimeRealized)}>{money(periodStats.allTimeRealized, true)}</span> · gains use the oldest shares first (FIFO)</>;
-    body = sales.length === 0 ? <p className="px-4 py-8 text-center text-sm text-zinc-500">No sales recorded yet.</p> : <Table rows={sales} rowKey={s => `${s.holdingId}-${s.date}-${s.shares}`} columns={[
+    const windows = realizedByWindow(sales);
+    const shown = sales.filter(sale => inRealizedWindow(sale.date, realizedWindow));
+    const w = windows[realizedWindow];
+    const wins = shown.filter(x => x.gain > 0.005).length, losses = shown.filter(x => x.gain < -0.005).length;
+    const WINDOW_LABEL: Record<RealizedWindow, string> = { ytd: 'Year to date', oneYear: 'Last 12 months', all: 'All time' };
+    title = 'Realized return';
+    summary = (
+      <div className="space-y-2">
+        <div className="grid grid-cols-3 gap-2">
+          {(['ytd', 'oneYear', 'all'] as RealizedWindow[]).map(k => (
+            <button key={k} onClick={() => setRealizedWindow(k)} aria-pressed={realizedWindow === k}
+              className={clsx('rounded-xl border px-3 py-2 text-left transition-colors', realizedWindow === k ? 'border-indigo-300 bg-indigo-50/60 dark:border-indigo-700 dark:bg-indigo-950/30' : 'border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800/50')}>
+              <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">{WINDOW_LABEL[k]}</div>
+              <div className={clsx('font-mono text-sm font-semibold', tone(windows[k].gain))}>{money(windows[k].gain, true)}</div>
+              <div className={clsx('text-[11px]', tone(windows[k].gain))}>{pct(windows[k].percent)} <span className="text-zinc-400">· {windows[k].count} sale{windows[k].count === 1 ? '' : 's'}</span></div>
+            </button>
+          ))}
+        </div>
+        <div>{WINDOW_LABEL[realizedWindow]}: {w.count} sale{w.count === 1 ? '' : 's'} · {wins} at a gain, {losses} at a loss · {pct(w.percent)} on {money(w.cost)} of cost · gains use the oldest shares first (FIFO)</div>
+      </div>
+    );
+    body = shown.length === 0 ? <p className="px-4 py-8 text-center text-sm text-zinc-500">No sales in this period.</p> : <Table rows={shown} rowKey={s => `${s.holdingId}-${s.date}-${s.shares}`} columns={[
       { label: 'Asset', cell: s => s.ticker },
       { label: 'Tab', cell: r => tabCell(r), secondary: true },
       { label: 'Sold', cell: s => <span className="text-zinc-500">{day(s.date)}</span> },
@@ -153,7 +172,7 @@ export function CombinedDetails({ detail, breakdown, currency, onClose }: {
       <div className="flex items-start justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{title} <span className="font-normal text-zinc-400">· all portfolio tabs, {currency}</span></h3>
-          <p className="text-xs text-zinc-500 mt-0.5">{summary}</p>
+          <div className="text-xs text-zinc-500 mt-0.5">{summary}</div>
         </div>
         <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg shrink-0" aria-label="Hide details"><X className="w-4 h-4" /></button>
       </div>

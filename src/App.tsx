@@ -72,7 +72,7 @@ import { THEME_LABEL, type ThemeId, type SecurityMeta, themeOf, autoTheme, asset
 import { CompanyFundamentals } from './components/CompanyFundamentals';
 import { PortfolioFundamentals } from './components/PortfolioFundamentals';
 import { AccountSection } from './components/AccountSection';
-import { computeCombinedBreakdown } from './lib/combinedBreakdown';
+import { computeCombinedBreakdown, realizedByWindow } from './lib/combinedBreakdown';
 import { CombinedDetails, SummaryCardButton, type CombinedDetailKey } from './components/CombinedDetails';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
 import { RATING_EMOJI, RATING_LABEL, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
@@ -5559,6 +5559,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
   }), [allHoldings, allTransactions, sortedTransactionsByHolding, quotes, userSettings.combinedCurrency, user]);
   const combinedStats = combinedBreakdown.totals;
   const combinedPeriodStats = combinedBreakdown.periodStats;
+  const combinedRealized = useMemo(() => realizedByWindow(combinedBreakdown.sales), [combinedBreakdown.sales]);
   // Which combined summary card's details are open (click the card again to close).
   const [combinedDetail, setCombinedDetail] = useState<CombinedDetailKey | null>(null);
   const toggleCombinedDetail = (key: CombinedDetailKey) => setCombinedDetail(d => (d === key ? null : key));
@@ -6651,9 +6652,18 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         <div className={cn("text-lg xl:text-xl font-medium flex items-center gap-2 whitespace-nowrap", combinedPeriodStats.allTimeRealized >= 0 ? "text-emerald-600" : "text-rose-600")}>
                           <AnimatedCountUp value={combinedPeriodStats.allTimeRealized} currency={userSettings.combinedCurrency || 'USD'} includeSign={true} />
                         </div>
-                        <div className="text-xs font-medium text-zinc-400">
-                          Closed Positions
+                        <div className={cn("text-xs font-medium", (combinedRealized.all.percent ?? 0) >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                          {combinedRealized.all.percent == null ? '—' : `${combinedRealized.all.percent >= 0 ? '+' : ''}${combinedRealized.all.percent.toFixed(1)}%`} All Time
                         </div>
+                        {(['ytd', 'oneYear'] as const).map(k => (
+                          <div key={k} className="text-[10px] text-zinc-500 font-medium flex items-center gap-1">
+                            <span>{k === 'ytd' ? 'YTD:' : '1Y:'}</span>
+                            <span className={cn("font-semibold font-mono", combinedRealized[k].gain >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                              {formatCurrency(combinedRealized[k].gain, userSettings.combinedCurrency || 'USD', true)}
+                            </span>
+                            {combinedRealized[k].percent != null && <span className="text-zinc-400">({combinedRealized[k].percent! >= 0 ? '+' : ''}{combinedRealized[k].percent!.toFixed(1)}%)</span>}
+                          </div>
+                        ))}
                       </SummaryCardButton>
 
                       <SummaryCardButton active={combinedDetail === 'day'} onClick={() => toggleCombinedDetail('day')} label="Day Change" className="space-y-0.5">

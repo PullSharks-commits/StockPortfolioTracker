@@ -181,3 +181,19 @@ export function computeCombinedBreakdown(args: {
     },
   };
 }
+
+// Realized gains from sales in each window (YTD, last 12 months, all time), with the
+// return on what the sold shares cost. Same sales as the Realized Return panel lists.
+export type RealizedWindow = 'ytd' | 'oneYear' | 'all';
+export interface RealizedTotal { gain: number; cost: number; percent: number | null; count: number }
+export function realizedByWindow(sales: Sale[], now = new Date()): Record<RealizedWindow, RealizedTotal> {
+  const starts = periodStarts(now);
+  const total = (from: Date | null): RealizedTotal => {
+    const list = from ? sales.filter(s => new Date(s.date) >= from) : sales;
+    const gain = list.reduce((a, s) => a + s.gain, 0), cost = list.reduce((a, s) => a + s.cost, 0);
+    return { gain, cost, percent: cost > 0 ? (gain / cost) * 100 : null, count: list.length };
+  };
+  return { ytd: total(starts.ytd), oneYear: total(starts.oneYear), all: total(null) };
+}
+export const inRealizedWindow = (date: string, w: RealizedWindow, now = new Date()) =>
+  w === 'all' || new Date(date) >= periodStarts(now)[w];
