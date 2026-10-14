@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS holdings (
 );
 -- Position of the holding within its portfolio tab (drag-and-drop ordering).
 ALTER TABLE holdings ADD COLUMN IF NOT EXISTS sort_order double precision;
+-- Where the shares are held: {"IBKR": 67, "Schwab": 6}. Null = not set.
+ALTER TABLE holdings ADD COLUMN IF NOT EXISTS brokers jsonb;
 CREATE INDEX IF NOT EXISTS holdings_user_portfolio_idx ON holdings (user_id, portfolio_type);
 
 CREATE TABLE IF NOT EXISTS transactions (

@@ -14,7 +14,7 @@ import type { Express, Request, Response } from 'express';
 import pg from 'pg';
 import { authEnabled, authedUser, requireUser } from './server-auth';
 
-type FieldKind = 'text' | 'number' | 'boolean' | 'timestamp' | 'uuid';
+type FieldKind = 'text' | 'number' | 'boolean' | 'timestamp' | 'uuid' | 'brokers';
 
 interface RowCollection {
   kind: 'rows';
@@ -45,6 +45,7 @@ const COLLECTIONS: Record<string, CollectionDef> = {
       avgPriceCurrency: ['avg_price_currency', 'text'],
       portfolioType: ['portfolio_type', 'text'],
       order: ['sort_order', 'number'],
+      brokers: ['brokers', 'brokers'],
     },
     updatedField: ['updatedAt', 'updated_at'],
   },
@@ -92,6 +93,16 @@ function encode(kind: FieldKind, value: unknown) {
     return n;
   }
   if (kind === 'boolean') return value === true || value === 'true';
+  // A holding's broker split, {"IBKR": 67, "Schwab": 6}: short names, share counts.
+  if (kind === 'brokers') {
+    if (typeof value !== 'object' || Array.isArray(value)) throw new HttpError(400, 'Invalid brokers');
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 10) throw new HttpError(400, 'Too many brokers');
+    for (const [name, shares] of entries) {
+      if (!name.trim() || name.length > 40 || typeof shares !== 'number' || !Number.isFinite(shares) || shares < 0) throw new HttpError(400, 'Invalid brokers');
+    }
+    return JSON.stringify(value);
+  }
   if (kind === 'uuid' && !UUID_RE.test(String(value))) throw new HttpError(400, `Invalid id: ${value}`);
   return value;
 }

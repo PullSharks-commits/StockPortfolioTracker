@@ -65,6 +65,7 @@ import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
 import { HoldingActions } from './components/HoldingActions';
 import { ThemePicker } from './components/ThemePicker';
+import { BrokerEditor, brokerLabel, brokerTitle, type Brokers } from './components/BrokerEditor';
 import { ClosedPositions, type ClosedHolding } from './components/ClosedPositions';
 import { WhatsMovingPanel, type AiAnswer } from './components/WhatsMovingPanel';
 import { THEME_LABEL, type ThemeId, type SecurityMeta, themeOf, autoTheme, assetKind, ASSET_KIND_LABEL, sectorOf, industryOf, marketCapBand, groupOrder, TRAILING_GROUPS, type Grouping } from './lib/classification';
@@ -162,7 +163,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type SortKey = 'ticker' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'revenueGrowth' | 'operatingMargin' | 'psRatio' | 'peRatio' | 'manual';
+type SortKey = 'ticker' | 'brokerName' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'revenueGrowth' | 'operatingMargin' | 'psRatio' | 'peRatio' | 'manual';
 
 interface Holding {
   id: string;
@@ -174,6 +175,7 @@ interface Holding {
   portfolioType?: 'global' | 'australia' | 'bot';
   updatedAt?: any;
   order?: number;
+  brokers?: Brokers | null;
   // Enriched properties
   displayAvgPrice?: number;
   currentPrice?: number;
@@ -1860,7 +1862,7 @@ const NO_TRANSACTIONS: never[] = [];
 
 // Holdings table: which columns survive longest when space runs out (first = most
 // important) and roughly how wide each needs to be, in px.
-const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'revenueGrowth', 'peRatio', 'psRatio', 'operatingMargin', 'fearGreed'];
+const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'broker', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'revenueGrowth', 'peRatio', 'psRatio', 'operatingMargin', 'fearGreed'];
 // Always shown (unless the user hides them), even if a narrow screen then has to
 // scroll sideways - a table with only the Asset column isn't useful.
 const HOLDINGS_ALWAYS_SHOWN = new Set(['ticker', 'currentValue', 'dayChange', 'profitLoss']);
@@ -1869,7 +1871,7 @@ const columnPriority = (colId: string) => {
   return i === -1 ? HOLDINGS_COLUMN_PRIORITY.length : i;
 };
 // Minimum widths measured with real data (headers may wrap), plus a small margin.
-const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 165, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124, revenueGrowth: 112, operatingMargin: 112, psRatio: 84, peRatio: 84 };
+const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 165, broker: 110, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124, revenueGrowth: 112, operatingMargin: 112, psRatio: 84, peRatio: 84 };
 const HOLDINGS_DRAG_COLUMN_WIDTH = 40;
 const HOLDINGS_ACTIONS_COLUMN_WIDTH = 118;
 
@@ -2307,7 +2309,7 @@ export default function App() {
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [fitColumns, setFitColumns] = useState(true);
   const [columnOrder, setColumnOrder] = useState<string[]>([
-    'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
+    'ticker', 'broker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
   ]);
 
   const [holdingsTableWidth, setHoldingsTableWidth] = useState(0);
@@ -2373,6 +2375,7 @@ export default function App() {
   const [themeOverrides, setThemeOverrides] = useState<Record<string, string | null>>({});
   const [themePickerTicker, setThemePickerTicker] = useState<string | null>(null);
   const [whatsMovingTicker, setWhatsMovingTicker] = useState<string | null>(null);
+  const [brokerEditorId, setBrokerEditorId] = useState<string | null>(null);
   // Mirrors estimatedFxCurrencies after each render (it's filled while totals are computed).
   const [fxEstimated, setFxEstimated] = useState<string[]>([]);
   useEffect(() => {
@@ -2520,6 +2523,8 @@ export default function App() {
               }
             }
             // Columns added after the layout was saved go at the end.
+            // The Broker column goes next to the asset in layouts saved before it existed.
+            if (!loadedOrder.includes('broker')) loadedOrder.splice(Math.max(0, loadedOrder.indexOf('ticker')) + 1, 0, 'broker');
             for (const col of ['revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio']) {
               if (!loadedOrder.includes(col)) loadedOrder.push(col);
             }
@@ -2550,7 +2555,7 @@ export default function App() {
           },
           tableLayout: {
             columnOrder: [
-              'ticker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
+              'ticker', 'broker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
             ],
             tableGrouping: 'none',
             sortConfig: { key: 'currentValue', direction: 'desc' }
@@ -2635,6 +2640,22 @@ export default function App() {
       setIsSavingSettings(false);
       if (autoClose) {
       }
+    }
+  };
+
+  // Brokers already used anywhere, offered as quick picks in the editor.
+  const knownBrokers = useMemo(() => {
+    const names = new Set<string>();
+    allHoldings.forEach(h => Object.keys(h.brokers || {}).forEach(n => names.add(n)));
+    return [...names].sort();
+  }, [allHoldings]);
+  const saveBrokers = async (id: string, brokers: Brokers | null) => {
+    setBrokerEditorId(null);
+    try {
+      await updateDoc(doc(db, 'holdings', id), { brokers });
+    } catch (err) {
+      console.error('Failed to save brokers:', err);
+      toast.error(`Couldn't save the broker: ${err instanceof Error ? err.message : err}`);
     }
   };
 
@@ -5728,7 +5749,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
   }, [thesisTracker?.latestReport]);
 
   const sortedHoldings = useMemo(() => {
-    let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0).map(h => ({ ...h, ...fundamentalsByTicker[h.ticker] }));
+    let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0).map(h => ({ ...h, ...fundamentalsByTicker[h.ticker], brokerName: brokerLabel(h.brokers) }));
     
     if (filterGroup) {
       if (chartView === 'asset') {
@@ -6042,6 +6063,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
   const COLUMNS = [
     { id: 'ticker', label: 'Asset', align: 'left' as const, sortKey: 'ticker' as SortKey },
+    { id: 'broker', label: 'Broker', align: 'left' as const, sortKey: 'brokerName' as SortKey },
     { id: 'fearGreed', label: 'Fear/Greed', align: 'center' as const, sortKey: 'ticker' as SortKey },
     { id: 'shares', label: 'Shares', align: 'right' as const, sortKey: 'shares' as SortKey },
     { id: 'displayAvgPrice', label: `Avg Cost (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'displayAvgPrice' as SortKey },
@@ -6446,6 +6468,23 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             </div>
           </td>
         );
+      case 'broker': {
+        const label = brokerLabel(holding.brokers);
+        return (
+          <td key={colId} className="px-3 py-4 text-sm" onClick={e => e.stopPropagation()}>
+            {holding.ticker === 'CASH' ? null : (
+              <button
+                onClick={() => setBrokerEditorId(holding.id)}
+                title={label ? `${brokerTitle(holding.brokers)}\nClick to change` : 'Set where this is held'}
+                className={cn('max-w-full truncate rounded-md px-1.5 py-0.5 text-left text-xs font-medium transition-colors',
+                  label ? 'bg-zinc-100 text-zinc-700 hover:bg-indigo-50 hover:text-indigo-700 dark:bg-zinc-800 dark:text-zinc-200' : 'text-zinc-400 hover:text-indigo-600')}
+              >
+                {label || 'Set'}
+              </button>
+            )}
+          </td>
+        );
+      }
       case 'marketCap':
         return (
           <td key={colId} className="px-3 py-4 text-right font-mono text-sm">
@@ -8521,6 +8560,19 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           No live exchange rate for {fxEstimated.join(', ')} - converted at rough built-in estimates, so totals across currencies may be off. Refresh to retry.
         </div>
       )}
+      {brokerEditorId && (() => {
+        const h = allHoldings.find(x => x.id === brokerEditorId);
+        return h ? (
+          <BrokerEditor
+            ticker={h.ticker}
+            shares={h.shares}
+            brokers={h.brokers}
+            knownBrokers={knownBrokers}
+            onSave={b => saveBrokers(h.id, b)}
+            onClose={() => setBrokerEditorId(null)}
+          />
+        ) : null;
+      })()}
       {whatsMovingTicker && (
         <WhatsMovingPanel
           ticker={whatsMovingTicker}
