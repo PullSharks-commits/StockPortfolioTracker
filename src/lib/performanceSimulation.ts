@@ -132,7 +132,9 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
     });
 
     // Process intra-day transactions (cash flows) as sub-period boundaries
-    const dailyTxs = txByDate[dateStr] || [];
+    // Trades carry a date but no time: take a day's buys before its sells, so a same-day
+    // round trip never sells shares not yet bought (which would leave the bought share held).
+    const dailyTxs = [...(txByDate[dateStr] || [])].sort((a, b) => Number(a.type.toLowerCase() === 'sell') - Number(b.type.toLowerCase() === 'sell'));
     if (dailyTxs.length > 0) {
       dailyTxs.forEach(tx => {
         const sym = tx.ticker;
