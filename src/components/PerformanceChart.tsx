@@ -7,7 +7,7 @@ import { Loader2, AlertCircle } from 'lucide-react';
 import { formatCurrency } from '../lib/currency';
 import { db, collection, query, where, getDocs } from '../backend';
 import type { User } from '../backend';
-import { simulatePerformance, symbolCurrency } from '../lib/performanceSimulation';
+import { moneyWeightedReturn, simulatePerformance, symbolCurrency } from '../lib/performanceSimulation';
 
 interface Holding {
   id: string;
@@ -310,23 +310,21 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     const benchmarkNames = Object.values(BENCHMARKS);
     
     if (weightingMethod === 'money') {
-      return visibleData.map(d => {
-        const result = { ...d };
-        // Period money-weighted return:
-        // (Value + WithdrawnSinceStart) / (StartValue + InvestedSinceStart)
-        const drawnSinceBase = d.cumulativeWithdrawn - base.cumulativeWithdrawn;
-        const investedSinceBase = d.grossInvested - base.grossInvested;
-        const totalBasis = (base.Portfolio || 1) + investedSinceBase;
-        
-        result.Portfolio = (((d.Portfolio + drawnSinceBase) / totalBasis) - 1) * 100;
-        
-        benchmarkNames.forEach(name => {
-          const val = d[name] || 0;
-          const baseVal = base[name] || 1;
-          result[name] = (((val + drawnSinceBase) / (baseVal + investedSinceBase)) - 1) * 100;
-        });
-        return result;
-      });
+      // Cumulative money-weighted return (IRR) from the range start to each point;
+      // benchmarks get the same deposits/withdrawals on the same days. Sampled, as
+      // each point solves its own IRR.
+      const step = Math.max(1, Math.ceil(visibleData.length / 160));
+      const rows = [];
+      for (let i = step; i < visibleData.length + step - 1; i += step) {
+        const j = Math.min(i, visibleData.length - 1);
+        const slice = visibleData.slice(0, j + 1);
+        const result: any = { ...visibleData[j] };
+        result.Portfolio = (moneyWeightedReturn(slice, 'Portfolio')?.cumulative ?? 0) * 100;
+        benchmarkNames.forEach(name => { result[name] = (moneyWeightedReturn(slice, `${name}Cash`)?.cumulative ?? 0) * 100; });
+        rows.push(result);
+        if (j === visibleData.length - 1) break;
+      }
+      return [{ ...base, Portfolio: 0, ...Object.fromEntries(benchmarkNames.map(n => [n, 0])) }, ...rows];
     }
 
     // Time-weighted
@@ -357,16 +355,19 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     const end = visibleData[visibleData.length - 1];
     
     if (weightingMethod === 'money') {
-      const drawnSinceBase = end.cumulativeWithdrawn - start.cumulativeWithdrawn;
-      const investedSinceBase = end.grossInvested - start.grossInvested;
-      const totalBasis = (start.Portfolio || 1) + investedSinceBase;
-      
+      // Annual IRR for a year or more; shorter ranges show the actual return, as
+      // annualising a few weeks or months exaggerates it.
+      const pick = (key: string) => {
+        const m = moneyWeightedReturn(visibleData, key);
+        if (!m) return 0;
+        return (m.days >= 365 ? m.annual : m.cumulative) * 100;
+      };
+      const span = (Date.parse(end.date) - Date.parse(start.date)) / 864e5;
       return {
-        portfolio: (((end.Portfolio + drawnSinceBase) / totalBasis) - 1) * 100,
+        portfolio: pick('Portfolio'),
+        perYear: span >= 365,
         benchmarks: Object.entries(BENCHMARKS).reduce((acc, [symbol, name]) => {
-          const val = end[name] || 0;
-          const baseVal = start[name] || 1;
-          acc[name] = (((val + drawnSinceBase) / (baseVal + investedSinceBase)) - 1) * 100;
+          acc[name] = pick(`${name}Cash`);
           return acc;
         }, {} as Record<string, number>)
       };
@@ -517,7 +518,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
               <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Calculation:</span>
               <div className="flex">
                 <button onClick={() => setWeightingMethod('time')} className={`px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${weightingMethod === 'time' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`} title="Time-Weighted Return">TWR</button>
-                <button onClick={() => setWeightingMethod('money')} className={`px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${weightingMethod === 'money' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`} title="Money-Weighted Return">MWR</button>
+                <button onClick={() => setWeightingMethod('money')} className={`px-3 py-1.5 text-[11px] font-semibold rounded-lg transition-all ${weightingMethod === 'money' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`} title="Money-Weighted Return (IRR): your actual return given when money went in and out; benchmarks get the same deposits and withdrawals">MWR</button>
               </div>
             </div>
           )}
@@ -554,7 +555,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
       {summary && (
         <div className="flex flex-wrap items-center gap-4 mb-6 p-4 bg-zinc-50/50 rounded-xl border border-zinc-100">
           <div className="flex flex-col">
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">{weightingMethod === 'time' ? 'Time-Weighted' : 'Money-Weighted'} Portfolio Return ({timeRange})</span>
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">{weightingMethod === 'time' ? 'Time-Weighted' : 'Money-Weighted (IRR)'} Portfolio Return ({timeRange}){weightingMethod === 'money' ? ((summary as any).perYear ? ' · per year' : ' · actual') : ''}</span>
             <div className={`text-xl font-black tabular-nums ${summary.portfolio >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
               {summary.portfolio >= 0 ? '+' : ''}{summary.portfolio.toFixed(2)}%
             </div>

@@ -52,6 +52,9 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
   
   const currentHoldings: Record<string, number> = {};
   const currentBenchmarkHoldings: Record<string, number> = {};
+  // Same benchmarks bought/sold with the cash actually paid/received (for the
+  // money-weighted comparison: "the same deposits and withdrawals in the index").
+  const cashBenchmarkHoldings: Record<string, number> = {};
   
   let portfolioIndex = 100;
   const benchmarkIndices: Record<string, number> = {};
@@ -183,6 +186,11 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
           cumulativeWithdrawn += txValue;
         }
 
+        Object.keys(BENCHMARKS).forEach(idx => {
+          const benchPrice = px(idx) || 1;
+          cashBenchmarkHoldings[idx] = Math.max(0, (cashBenchmarkHoldings[idx] || 0) + (isBuy ? 1 : -1) * (txValue / benchPrice));
+        });
+
         // Adjust benchmark holdings by cash flow
         Object.keys(BENCHMARKS).forEach(idx => {
           const benchPrice = px(idx) || 1;
@@ -240,7 +248,8 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
           return { 
             ...acc, 
             [name]: Number((endOfDayBenchmarkValues[idx] || 0).toFixed(2)),
-            [`${name}Index`]: benchmarkIndices[idx]
+            [`${name}Index`]: benchmarkIndices[idx],
+            [`${name}Cash`]: Number(((cashBenchmarkHoldings[idx] || 0) * px(idx)).toFixed(2))
           };
         }, {})
       });
@@ -257,4 +266,34 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
 
 
   return chartData;
+}
+
+// Money-weighted return (IRR) over a run of daily points from simulatePerformance:
+// the first point's value counts as money in at the start, each day's net trades
+// (grossInvested / cumulativeWithdrawn changes) as flows, the last value as money out.
+// Returns the annual rate and the cumulative return it implies over the period.
+export function moneyWeightedReturn(points: { date: string; grossInvested: number; cumulativeWithdrawn: number; [k: string]: any }[], valueKey: string) {
+  if (points.length < 2) return null;
+  const day = 864e5, t0 = Date.parse(points[0].date);
+  const flows: { d: number; v: number }[] = [];
+  const startValue = Number(points[0][valueKey]) || 0;
+  if (startValue > 0) flows.push({ d: 0, v: -startValue });
+  for (let i = 1; i < points.length; i++) {
+    const net = (points[i].grossInvested - points[i - 1].grossInvested) - (points[i].cumulativeWithdrawn - points[i - 1].cumulativeWithdrawn);
+    if (Math.abs(net) > 1e-9) flows.push({ d: (Date.parse(points[i].date) - t0) / day, v: -net });
+  }
+  const days = (Date.parse(points[points.length - 1].date) - t0) / day;
+  flows.push({ d: days, v: Number(points[points.length - 1][valueKey]) || 0 });
+  if (days <= 0 || !flows.some(f => f.v < 0) || !flows.some(f => f.v > 0)) return null;
+  // Solve for a daily rate (stable for short periods), then scale.
+  const npv = (r: number) => flows.reduce((a, f) => a + f.v / Math.pow(1 + r, f.d), 0);
+  let lo = -0.2, hi = 0.2;
+  let flo = npv(lo), fhi = npv(hi);
+  if (!(flo * fhi < 0)) return null;
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2, fm = npv(mid);
+    if (fm * flo > 0) { lo = mid; flo = fm; } else { hi = mid; fhi = fm; }
+  }
+  const r = (lo + hi) / 2;
+  return { annual: Math.pow(1 + r, 365.25) - 1, cumulative: Math.pow(1 + r, days) - 1, days };
 }
