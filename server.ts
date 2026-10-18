@@ -92,6 +92,17 @@ const authTokens = new Map<string, any>();
 
 // Cache for API responses
 const quoteCache = new Map<string, { data: any, timestamp: number }>();
+// Last good exchange rates, kept on disk so a server restart during a network blip
+// (or a weekend with IB Gateway down) still converts at a recent real rate instead of
+// the app's rough built-in estimates.
+const FX_CACHE_FILE = path.join(process.cwd(), 'fx-cache.json');
+try {
+  for (const [sym, entry] of Object.entries<any>(JSON.parse(fs.readFileSync(FX_CACHE_FILE, 'utf8')))) quoteCache.set(sym, entry);
+} catch { /* no saved rates yet */ }
+function saveFxCache() {
+  const fx = Object.fromEntries([...quoteCache].filter(([sym]) => sym.endsWith('=X')));
+  fs.promises.writeFile(FX_CACHE_FILE, JSON.stringify(fx)).catch(() => {});
+}
 const metadataCache = new Map<string, { data: any, timestamp: number }>();
 const earningsCache = new Map<string, { data: any, timestamp: number }>();
 
@@ -1455,6 +1466,17 @@ async function startServer() {
         console.warn('Finnhub fallback quote error (transient/rate-limited):', err);
       }
     }
+
+    // Still nothing live (network down, Yahoo throttled, IB Gateway off): serve the last
+    // good quote rather than leave the symbol unpriced, marked stale with its age.
+    const stale: string[] = [];
+    for (const sym of symbolList) {
+      if (quotes[sym]) continue;
+      const cached = quoteCache.get(sym);
+      if (cached) { quotes[sym] = { ...cached.data, stale: true, asOf: new Date(cached.timestamp).toISOString() }; stale.push(sym); }
+    }
+    if (stale.length) console.warn(`[API] Serving last known quotes for ${stale.length} symbols: ${stale.slice(0, 10).join(', ')}`);
+    if (symbolList.some(sym => sym.endsWith('=X') && quotes[sym] && !quotes[sym].stale)) saveFxCache();
 
     return res.json(quotes);
   });

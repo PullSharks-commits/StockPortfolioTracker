@@ -13,3 +13,6 @@ portfolio.db-*
 
 # launchd server output
 logs/
+
+# Last good exchange rates (server cache)
+fx-cache.json

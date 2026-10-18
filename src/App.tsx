@@ -85,6 +85,7 @@ import { calculateGroupFearGreed } from './lib/fearGreed';
 // Currencies converted at the hard-coded estimates below because no live rate was loaded
 // (Yahoo and the IBKR fallback both failed) - the app shows a warning while it's non-empty.
 const estimatedFxCurrencies = new Set<string>();
+const FX_SYMBOLS = ['AUD=X', 'INR=X', 'EUR=X', 'GBP=X', 'CAD=X', 'SGD=X'];
 
 const getExchangeRate = (fromCurrency: string, toCurrency: string, quotes: any) => {
   if (fromCurrency === toCurrency) return 1;
@@ -2382,6 +2383,26 @@ export default function App() {
     const list = Array.from(estimatedFxCurrencies).sort();
     if (list.join() !== fxEstimated.join()) setFxEstimated(list);
   });
+  // Exchange rates aren't on the live price stream, only in the page-load quote fetch:
+  // refresh them every 10 minutes while the page is visible, and every 30 seconds while
+  // any is missing (e.g. the page loaded during a network blip), instead of staying on
+  // the built-in estimates until a reload.
+  useEffect(() => {
+    if (!user) return;
+    const refreshFx = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const res = await fetch(`/api/quotes?symbols=${FX_SYMBOLS.join(',')}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && typeof data === 'object') setQuotes(prev => ({ ...prev, ...data }));
+        }
+      } catch { /* try again next tick */ }
+    };
+    if (fxEstimated.length) refreshFx();
+    const timer = setInterval(refreshFx, fxEstimated.length ? 30_000 : 10 * 60_000);
+    return () => clearInterval(timer);
+  }, [user, fxEstimated.join()]);
 
   // Models installed in the local Ollama (owner only), offered in the model pickers.
   const [localModels, setLocalModels] = useState<{ endpoint: string; names: string[] }>({ endpoint: '', names: [] });
