@@ -2069,10 +2069,17 @@ async function startServer() {
     clientSymbols.forEach(syms => syms.forEach(sym => all.add(sym)));
     return all;
   };
-  const sendTrades = (trades: { s: string }[], only?: WebSocket) => {
+  // The trading bot's held positions are priced from IBKR (real-time, through the bot's
+  // IB Gateway - see the IBKR loop below). While IBKR has priced a symbol in the last
+  // IBKR_FRESH_MS, Yahoo/Finnhub updates for it are dropped so the two sources can't
+  // fight; if IBKR goes quiet (Gateway logged out), they take over again by themselves.
+  const ibkrPricedAt = new Map<string, number>();
+  const IBKR_FRESH_MS = 30_000;
+  const servedByIbkr = (sym: string) => Date.now() - (ibkrPricedAt.get(sym) ?? 0) < IBKR_FRESH_MS;
+  const sendTrades = (trades: { s: string }[], only?: WebSocket, fromIbkr = false) => {
     for (const [client, syms] of clientSymbols) {
       if ((only && client !== only) || client.readyState !== WebSocket.OPEN) continue;
-      const mine = trades.filter(t => syms.has(t.s));
+      const mine = trades.filter(t => syms.has(t.s) && (fromIbkr || !servedByIbkr(t.s)));
       if (mine.length) client.send(JSON.stringify({ type: 'trade', data: mine }));
     }
   };
@@ -2224,6 +2231,49 @@ async function startServer() {
   // hours, ASX 10:00-16:15 Sydney, ...). Closed markets aren't polled: their prices
   // come when a page loads or the user taps Refresh (/api/quotes).
   setInterval(() => { if (clientSymbols.size > 0) fetchYahooQuotes(); }, 15000);
+
+  // The trading bot's held positions, priced from IBKR every IBKR_POLL_MS for open pages
+  // that show them. The bot's dashboard (positions_dashboard.py) lists what it holds
+  // (/api/held-symbols, a local file read) and serves IBKR's streaming quotes
+  // (/api/ibkr-quotes - latest tick, cheap to poll). Quietly does nothing if the bot
+  // dashboard or IB Gateway is down; Yahoo/Finnhub keep pricing those symbols then.
+  const botUrl = (process.env.BOT_DASHBOARD_URL || 'http://127.0.0.1:8765').replace(/\/+$/, '');
+  const IBKR_POLL_MS = 5_000;
+  let botHeld = new Set<string>();
+  let botHeldAt = 0;
+  let ibkrBusy = false;
+  let ibkrLogged = '';
+  async function pollIbkr() {
+    if (ibkrBusy || clientSymbols.size === 0) return;
+    ibkrBusy = true;
+    try {
+      if (Date.now() - botHeldAt > 60_000) {
+        const held: any = await fetch(`${botUrl}/api/held-symbols`, { signal: AbortSignal.timeout(5_000) }).then(r => r.json());
+        botHeld = new Set<string>((held?.symbols || []).map((x: string) => String(x).toUpperCase()));
+        botHeldAt = Date.now();
+      }
+      const wanted = [...botHeld].filter(sym => activeSymbols().has(sym));
+      if (!wanted.length) return;
+      const body: any = await fetch(`${botUrl}/api/ibkr-quotes?symbols=${encodeURIComponent(wanted.join(','))}`,
+        { signal: AbortSignal.timeout(10_000) }).then(r => r.json());
+      const trades = Object.entries<any>(body?.quotes || {}).map(([sym, q]) => ({
+        s: sym, p: q.price, pc: q.previousClose ?? undefined, ms: q.dataType === 'live' ? 'REGULAR' : 'CLOSED',
+      }));
+      const now = Date.now();
+      trades.forEach(t => ibkrPricedAt.set(t.s, now));
+      if (trades.length) sendTrades(trades, undefined, true);
+      const covered = trades.map(t => t.s).sort().join(',');
+      if (covered !== ibkrLogged) {
+        ibkrLogged = covered;
+        console.log(`[IBKR] pricing bot holdings live from IBKR: ${covered || 'none'}${body?.error ? ` (${body.error})` : ''}`);
+      }
+    } catch {
+      // bot dashboard / Gateway not reachable - Yahoo/Finnhub cover these symbols meanwhile
+    } finally {
+      ibkrBusy = false;
+    }
+  }
+  setInterval(pollIbkr, IBKR_POLL_MS);
 
   wss.on('connection', (ws) => {
     clientSymbols.set(ws, new Set());
