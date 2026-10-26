@@ -1365,8 +1365,15 @@ async function startServer() {
         return 'USD';
       };
 
+      // Yahoo answers some FX pairs under another name (INR=X comes back as USDINR=X).
+      // Key them by the symbol asked for; otherwise the pair looks missing on every request
+      // and each one waits on the IBKR fallback, holding up every other rate in it.
+      const requested = new Set(symbolsToFetch);
+      const asked = (sym: string) => (requested.has(sym) ? sym : sym.startsWith('USD') && requested.has(sym.slice(3)) ? sym.slice(3) : sym);
+
       quotesArray.forEach((quote: any) => {
         if (!quote || !quote.symbol) return;
+        quote = { ...quote, symbol: asked(quote.symbol) };
         let price = quote.regularMarketPrice;
         let previousClose = quote.regularMarketPreviousClose;
         let marketState = quote.marketState || 'REGULAR';
@@ -2206,8 +2213,10 @@ async function startServer() {
               price = quote.postMarketPrice;
             }
 
+            // Yahoo names some FX pairs differently (INR=X -> USDINR=X); send what was asked for.
+            const s = symbols.includes(quote.symbol) ? quote.symbol : quote.symbol.startsWith('USD') && symbols.includes(quote.symbol.slice(3)) ? quote.symbol.slice(3) : quote.symbol;
             return {
-              s: quote.symbol,
+              s,
               p: price,
               pc: previousClose,
               ms: quote.marketState
