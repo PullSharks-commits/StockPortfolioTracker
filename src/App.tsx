@@ -2383,10 +2383,10 @@ export default function App() {
     const list = Array.from(estimatedFxCurrencies).sort();
     if (list.join() !== fxEstimated.join()) setFxEstimated(list);
   });
-  // Exchange rates aren't on the live price stream, only in the page-load quote fetch:
-  // refresh them every 10 minutes while the page is visible, and every 30 seconds while
-  // any is missing (e.g. the page loaded during a network blip), instead of staying on
-  // the built-in estimates until a reload.
+  // Exchange rates are on the live price stream; as a backstop (the stream dropped, or
+  // the page loaded during a network blip) also refresh them every 10 minutes while the
+  // page is visible, and every 30 seconds while any is missing, instead of staying on the
+  // built-in estimates until a reload.
   useEffect(() => {
     if (!user) return;
     const refreshFx = async () => {
@@ -3952,10 +3952,11 @@ export default function App() {
       tabSettings['australia']?.benchmark || '^AXJO',
       tabSettings['bot']?.benchmark || 'SPY'
     ];
-    // Every tab's holdings (the combined cards use them all). The server replaces this
+    // Every tab's holdings (the combined cards use them all), plus the exchange rates that
+    // convert them into each tab's and the combined totals. The server replaces this
     // page's list with each message, and streams/polls only what open pages ask for.
     if (allHoldings.length > 0 || allBenchmarks.length > 0) {
-      const symbols = Array.from(new Set([...allHoldings.map(h => h.ticker), ...allBenchmarks]))
+      const symbols = Array.from(new Set([...allHoldings.map(h => h.ticker), ...allBenchmarks, ...FX_SYMBOLS]))
         .filter(s => s && s.trim().toUpperCase() !== 'CASH');
       const subscribeMsg = JSON.stringify({ type: 'subscribe', symbols });
       
