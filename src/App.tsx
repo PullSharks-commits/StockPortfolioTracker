@@ -2403,6 +2403,14 @@ export default function App() {
     const timer = setInterval(refreshFx, fxEstimated.length ? 30_000 : 10 * 60_000);
     return () => clearInterval(timer);
   }, [user, fxEstimated.join()]);
+  // The warning waits a few seconds: every page load starts on the estimates until the
+  // first quotes arrive, which isn't worth flashing a warning for.
+  const [fxWarning, setFxWarning] = useState<string[]>([]);
+  useEffect(() => {
+    if (!fxEstimated.length) { setFxWarning([]); return; }
+    const timer = setTimeout(() => setFxWarning(fxEstimated), 10_000);
+    return () => clearTimeout(timer);
+  }, [fxEstimated.join()]);
 
   // Models installed in the local Ollama (owner only), offered in the model pickers.
   const [localModels, setLocalModels] = useState<{ endpoint: string; names: string[] }>({ endpoint: '', names: [] });
@@ -8584,12 +8592,12 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       <Toaster position="top-right" richColors />
       <ConfirmDialogHost />
-      {fxEstimated.length > 0 && (
+      {fxWarning.length > 0 && (
         <div
           role="status"
           className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] px-4 py-2 rounded-lg border text-xs font-medium shadow bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/60 dark:border-amber-900 dark:text-amber-200"
         >
-          No live exchange rate for {fxEstimated.join(', ')} - converted at rough built-in estimates, so totals across currencies may be off. Refresh to retry.
+          No live exchange rate for {fxWarning.join(', ')} - converted at rough built-in estimates, so totals across currencies may be off. Refresh to retry.
         </div>
       )}
       {brokerEditorId && (() => {
