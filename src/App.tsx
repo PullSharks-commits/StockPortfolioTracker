@@ -47,7 +47,8 @@ import {
   increment
 } from './backend';
 import { StatCard, AllocationChart, PortfolioSummary, AnimatedCountUp } from './components/DashboardComponents';
-import { PerformanceChart } from './components/PerformanceChart';
+import { PerformanceChart, usePerformanceData, COMBINED_BENCHMARKS, type PerfHolding } from './components/PerformanceChart';
+import { moneyWeightedReturn } from './lib/performanceSimulation';
 import { HistoricalPriceChart } from './components/HistoricalPriceChart';
 import { WatchlistSparkline } from './components/WatchlistSparkline';
 import { StockSearch } from './components/StockSearch';
@@ -5591,8 +5592,45 @@ Use professional Markdown formatting with clear headings and bullet points.`;
   const combinedPeriodStats = combinedBreakdown.periodStats;
   const combinedRealized = useMemo(() => realizedByWindow(combinedBreakdown.sales), [combinedBreakdown.sales]);
   // Which combined summary card's details are open (click the card again to close).
-  const [combinedDetail, setCombinedDetail] = useState<CombinedDetailKey | null>(null);
-  const toggleCombinedDetail = (key: CombinedDetailKey) => setCombinedDetail(d => (d === key ? null : key));
+  // 'benchmark' opens the all-tabs performance chart rather than a breakdown.
+  const [combinedDetail, setCombinedDetail] = useState<CombinedDetailKey | 'benchmark' | null>(null);
+  const toggleCombinedDetail = (key: CombinedDetailKey | 'benchmark') => setCombinedDetail(d => (d === key ? null : key));
+
+  // Every tab simulated together in the combined currency, for "vs Index": each
+  // holding's trades are in its tab's currency, and its money goes into its tab's
+  // benchmark for the "Own markets" blend.
+  const combinedPerfHoldings = useMemo<PerfHolding[]>(() => allHoldings.map(h => {
+    const tab = h.portfolioType || 'global';
+    const bench = tabSettings[tab]?.benchmark || (tab === 'australia' ? '^AXJO' : '^GSPC');
+    return { ...h, tradeCurrency: tabSettings[tab]?.currency || (tab === 'australia' ? 'AUD' : 'USD'), benchmark: bench === 'SPY' ? '^GSPC' : bench };
+  }), [allHoldings, tabSettings]);
+  const combinedPerf = usePerformanceData({
+    user, holdings: combinedPerfHoldings, activeCurrency: userSettings.combinedCurrency || 'USD',
+    benchmarks: COMBINED_BENCHMARKS, enabled: !!user && !!userSettings.showCombinedSummary,
+  });
+  // Money-weighted return since the first trade (per year) and over the last year, for
+  // the portfolio and the same cash put into each index; plus where that cash would be now.
+  const combinedVsIndex = useMemo(() => {
+    const points = combinedPerf.data;
+    if (points.length < 2) return null;
+    const yearAgo = Date.now() - 365 * 864e5;
+    const from = points.findIndex(p => p.timestamp >= yearAgo);
+    const lastYear = from > 0 ? points.slice(from - 1) : points;
+    const rate = (key: string) => {
+      const all = moneyWeightedReturn(points, key), year = moneyWeightedReturn(lastYear, key);
+      return { all: all ? (all.days >= 365 ? all.annual : all.cumulative) * 100 : null, year: year ? year.cumulative * 100 : null };
+    };
+    const end = points[points.length - 1];
+    return {
+      perYear: (Date.parse(end.date) - Date.parse(points[0].date)) / 864e5 >= 365,
+      since: points[0].date as string,
+      portfolio: rate('Portfolio'),
+      nasdaq: rate('NasdaqCash'),
+      sp500: rate('S&P 500Cash'),
+      own: rate('Own marketsCash'),
+      vsNasdaq: end.Portfolio - end.NasdaqCash,
+    };
+  }, [combinedPerf.data]);
 
   const tabPeriodStats = useMemo(() => {
     const now = new Date();
@@ -6661,7 +6699,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                       </SummaryCardButton>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-x-6 gap-y-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-x-6 gap-y-4">
                       <SummaryCardButton active={combinedDetail === 'return'} onClick={() => toggleCombinedDetail('return')} label="Combined Return" className="space-y-0.5">
                         <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
                           Combined Return
@@ -6694,6 +6732,28 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             {combinedRealized[k].percent != null && <span className="text-zinc-400">({combinedRealized[k].percent! >= 0 ? '+' : ''}{combinedRealized[k].percent!.toFixed(1)}%)</span>}
                           </div>
                         ))}
+                      </SummaryCardButton>
+
+                      <SummaryCardButton active={combinedDetail === 'benchmark'} onClick={() => toggleCombinedDetail('benchmark')} label="Versus index" className="space-y-0.5">
+                        <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider" title="Money-weighted return (IRR) of all tabs, against the same deposits and withdrawals put into each index on the same days">
+                          vs Index
+                        </div>
+                        {!combinedVsIndex || combinedVsIndex.portfolio.all == null ? (
+                          <div className="text-xs text-zinc-400 pt-1">{combinedPerf.loading ? 'Computing…' : '—'}</div>
+                        ) : (<>
+                          <div className={cn("text-lg xl:text-xl font-medium whitespace-nowrap", combinedVsIndex.vsNasdaq >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                            {formatCurrency(combinedVsIndex.vsNasdaq, userSettings.combinedCurrency || 'USD', true)}
+                          </div>
+                          <div className="text-xs font-medium text-zinc-500">vs Nasdaq, same cash</div>
+                          {([['You', combinedVsIndex.portfolio], ['Nasdaq', combinedVsIndex.nasdaq], ['S&P 500', combinedVsIndex.sp500]] as const).map(([name, r]) => (
+                            <div key={name} className="text-[10px] text-zinc-500 font-medium flex items-center gap-1">
+                              <span>{name}:</span>
+                              <span className={cn("font-semibold font-mono", (r.all ?? 0) >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                {r.all == null ? '—' : `${r.all >= 0 ? '+' : ''}${r.all.toFixed(1)}%`}{combinedVsIndex.perYear ? '/yr' : ''}
+                              </span>
+                            </div>
+                          ))}
+                        </>)}
                       </SummaryCardButton>
 
                       <SummaryCardButton active={combinedDetail === 'day'} onClick={() => toggleCombinedDetail('day')} label="Day Change" className="space-y-0.5">
@@ -6769,7 +6829,22 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                       </SummaryCardButton>
                     </div>
                   </div>
-                  {combinedDetail && (
+                  {combinedDetail === 'benchmark' && user && (
+                    <div className="border-t border-zinc-100 dark:border-zinc-800 px-4 py-4">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <p className="text-xs text-zinc-500 max-w-3xl">
+                          All tabs together in {userSettings.combinedCurrency || 'USD'}, against the same deposits and withdrawals put into each index on the same days (MWR). <span className="font-medium text-zinc-600 dark:text-zinc-300">Own markets</span> puts each tab's money into that tab's benchmark (Australia in the ASX 200, Global and the bot in the S&amp;P 500 unless set otherwise).
+                          {combinedVsIndex && <> Last 12 months: you {combinedVsIndex.portfolio.year == null ? '—' : `${combinedVsIndex.portfolio.year >= 0 ? '+' : ''}${combinedVsIndex.portfolio.year.toFixed(1)}%`}, Nasdaq {combinedVsIndex.nasdaq.year == null ? '—' : `${combinedVsIndex.nasdaq.year >= 0 ? '+' : ''}${combinedVsIndex.nasdaq.year.toFixed(1)}%`}, own markets {combinedVsIndex.own.year == null ? '—' : `${combinedVsIndex.own.year >= 0 ? '+' : ''}${combinedVsIndex.own.year.toFixed(1)}%`}.</>}
+                        </p>
+                        <button onClick={() => setCombinedDetail(null)} className="p-1 text-zinc-400 hover:text-zinc-700 rounded-lg shrink-0" aria-label="Close"><X className="w-4 h-4" /></button>
+                      </div>
+                      {/* The chart sizes to its parent, so it needs a definite height here. */}
+                      <div className="h-[520px] flex flex-col">
+                        <PerformanceChart user={user} holdings={combinedPerfHoldings} activeCurrency={userSettings.combinedCurrency || 'USD'} combined={combinedPerf} />
+                      </div>
+                    </div>
+                  )}
+                  {combinedDetail && combinedDetail !== 'benchmark' && (
                     <CombinedDetails detail={combinedDetail} breakdown={combinedBreakdown} currency={userSettings.combinedCurrency || 'USD'} onClose={() => setCombinedDetail(null)} />
                   )}
                 </div>

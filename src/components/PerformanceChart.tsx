@@ -7,15 +7,21 @@ import { Loader2, AlertCircle } from 'lucide-react';
 import { formatCurrency } from '../lib/currency';
 import { db, collection, query, where, getDocs } from '../backend';
 import type { User } from '../backend';
-import { moneyWeightedReturn, simulatePerformance, symbolCurrency } from '../lib/performanceSimulation';
+import { BLEND, moneyWeightedReturn, simulatePerformance, symbolCurrency } from '../lib/performanceSimulation';
 
-interface Holding {
+// `tradeCurrency` / `benchmark`: set when holdings from several tabs are simulated
+// together (the combined view) - the currency the holding's trades are in, and the
+// index its money goes into for the "Own markets" blend.
+export interface PerfHolding {
   id: string;
   ticker: string;
   shares: number;
   avg_price: number;
   portfolioType?: string;
+  tradeCurrency?: string;
+  benchmark?: string;
 }
+type Holding = PerfHolding;
 
 interface Transaction {
   id: string;
@@ -25,99 +31,71 @@ interface Transaction {
   shares: number;
   price: number;
   date: string;
+  currency?: string;
+  benchmark?: string;
 }
+
+export interface PerformanceData { data: any[]; loading: boolean; error: string | null }
 
 interface PerformanceChartProps {
   user: User;
   holdings: Holding[];
   activeCurrency?: string;
+  // The combined view: data already simulated by usePerformanceData across every tab.
+  combined?: PerformanceData;
 }
 
-const BENCHMARKS = {
+const BASE_BENCHMARKS: Record<string, string> = {
   '^GSPC': 'S&P 500',
   '^RUT': 'Russell 2000',
   '^IXIC': 'Nasdaq',
   '^DJI': 'Dow Jones'
 };
+// Combined view: also each tab's money in its own market (Global and the bot in the
+// S&P 500, Australia in the ASX 200).
+export const COMBINED_BENCHMARKS: Record<string, string> = { ...BASE_BENCHMARKS, [BLEND]: 'Own markets' };
 
-const COLORS = {
+const COLORS: Record<string, string> = {
   portfolio: '#6366f1', // Indigo 500
   '^GSPC': '#10b981', // Emerald 500
   '^RUT': '#f59e0b', // Amber 500
   '^IXIC': '#06b6d4', // Cyan 500
   '^DJI': '#ef4444', // Red 500
+  [BLEND]: '#a855f7', // Purple 500
 };
 
-export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, holdings, activeCurrency = 'USD' }) => {
+const readStored = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+const writeStored = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch {} };
+
+// Fetches the trades and price history for `holdings` and simulates them day by day.
+// `enabled: false` skips it (a chart handed its data already).
+export function usePerformanceData({ user, holdings, activeCurrency = 'USD', benchmarks = BASE_BENCHMARKS, enabled = true }: {
+  user: User | null; holdings: Holding[]; activeCurrency?: string; benchmarks?: Record<string, string>; enabled?: boolean;
+}): PerformanceData {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [timeRange, setTimeRange] = useState<string>(() => {
-    return localStorage.getItem('portfolio_perf_timerange') || '1Y';
-  });
-  const [displayMode, setDisplayMode] = useState<'value' | 'percent'>(() => {
-    return (localStorage.getItem('portfolio_perf_displaymode') as 'value' | 'percent') || 'percent';
-  });
-  const [weightingMethod, setWeightingMethod] = useState<'time' | 'money'>(() => {
-    return (localStorage.getItem('portfolio_perf_weighting') as 'time' | 'money') || 'time';
-  });
-  const [visibleBenchmarks, setVisibleBenchmarks] = useState<Set<string>>(() => {
-    const saved = localStorage.getItem('portfolio_perf_benchmarks');
-    if (saved) {
-      try {
-        return new Set(JSON.parse(saved));
-      } catch (e) {
-        return new Set(['^GSPC', '^IXIC']);
-      }
-    }
-    return new Set(['^GSPC', '^IXIC']);
-  });
-
-  useEffect(() => {
-    localStorage.setItem('portfolio_perf_timerange', timeRange);
-  }, [timeRange]);
-
-  useEffect(() => {
-    localStorage.setItem('portfolio_perf_displaymode', displayMode);
-  }, [displayMode]);
-
-  useEffect(() => {
-    localStorage.setItem('portfolio_perf_weighting', weightingMethod);
-  }, [weightingMethod]);
-
-  useEffect(() => {
-    localStorage.setItem('portfolio_perf_benchmarks', JSON.stringify(Array.from(visibleBenchmarks)));
-  }, [visibleBenchmarks]);
-
-  const toggleBenchmark = (symbol: string) => {
-    setVisibleBenchmarks(prev => {
-      const next = new Set(prev);
-      if (next.has(symbol)) {
-        next.delete(symbol);
-      } else {
-        next.add(symbol);
-      }
-      return next;
-    });
-  };
+  const BENCHMARKS = benchmarks;
 
   // Stable dependency key for the heavy simulation
   // We only re-simulate if the specific set of assets or their counts change
   // We don't want to re-simulate just because real-time quotes updated in the dashboard
   const simulationKey = useMemo(() => {
     const assetString = holdings
-      .map(h => `${h.id}:${h.ticker}`)
+      .map(h => `${h.id}:${h.ticker}:${h.tradeCurrency ?? ''}:${h.benchmark ?? ''}`)
       .sort()
       .join('|');
-    return `${user.uid}:${assetString}`;
-  }, [holdings, user.uid]);
+    return `${user?.uid}:${assetString}:${Object.keys(benchmarks).join()}`;
+  }, [holdings, user?.uid, benchmarks]);
 
   useEffect(() => {
+    if (!enabled || !user) return;
     let isMounted = true;
     
     // We only care about holdings currently visible in the tabs
     const currentHoldingIds = new Set(holdings.map(h => h.id));
     const holdingsMap = Object.fromEntries(holdings.map(h => [h.id, h.ticker]));
+    const holdingById = Object.fromEntries(holdings.map(h => [h.id, h]));
 
     const loadData = async () => {
       if (holdings.length === 0) {
@@ -145,7 +123,9 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
               type: data.type,
               shares: data.shares,
               price: data.price,
-              date: data.date
+              date: data.date,
+              currency: holdingById[data.holdingId]?.tradeCurrency,
+              benchmark: holdingById[data.holdingId]?.benchmark,
             };
           })
           .filter(tx => currentHoldingIds.has(tx.holdingId) && tx.ticker); // Only for current tab holdings
@@ -162,9 +142,14 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
         const tickers = Array.from(new Set(transactions.map(t => t.ticker).filter(Boolean)));
         // Yahoo prices come in each listing's currency; trades on this tab are in the
         // tab's currency. "<CUR>=X" is that currency per US dollar.
-        const fxSymbols = Array.from(new Set([...tickers, ...Object.keys(BENCHMARKS)].map(symbolCurrency).concat(activeCurrency)))
+        const indexSymbols = Array.from(new Set([
+          ...Object.keys(BENCHMARKS).filter(idx => idx !== BLEND),
+          ...(BLEND in BENCHMARKS ? transactions.map(t => t.benchmark || '^GSPC') : []),
+        ]));
+        const tradeCurrencies = transactions.map(t => t.currency).filter((c): c is string => !!c);
+        const fxSymbols = Array.from(new Set([...tickers, ...indexSymbols].map(symbolCurrency).concat(activeCurrency, tradeCurrencies)))
           .filter(c => c !== 'USD').map(c => `${c}=X`);
-        const allSymbols = Array.from(new Set([...tickers, ...Object.keys(BENCHMARKS), ...fxSymbols]));
+        const allSymbols = Array.from(new Set([...tickers, ...indexSymbols, ...fxSymbols]));
 
         // Find the earliest transaction date
         const sortedDates = transactions
@@ -271,7 +256,41 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
     return () => {
       isMounted = false;
     };
-  }, [simulationKey, activeCurrency]); // Use simulationKey instead of raw holdings
+  }, [simulationKey, activeCurrency, enabled]); // Use simulationKey instead of raw holdings
+
+  return { data, loading, error };
+}
+
+export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, holdings, activeCurrency = 'USD', combined }) => {
+  const BENCHMARKS = combined ? COMBINED_BENCHMARKS : BASE_BENCHMARKS;
+  const own = usePerformanceData({ user, holdings, activeCurrency, enabled: !combined });
+  const { data, loading, error } = combined ?? own;
+  // The combined chart keeps its own settings (it opens on the money-weighted view).
+  const key = (name: string) => `portfolio_perf_${combined ? 'combined_' : ''}${name}`;
+  const [timeRange, setTimeRange] = useState<string>(() => readStored(key('timerange')) || (combined ? 'All' : '1Y'));
+  const [displayMode, setDisplayMode] = useState<'value' | 'percent'>(() => (readStored(key('displaymode')) as 'value' | 'percent') || 'percent');
+  const [weightingMethod, setWeightingMethod] = useState<'time' | 'money'>(() => (readStored(key('weighting')) as 'time' | 'money') || (combined ? 'money' : 'time'));
+  const [visibleBenchmarks, setVisibleBenchmarks] = useState<Set<string>>(() => {
+    const fallback = combined ? ['^IXIC', '^GSPC', BLEND] : ['^GSPC', '^IXIC'];
+    try { return new Set(JSON.parse(readStored(key('benchmarks')) || 'null') ?? fallback); } catch { return new Set(fallback); }
+  });
+
+  useEffect(() => { writeStored(key('timerange'), timeRange); }, [timeRange]);
+  useEffect(() => { writeStored(key('displaymode'), displayMode); }, [displayMode]);
+  useEffect(() => { writeStored(key('weighting'), weightingMethod); }, [weightingMethod]);
+  useEffect(() => { writeStored(key('benchmarks'), JSON.stringify(Array.from(visibleBenchmarks))); }, [visibleBenchmarks]);
+
+  const toggleBenchmark = (symbol: string) => {
+    setVisibleBenchmarks(prev => {
+      const next = new Set(prev);
+      if (next.has(symbol)) {
+        next.delete(symbol);
+      } else {
+        next.add(symbol);
+      }
+      return next;
+    });
+  };
 
   const visibleData = useMemo(() => {
     if (data.length === 0) return [];

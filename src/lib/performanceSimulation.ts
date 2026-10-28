@@ -4,7 +4,10 @@
 
 import { format, addDays, startOfDay } from 'date-fns';
 
-export interface SimTransaction { id: string; holdingId: string; ticker: string; type: string; shares: number; price: number; date: string }
+// `currency`: what the trade's price is in, when it isn't activeCurrency (the combined
+// view mixes tabs); converted at that day's rate. `benchmark`: the index this trade's
+// money goes into for the BLEND benchmark (each tab's own market).
+export interface SimTransaction { id: string; holdingId: string; ticker: string; type: string; shares: number; price: number; date: string; currency?: string; benchmark?: string }
 export interface SimHolding { ticker: string; avg_price: number }
 
 // Currency a Yahoo symbol is priced in (by exchange suffix); trades are in the tab's currency.
@@ -15,7 +18,10 @@ export function symbolCurrency(sym: string): string {
   return (dot > 0 && SUFFIX_CURRENCY[sym.slice(dot + 1).toUpperCase()]) || 'USD';
 }
 
-export function simulatePerformance({ transactions, historicalData, holdings, allSymbols, earliestDate, benchmarks, activeCurrency, today = startOfDay(new Date()) }: {
+// A benchmarks key: the money each trade moves goes into that trade's own `benchmark`.
+export const BLEND = '@blend';
+
+export function simulatePerformance({ transactions: rawTransactions, historicalData, holdings, allSymbols: symbolList, earliestDate, benchmarks, activeCurrency, today = startOfDay(new Date()) }: {
   transactions: SimTransaction[];
   historicalData: Record<string, { date: string; close: number }[]>;
   holdings: SimHolding[];
@@ -28,7 +34,7 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
   const BENCHMARKS = benchmarks;
   // Convert historical data into a fast map: historical[symbol][date_string_yyyy_mm_dd] = price
   const priceMap: Record<string, Record<string, number>> = {};
-  allSymbols.forEach(sym => {
+  symbolList.forEach(sym => {
     priceMap[sym] = {};
     const prices = historicalData[sym] || [];
     prices.forEach((p: any) => {
@@ -38,6 +44,33 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
       }
     });
   });
+
+  // "<CUR>=X" (currency per US dollar) on a day, or the nearest earlier/later close.
+  const fxDates: Record<string, string[]> = {};
+  const fxAt = (cur: string, d: string): number => {
+    if (cur === 'USD') return 1;
+    const sym = `${cur}=X`, m = priceMap[sym] || {};
+    if (m[d]) return m[d];
+    const ds = (fxDates[sym] ??= Object.keys(m).sort());
+    let lo = 0, hi = ds.length - 1, best = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (ds[mid] <= d) { best = mid; lo = mid + 1; } else hi = mid - 1; }
+    const k = best >= 0 ? ds[best] : ds[0];
+    return k ? m[k] : 0;
+  };
+  // Symbols with no market history (cash, managed funds like Spaceship Voyager):
+  // their own trade prices are the price history.
+  const priced = new Set(symbolList.filter(sym => Object.keys(priceMap[sym] || {}).length > 0));
+  // Trades in another currency: price converted at the trade date. An unpriced asset is
+  // kept apart per currency (CASH in USD and in AUD are different things).
+  const transactions = rawTransactions.map(tx => {
+    if (!tx.currency || tx.currency === activeCurrency) return tx;
+    const d = tx.date.split('T')[0];
+    const from = fxAt(tx.currency, d), to = fxAt(activeCurrency, d);
+    const price = from > 0 && to > 0 ? (tx.price / from) * to : tx.price;
+    return { ...tx, price, ticker: priced.has(tx.ticker) ? tx.ticker : `${tx.ticker}@${tx.currency}` };
+  });
+  const allSymbols = Array.from(new Set([...symbolList, ...transactions.map(tx => tx.ticker)]));
+  allSymbols.forEach(sym => { priceMap[sym] ??= {}; });
 
   // Group transactions by date string (yyyy-mm-dd)
   const txByDate: Record<string, SimTransaction[]> = {};
@@ -51,10 +84,17 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
   let currentDate = startOfDay(earliestDate);
   
   const currentHoldings: Record<string, number> = {};
-  const currentBenchmarkHoldings: Record<string, number> = {};
+  // Units of each benchmark's index (or indices, for BLEND) held.
+  const currentBenchmarkHoldings: Record<string, Record<string, number>> = {};
   // Same benchmarks bought/sold with the cash actually paid/received (for the
   // money-weighted comparison: "the same deposits and withdrawals in the index").
-  const cashBenchmarkHoldings: Record<string, number> = {};
+  const cashBenchmarkHoldings: Record<string, Record<string, number>> = {};
+  const benchSymbol = (idx: string, tx: SimTransaction) => (idx === BLEND ? tx.benchmark || '^GSPC' : idx);
+  const benchValue = (units?: Record<string, number>) => Object.entries(units || {}).reduce((a, [sym, n]) => a + n * px(sym), 0);
+  const addUnits = (book: Record<string, Record<string, number>>, idx: string, sym: string, n: number) => {
+    const units = (book[idx] ??= {});
+    units[sym] = Math.max(0, (units[sym] || 0) + n);
+  };
   
   let portfolioIndex = 100;
   const benchmarkIndices: Record<string, number> = {};
@@ -80,9 +120,7 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
     }
   });
 
-  // Symbols with no market history (cash, managed funds like Spaceship Voyager):
-  // their own trade prices are the price history.
-  const hasHistory = new Set(allSymbols.filter(sym => Object.keys(priceMap[sym] || {}).length > 0));
+  const hasHistory = priced;
   const fxRate = (cur: string) => (cur === 'USD' ? 1 : lastKnownPrices[`${cur}=X`] || 0);
   // Last known price of `sym`, in the tab's currency.
   const px = (sym: string) => {
@@ -153,7 +191,7 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
         // Benchmark values immediately before this transaction
         const benchValBeforeTx: Record<string, number> = {};
         Object.keys(currentBenchmarkHoldings).forEach(idx => {
-          benchValBeforeTx[idx] = currentBenchmarkHoldings[idx] * px(idx);
+          benchValBeforeTx[idx] = benchValue(currentBenchmarkHoldings[idx]);
         });
 
         // Complete sub-period return right before this transaction if base > 0
@@ -186,19 +224,13 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
           cumulativeWithdrawn += txValue;
         }
 
+        // Adjust benchmark holdings by the cash flow
         Object.keys(BENCHMARKS).forEach(idx => {
-          const benchPrice = px(idx) || 1;
-          cashBenchmarkHoldings[idx] = Math.max(0, (cashBenchmarkHoldings[idx] || 0) + (isBuy ? 1 : -1) * (txValue / benchPrice));
-        });
-
-        // Adjust benchmark holdings by cash flow
-        Object.keys(BENCHMARKS).forEach(idx => {
-          const benchPrice = px(idx) || 1;
-          if (isBuy) {
-            currentBenchmarkHoldings[idx] = (currentBenchmarkHoldings[idx] || 0) + (marketValue / benchPrice);
-          } else {
-            currentBenchmarkHoldings[idx] = Math.max(0, (currentBenchmarkHoldings[idx] || 0) - (marketValue / benchPrice));
-          }
+          const bsym = benchSymbol(idx, tx);
+          const benchPrice = px(bsym) || 1;
+          const sign = isBuy ? 1 : -1;
+          addUnits(cashBenchmarkHoldings, idx, bsym, sign * (txValue / benchPrice));
+          addUnits(currentBenchmarkHoldings, idx, bsym, sign * (marketValue / benchPrice));
         });
 
         // Establish new beginning base value immediately after the cash flow
@@ -217,7 +249,7 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
 
     const endOfDayBenchmarkValues: Record<string, number> = {};
     Object.keys(currentBenchmarkHoldings).forEach(idx => {
-      endOfDayBenchmarkValues[idx] = currentBenchmarkHoldings[idx] * px(idx);
+      endOfDayBenchmarkValues[idx] = benchValue(currentBenchmarkHoldings[idx]);
     });
 
     // End-of-day sub-period return (from last cash flow / start of day to market close)
@@ -249,7 +281,7 @@ export function simulatePerformance({ transactions, historicalData, holdings, al
             ...acc, 
             [name]: Number((endOfDayBenchmarkValues[idx] || 0).toFixed(2)),
             [`${name}Index`]: benchmarkIndices[idx],
-            [`${name}Cash`]: Number(((cashBenchmarkHoldings[idx] || 0) * px(idx)).toFixed(2))
+            [`${name}Cash`]: Number(benchValue(cashBenchmarkHoldings[idx]).toFixed(2))
           };
         }, {})
       });
