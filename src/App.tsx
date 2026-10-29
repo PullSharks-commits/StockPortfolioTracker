@@ -76,7 +76,8 @@ import { AccountSection } from './components/AccountSection';
 import { computeCombinedBreakdown, realizedByWindow } from './lib/combinedBreakdown';
 import { CombinedDetails, SummaryCardButton, type CombinedDetailKey } from './components/CombinedDetails';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
-import { RATING_EMOJI, RATING_LABEL, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
+import { RATING_EMOJI, RATING_LABEL, TICKER_ALIASES, canonicalTicker, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
+import { isMergedId, mergeShareClasses } from './lib/shareClasses';
 import { ThesisPanel } from './components/ThesisPanel';
 import { ThesisBadge, THESIS_ROW_EDGE } from './components/ThesisBadge';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
@@ -1004,7 +1005,8 @@ const SortableHoldingRow = ({
   hasThesis,
   handleChangeTheme,
   handleWhatsMoving,
-  isSortable = true
+  isSortable = true,
+  isSubRow = false
 }: any) => {
   const {
     attributes,
@@ -1029,7 +1031,8 @@ const SortableHoldingRow = ({
       className={cn(
         "hover:bg-zinc-100/50 hover:shadow-sm transition-all duration-200 group/row relative",
         editingId === holding.id ? "cursor-default" : "cursor-pointer",
-        isDragging && "bg-white shadow-xl ring-1 ring-zinc-200"
+        isDragging && "bg-white shadow-xl ring-1 ring-zinc-200",
+        isSubRow && "bg-zinc-50/70 dark:bg-zinc-900/60 text-[0.95em]"
       )}
       onClick={() => {
         if (editingId !== holding.id) {
@@ -2378,6 +2381,13 @@ export default function App() {
   const [themePickerTicker, setThemePickerTicker] = useState<string | null>(null);
   const [whatsMovingTicker, setWhatsMovingTicker] = useState<string | null>(null);
   const [brokerEditorId, setBrokerEditorId] = useState<string | null>(null);
+  // Combined share-class rows (GOOG + GOOGL) the user has expanded to their holdings.
+  const [expandedMerged, setExpandedMerged] = useState<Set<string>>(new Set());
+  const toggleMerged = (id: string) => setExpandedMerged(prev => {
+    const next = new Set(prev);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
   // Mirrors estimatedFxCurrencies after each render (it's filled while totals are computed).
   const [fxEstimated, setFxEstimated] = useState<string[]>([]);
   useEffect(() => {
@@ -2867,7 +2877,11 @@ export default function App() {
   };
 
   const handleExportCSV = () => {
-    const itemsToExport = sortedHoldings && sortedHoldings.length > 0 ? sortedHoldings : portfolioStats.enrichedHoldings;
+    // Combined share-class rows export as their underlying holdings, so a re-import keeps both.
+    const shown = sortedHoldings.flatMap((h: any) => h.mergedFrom
+      ? h.mergedFrom.map((m: any) => ({ ...m, ...fundamentalsByTicker[m.ticker], brokerName: brokerLabel(m.brokers) }))
+      : [h]);
+    const itemsToExport = shown.length > 0 ? shown : portfolioStats.enrichedHoldings;
     if (!itemsToExport || itemsToExport.length === 0) {
       toast.error("No holdings available to export");
       return;
@@ -4183,6 +4197,7 @@ export default function App() {
   // Deleting a holding also deletes its transactions, so it is confirmed first and
   // can be undone for a few seconds afterwards (restored with the same ids).
   const handleDelete = async (id: string) => {
+    if (isMergedId(id)) { toggleMerged(id); return; }
     if (!user) return;
     const holding = allHoldings.find(h => h.id === id);
     const label = holding?.ticker || 'this holding';
@@ -4316,6 +4331,7 @@ export default function App() {
   };
 
   const handleEditClick = (holding: Holding, field: string | null = null, forceModal: boolean = false) => {
+    if (isMergedId(holding.id)) { toggleMerged(holding.id); return; }
     if (forceModal || field === null) {
       setEditModalHolding(holding);
       return;
@@ -4454,6 +4470,7 @@ export default function App() {
   };
 
   const handleViewHistory = async (holding: Holding) => {
+    if (isMergedId(holding.id)) { toggleMerged(holding.id); return; }
     setHistoryHolding(holding);
     setIsHistoryLoading(true);
     try {
@@ -5799,7 +5816,14 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     document.addEventListener('visibilitychange', onFocus);
     return () => { cancelled = true; clearInterval(timer); document.removeEventListener('visibilitychange', onFocus); };
   }, [user]);
-  const trackerHoldings = thesisTracker?.holdings;
+  // Aliased tickers (GOOG) share their canonical ticker's thesis entry.
+  const trackerHoldings = useMemo(() => {
+    const h = thesisTracker?.holdings;
+    if (!h) return h;
+    const out = { ...h };
+    for (const [alias, canon] of Object.entries(TICKER_ALIASES)) if (!out[alias] && out[canon]) out[alias] = out[canon];
+    return out;
+  }, [thesisTracker?.holdings]);
   const hasThesis = React.useCallback((ticker: string) => !!trackerHoldings?.[ticker.toUpperCase()], [trackerHoldings]);
 
   // Announce each new tracker run once per browser, with its rating changes.
@@ -5818,11 +5842,13 @@ Use professional Markdown formatting with clear headings and bullet points.`;
   }, [thesisTracker?.latestReport]);
 
   const sortedHoldings = useMemo(() => {
-    let sortableItems = portfolioStats.enrichedHoldings.filter(h => h.shares !== 0).map(h => ({ ...h, ...fundamentalsByTicker[h.ticker], brokerName: brokerLabel(h.brokers) }));
+    // GOOG and GOOGL show as one row; mergedFrom holds the two holdings.
+    let sortableItems = mergeShareClasses(portfolioStats.enrichedHoldings.filter(h => h.shares !== 0))
+      .map(h => ({ ...h, ...fundamentalsByTicker[h.ticker], brokerName: brokerLabel(h.brokers) }));
     
     if (filterGroup) {
       if (chartView === 'asset') {
-        sortableItems = sortableItems.filter(h => h.ticker === filterGroup);
+        sortableItems = sortableItems.filter(h => (h.ticker === 'CASH' ? h.ticker : canonicalTicker(h.ticker)) === filterGroup);
       } else if (chartView === 'industry') {
         sortableItems = sortableItems.filter(h => {
           const sector = h.ticker === 'CASH' ? 'Cash' : (metadata[h.ticker]?.sector || 'Unknown');
@@ -5866,15 +5892,16 @@ Use professional Markdown formatting with clear headings and bullet points.`;
   const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#10b981', '#06b6d4', '#3b82f6'];
 
   const chartData = useMemo(() => {
-    // Group by ticker for the pie chart
+    // Group by ticker for the pie chart (GOOG folds into GOOGL)
     const grouped: Record<string, { value: number, profitLoss: number, cost: number }> = {};
     sortedHoldings.forEach(h => {
-      if (!grouped[h.ticker]) {
-        grouped[h.ticker] = { value: 0, profitLoss: 0, cost: 0 };
+      const t = h.ticker === 'CASH' ? h.ticker : canonicalTicker(h.ticker);
+      if (!grouped[t]) {
+        grouped[t] = { value: 0, profitLoss: 0, cost: 0 };
       }
-      grouped[h.ticker].value += h.currentValue;
-      grouped[h.ticker].profitLoss += h.profitLoss;
-      grouped[h.ticker].cost += h.costBasis;
+      grouped[t].value += h.currentValue;
+      grouped[t].profitLoss += h.profitLoss;
+      grouped[t].cost += h.costBasis;
     });
     
     return Object.entries(grouped)
@@ -6212,6 +6239,41 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     }
   };
 
+  // One holdings-table row; a combined share-class row is followed by its
+  // holdings when expanded, so each can still be edited on its own.
+  const renderHoldingRow = (holding: any, isSortable: boolean) => {
+    const rowProps = {
+      columnOrder: displayedColumns,
+      renderCell,
+      editingId,
+      setSelectedChartTicker,
+      handleSaveEdit,
+      handleCancelEdit,
+      promptAnalysisStrategy,
+      handleEditClick,
+      handleViewHistory,
+      handleDelete,
+      handleThesis: (t: string) => setThesisPanelTicker(t.toUpperCase()),
+      hasThesis,
+      handleChangeTheme: setThemePickerTicker,
+      handleWhatsMoving: setWhatsMovingTicker,
+    };
+    return (
+      <React.Fragment key={holding.id}>
+        <SortableHoldingRow holding={holding} isSortable={isSortable} {...rowProps} />
+        {holding.mergedFrom && expandedMerged.has(holding.id) && holding.mergedFrom.map((m: any) => (
+          <SortableHoldingRow
+            key={m.id}
+            holding={{ ...m, ...fundamentalsByTicker[m.ticker], brokerName: brokerLabel(m.brokers), isSubRow: true }}
+            isSortable={false}
+            isSubRow
+            {...rowProps}
+          />
+        ))}
+      </React.Fragment>
+    );
+  };
+
   const renderCell = (colId: string, holding: any) => {
     switch (colId) {
       case 'ticker': {
@@ -6221,7 +6283,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           ? [`${thesisState ? RATING_EMOJI[thesisState] + ' ' + RATING_LABEL[thesisState] : ''}${tracked.reportDate ? ` · Thesis Tracker ${fmtDay(tracked.reportDate)}` : ''}`, tracked.reason?.replace(/\*\*/g, ''), 'Click for the full thesis'].filter(Boolean).join('\n')
           : undefined;
         return (
-          <td key={colId} className={cn("px-3 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800", thesisState ? THESIS_ROW_EDGE[thesisState] : "shadow-[1px_0_0_0_rgb(228_228_231)]")} onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
+          <td key={colId} className={cn("px-3 py-4 sticky left-0 z-10 bg-white dark:bg-zinc-900 group-hover/row:bg-zinc-50 dark:group-hover/row:bg-zinc-800", holding.isSubRow && "pl-10", thesisState ? THESIS_ROW_EDGE[thesisState] : "shadow-[1px_0_0_0_rgb(228_228_231)]")} onClick={(e) => { e.stopPropagation(); if (editingId !== holding.id) handleEditClick(holding, 'ticker'); }}>
             <div className="flex items-center gap-3">
               <CompanyLogo ticker={holding.ticker} logo={metadata[holding.ticker]?.logo} />
               {editingId === holding.id ? (
@@ -6258,6 +6320,17 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               ) : (
                 <div className="font-semibold text-zinc-900 group-hover/row:text-indigo-600 transition-colors flex items-center gap-1.5">
                   <span>{holding.ticker}</span>
+                  {holding.mergedFrom && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); toggleMerged(holding.id); }}
+                      title={`${holding.mergedFrom.map((m: any) => `${m.ticker}: ${m.shares} shares`).join('\n')}\nClick to ${expandedMerged.has(holding.id) ? 'hide' : 'show'} each share class`}
+                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-bold rounded bg-zinc-100 text-zinc-600 hover:bg-indigo-50 hover:text-indigo-700 dark:bg-zinc-800 dark:text-zinc-300"
+                    >
+                      {holding.mergedFrom.map((m: any) => m.ticker).join(' + ')}
+                      {expandedMerged.has(holding.id) ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                  )}
                   {thesisState && (
                     <ThesisBadge rating={thesisState} title={thesisTitle} onClick={(e) => { e.stopPropagation(); setThesisPanelTicker(holding.ticker.toUpperCase()); }} />
                   )}
@@ -6543,7 +6616,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
           <td key={colId} className="px-3 py-4 text-sm" onClick={e => e.stopPropagation()}>
             {holding.ticker === 'CASH' ? null : (
               <button
-                onClick={() => setBrokerEditorId(holding.id)}
+                onClick={() => isMergedId(holding.id) ? toggleMerged(holding.id) : setBrokerEditorId(holding.id)}
                 title={label ? `${brokerTitle(holding.brokers)}\nClick to change` : 'Set where this is held'}
                 className={cn('max-w-full truncate rounded-md px-1.5 py-0.5 text-left text-xs font-medium transition-colors',
                   label ? 'bg-zinc-100 text-zinc-700 hover:bg-indigo-50 hover:text-indigo-700 dark:bg-zinc-800 dark:text-zinc-200' : 'text-zinc-400 hover:text-indigo-600')}
@@ -7741,7 +7814,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           </div>
                           {thesisTracker?.latestReport && (() => {
                             const counts = { green: 0, yellow: 0, red: 0 };
-                            for (const h of sortedHoldings) { const r = trackerHoldings?.[h.ticker.toUpperCase()]?.rating; if (r) counts[r]++; }
+                            for (const t of new Set(sortedHoldings.map(h => canonicalTicker(h.ticker)))) { const r = trackerHoldings?.[t]?.rating; if (r) counts[r]++; }
                             const changes = thesisTracker.latestReport!.changes;
                             return (
                               <div className="hidden sm:flex items-center gap-1.5 text-xs text-zinc-500 font-medium"
@@ -8000,27 +8073,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                     </div>
                                   </td>
                                 </tr>
-                                {groupData.holdings.map((holding) => (
-                                  <SortableHoldingRow
-                                    key={holding.id}
-                                    holding={holding}
-                                    columnOrder={displayedColumns}
-                                    renderCell={renderCell}
-                                    editingId={editingId}
-                                    setSelectedChartTicker={setSelectedChartTicker}
-                                    handleSaveEdit={handleSaveEdit}
-                                    handleCancelEdit={handleCancelEdit}
-                                    promptAnalysisStrategy={promptAnalysisStrategy}
-                                    handleEditClick={handleEditClick}
-                                    handleViewHistory={handleViewHistory}
-                                    handleDelete={handleDelete}
-                                    handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
-                                    hasThesis={hasThesis}
-                                    handleChangeTheme={setThemePickerTicker}
-                                    handleWhatsMoving={setWhatsMovingTicker}
-                                    isSortable={false}
-                                  />
-                                ))}
+                                {groupData.holdings.map((holding) => renderHoldingRow(holding, false))}
                                 {/* Group Totals Summary Row */}
                                 <tr className="bg-zinc-100/35 border-t border-b border-zinc-200/80 font-semibold text-zinc-700 text-xs">
                                   {displayedColumns.map((colId) => {
@@ -8149,26 +8202,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                             items={sortedHoldings.map(h => h.id)} 
                             strategy={verticalListSortingStrategy}
                           >
-                            {sortedHoldings.map((holding) => (
-                              <SortableHoldingRow
-                                key={holding.id}
-                                holding={holding}
-                                columnOrder={displayedColumns}
-                                renderCell={renderCell}
-                                editingId={editingId}
-                                setSelectedChartTicker={setSelectedChartTicker}
-                                handleSaveEdit={handleSaveEdit}
-                                handleCancelEdit={handleCancelEdit}
-                                promptAnalysisStrategy={promptAnalysisStrategy}
-                                handleEditClick={handleEditClick}
-                                handleViewHistory={handleViewHistory}
-                                handleDelete={handleDelete}
-                                handleThesis={(t: string) => setThesisPanelTicker(t.toUpperCase())}
-                                hasThesis={hasThesis}
-                                handleChangeTheme={setThemePickerTicker}
-                                handleWhatsMoving={setWhatsMovingTicker}
-                              />
-                            ))}
+                            {sortedHoldings.map((holding) => renderHoldingRow(holding, true))}
                           </SortableContext>
                         )}
                       </tbody>

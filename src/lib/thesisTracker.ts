@@ -12,4 +12,12 @@ export const RATING_ACTION: Record<Rating, string> = {
   red: 'Trim / exit, reassess',
 };
 
+// Tickers held under another ticker's thesis, matching TICKER_ALIASES in the
+// tracker's build_holdings_cache.py: GOOG (Alphabet Class C) is graded as GOOGL.
+export const TICKER_ALIASES: Record<string, string> = { GOOG: 'GOOGL' };
+export const canonicalTicker = (ticker: string) => {
+  const t = ticker.toUpperCase();
+  return TICKER_ALIASES[t] ?? t;
+};
+
 export const fmtDay = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
