@@ -127,6 +127,7 @@ export function CombinedDetails({ detail, breakdown, currency, onClose }: {
     body = shown.length === 0 ? <p className="px-4 py-8 text-center text-sm text-zinc-500">No sales in this period.</p> : <Table rows={shown} rowKey={s => `${s.holdingId}-${s.date}-${s.shares}`} columns={[
       { label: 'Asset', cell: s => s.ticker },
       { label: 'Tab', cell: r => tabCell(r), secondary: true },
+      { label: 'Broker', cell: s => s.broker ? <span className="text-zinc-600 dark:text-zinc-300">{s.broker}</span> : <span className="text-zinc-400">—</span>, secondary: true },
       { label: 'Sold', cell: s => <span className="text-zinc-500">{day(s.date)}</span> },
       { label: 'Shares', align: 'right', cell: s => s.shares.toLocaleString(undefined, { maximumFractionDigits: 4 }), className: 'font-mono', secondary: true },
       { label: 'Proceeds', align: 'right', cell: s => money(s.proceeds), className: 'font-mono', secondary: true },

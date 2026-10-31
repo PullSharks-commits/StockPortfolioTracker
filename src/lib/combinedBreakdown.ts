@@ -18,6 +18,7 @@ export interface BreakdownHolding {
   avg_price: number;
   avgPriceCurrency?: string;
   portfolioType?: string;
+  brokers?: Record<string, number> | null; // where the shares are held: broker -> shares
 }
 export interface BreakdownTransaction { id: string; type: 'buy' | 'sell'; shares: number; price: number; date: string }
 type Quote = { price?: number; previousClose?: number; currency?: string } | number | undefined;
@@ -27,6 +28,7 @@ export interface PeriodPart { realized: number; unrealized: number; costBasis: n
 
 export interface Sale {
   holdingId: string; ticker: string; tab: string;
+  broker: string; // the holding's broker(s), largest first; '' when not set
   date: string; shares: number; proceeds: number; cost: number; gain: number;
 }
 
@@ -60,6 +62,12 @@ const emptyPeriods = (): Record<PeriodKey, PeriodPart> => ({
   ytd: { realized: 0, unrealized: 0, costBasis: 0 },
   oneYear: { realized: 0, unrealized: 0, costBasis: 0 },
 });
+
+// Transactions don't record a broker, so a sale is attributed to the holding's
+// broker(s). Brokers left at 0 shares still count: a fully sold holding is often
+// left showing where it was held.
+const brokerOf = (h: BreakdownHolding) =>
+  Object.entries(h.brokers ?? {}).sort((x, y) => y[1] - x[1]).map(([name]) => name).join(' · ');
 
 export function computeCombinedBreakdown(args: {
   holdings: BreakdownHolding[];
@@ -140,7 +148,7 @@ export function computeCombinedBreakdown(args: {
         lot.shares -= n; toSell -= n;
         if (lot.shares <= 0) buyPool.shift();
       }
-      if (sold > 0) sales.push({ holdingId: h.id, ticker: h.ticker, tab, date: tx.date, shares: sold, proceeds: saleProceeds, cost: saleCost, gain: saleProceeds - saleCost });
+      if (sold > 0) sales.push({ holdingId: h.id, ticker: h.ticker, tab, broker: brokerOf(h), date: tx.date, shares: sold, proceeds: saleProceeds, cost: saleCost, gain: saleProceeds - saleCost });
     }
     for (const lot of buyPool) {
       const lotCost = lot.shares * lot.priceInTarget;
