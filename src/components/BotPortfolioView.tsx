@@ -4,8 +4,9 @@
 // from the tracker's live quote stream when available, else the bot's last snapshot.
 
 import React, { useEffect, useState } from 'react';
-import { ChevronDown, Loader2, RefreshCw, Settings, X } from 'lucide-react';
+import { ChevronDown, Loader2, RefreshCw, Settings, TrendingUp, X } from 'lucide-react';
 import { clsx } from 'clsx';
+import { authedFetch } from '../backend';
 import { getBotConfig, saveBotConfig } from '../botPortfolio';
 import type { BotConfig, BotStatus, ClosedTrade } from '../botPortfolio';
 
@@ -678,6 +679,130 @@ function UnrealizedPanel({ positions, livePrices, onClose }: { positions: any[];
   );
 }
 
+// The bot vs the S&P 500 and Nasdaq-100 (the bot's /api/vs-index), over 1M / 6M / YTD /
+// 1Y / All: closed trades plus open positions, as a % of the sleeve, beside each index
+// ETF's price change over the same span. The bot's side is re-marked here with the
+// tab's live unrealized P&L, so it moves with the cards above; the indexes come from
+// the bot, which caches them 10 minutes.
+interface VsIndexWindow {
+  start: string; from_first_trade: boolean; realized: number; unrealized_at_start: number;
+  index: Record<string, { base: number; pct: number }>;
+}
+interface VsIndex {
+  first_trade: string; capital: number; unrealized: number;
+  indexes: { symbol: string; name: string; last?: number; error?: string }[];
+  windows: Record<string, VsIndexWindow | null>;
+}
+const VS_WINDOWS: [string, string][] = [['1m', '1M'], ['6m', '6M'], ['ytd', 'YTD'], ['1y', '1Y'], ['all_time', 'All']];
+const INDEX_BAR = ['bg-indigo-500', 'bg-amber-500'];
+
+function VsIndexPanel({ unrealized, refreshKey, onClose }: { unrealized: number; refreshKey: string | null; onClose: () => void }) {
+  const [data, setData] = useState<VsIndex | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [win, setWin] = useState('all_time');
+
+  useEffect(() => {
+    let cancelled = false;
+    authedFetch('GET', '/api/bot/vs-index')
+      .then(res => {
+        if (cancelled) return;
+        if (res?.ok) { setData(res.vs_index ?? null); setError(null); }
+        else setError(res?.error || 'unavailable');
+      })
+      .catch(err => { if (!cancelled) setError(err?.message || 'unavailable'); });
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  if (!data) {
+    return (
+      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 flex items-center justify-between gap-2 text-sm text-zinc-500">
+        <span className="flex items-center gap-2">
+          {error ? <>Bot vs the indexes unavailable: {error}</> : <><Loader2 className="w-4 h-4 animate-spin" /> Loading the comparison…</>}
+        </span>
+        <button onClick={onClose} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg" aria-label="Hide the comparison"><X className="w-4 h-4" /></button>
+      </div>
+    );
+  }
+
+  const w = data.windows[win];
+  const botPnl = w ? w.realized + unrealized - w.unrealized_at_start : null;
+  const botPct = botPnl != null ? (botPnl / data.capital) * 100 : null;
+  const scale = Math.max(1, Math.abs(botPct ?? 0), ...data.indexes.map(i => Math.abs(w?.index[i.symbol]?.pct ?? 0)));
+  const Bar = ({ v, className }: { v: number | null; className: string }) => (
+    <div className="relative h-2.5 w-full rounded bg-zinc-100 dark:bg-zinc-800 overflow-hidden" aria-hidden>
+      <div className="absolute inset-y-0 left-1/2 w-px bg-zinc-300 dark:bg-zinc-600" />
+      {v != null && v !== 0 && (
+        <div className={clsx('absolute inset-y-0', v > 0 ? 'left-1/2' : 'right-1/2', className)} style={{ width: `${(Math.abs(v) / scale) * 50}%` }} />
+      )}
+    </div>
+  );
+
+  return (
+    <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Bot vs the indexes</h3>
+        <div className="flex gap-1" role="tablist" aria-label="Comparison period">
+          {VS_WINDOWS.map(([key, label]) => (
+            <button
+              key={key}
+              role="tab"
+              aria-selected={win === key}
+              onClick={() => setWin(key)}
+              className={clsx(
+                'px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
+                win === key ? 'bg-indigo-50 border-indigo-300 text-indigo-700 dark:bg-indigo-950/30' : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          <button onClick={onClose} className="ml-1 p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg" aria-label="Hide the comparison"><X className="w-4 h-4" /></button>
+        </div>
+      </div>
+      {!w ? (
+        <p className="text-sm text-zinc-500">Nothing to compare in this period yet.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-[6.5rem_1fr_6.5rem] sm:grid-cols-[9rem_1fr_9rem] items-center gap-x-3 gap-y-2.5 text-sm">
+            <span className="text-zinc-500">Bot</span>
+            <Bar v={botPct} className={(botPct ?? 0) >= 0 ? 'bg-emerald-500' : 'bg-rose-500'} />
+            <span className="text-right">
+              <span className={clsx('font-mono font-semibold', tone(botPct))}>{pct(botPct)}</span>
+              <span className="block text-xs text-zinc-400 font-mono">{usd(botPnl)}</span>
+            </span>
+            {data.indexes.map((i, n) => {
+              const x = w.index[i.symbol];
+              return (
+                <React.Fragment key={i.symbol}>
+                  <span className="text-zinc-500">{i.name} <span className="text-zinc-400">({i.symbol})</span></span>
+                  {x ? <Bar v={x.pct} className={INDEX_BAR[n % INDEX_BAR.length]} /> : <span className="text-xs text-zinc-400">couldn&apos;t read {i.symbol} right now</span>}
+                  <span className="text-right">
+                    <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">{pct(x?.pct)}</span>
+                    {x && i.last != null && <span className="block text-xs text-zinc-400 font-mono">{x.base.toFixed(2)} → {i.last.toFixed(2)}</span>}
+                  </span>
+                </React.Fragment>
+              );
+            })}
+          </div>
+          <div className="space-y-0.5 text-sm font-medium">
+            {data.indexes.filter(i => w.index[i.symbol] && botPct != null).map(i => {
+              const gap = botPct! - w.index[i.symbol].pct;
+              return <div key={i.symbol} className={tone(gap)}>Bot {gap >= 0 ? 'ahead of' : 'behind'} the {i.name} by {Math.abs(gap).toFixed(1)} percentage points</div>;
+            })}
+          </div>
+          <p className="text-xs text-zinc-500 leading-relaxed">
+            {w.from_first_trade
+              ? <>Since the bot&apos;s first trade ({day(w.start)}){win !== 'all_time' && ' - this period reaches back before it'}. Bot: every closed trade, manual closes included ({usd(w.realized)}), plus open positions now ({usd(unrealized)})</>
+              : <>Since {day(w.start)}. Bot: trades closed since then ({usd(w.realized)}) plus the change in open positions ({usd(w.unrealized_at_start)} at that day&apos;s 9:35 snapshot → {usd(unrealized)} now)</>}
+            , as a % of the {usd(data.capital)} sleeve. Indexes: their ETFs&apos; price change from the close before that day, dividends excluded.
+            Approximate - the sleeve was smaller and risk per trade higher in the first weeks.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, onRunHousekeeping, isRunningHousekeeping, onClosePosition }: Props) {
   const snap = status?.snapshot;
   // Which Realized card's trades are listed below the cards (click again to hide).
@@ -685,6 +810,7 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
   const [showPositions, setShowPositions] = useState(false);
   const [showUnrealized, setShowUnrealized] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showVsIndex, setShowVsIndex] = useState(false);
   const closedTrades = status?.closedTrades ?? [];
   const windowTrades = (key: string) => {
     const start = windowStart(key);
@@ -734,12 +860,28 @@ export function BotPortfolioView({ status, livePrices, onRefresh, isRefreshing, 
           >
             <Settings className="w-4 h-4" /> Settings
           </button>
+          <button
+            onClick={() => setShowVsIndex(v => !v)}
+            aria-pressed={showVsIndex}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-medium',
+              showVsIndex ? 'bg-indigo-50 border-indigo-300 text-indigo-700 dark:bg-indigo-950/30' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50'
+            )}
+            title="Compare the bot with the S&P 500 and Nasdaq-100"
+          >
+            <TrendingUp className="w-4 h-4" /> vs Indexes
+          </button>
         </div>
       </div>
 
       {status?.loaded && !status.error && <JobStatusStrip jobs={status.jobs} todaySignal={status.todaySignal} />}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+
+      {/* Loads only when asked for (the button above): it costs the bot a Webull call per index. */}
+      {showVsIndex && status?.loaded && !status.error && (
+        <VsIndexPanel unrealized={unrealized} refreshKey={status.updatedAt} onClose={() => setShowVsIndex(false)} />
+      )}
 
       {totals && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

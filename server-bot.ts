@@ -40,6 +40,7 @@ export function registerBotRoutes(app: Express) {
   get('/api/bot/trade-history', '/api/trade-history');
   get('/api/bot/housekeeping-status', '/api/housekeeping-status');
   get('/api/bot/config', '/api/config');
+  get('/api/bot/vs-index', '/api/vs-index');
 
   // Scheduling + connection settings (TradingBot/bot_config.py) - never credentials
   // (Webull's APP_KEY/SECRET stay in their own file; IBKR has none to hold, it
