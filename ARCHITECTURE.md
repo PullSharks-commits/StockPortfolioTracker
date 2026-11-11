@@ -83,6 +83,7 @@ flowchart LR
 | `server-legal.ts` | Public `/privacy` and `/data-deletion` pages |
 | `server-data.ts` | Authenticated per-user data API over Postgres (`/api/data/*`) |
 | `server-bot.ts` | Owner-only proxy to the TradingBot dashboard (`/api/bot/*`) |
+| `server-broker-sync.ts` | Owner-only "Sync with broker" for the Global tab (`/api/broker-sync/*`): reads Schwab (Truthifi MCP, OAuth tokens in `.truthifi-oauth.json`), IBKR and Webull (`TradingBot/broker_holdings.py`), diffs with `src/lib/brokerSync.ts`, applies approved rows as adjustment transactions |
 | `server-fundamentals.ts` | SEC EDGAR company financials, normalised and cached (`/api/fundamentals/:ticker`) |
 | `server-segments.ts` | Segment / product / geography revenue from filings' XBRL (`/api/company-segments/:ticker`) |
 | `server-thesis-tracker.ts` | Owner-only reader for the Thesis Tracker's thesis and report files (`/api/thesis-tracker`) |

@@ -19,6 +19,7 @@ import crypto from 'crypto';
 import dns from 'node:dns/promises';
 import { registerDataRoutes } from './server-data';
 import { registerBotRoutes } from './server-bot';
+import { registerBrokerSyncRoutes } from './server-broker-sync';
 import { registerWhatsMovingRoutes } from './server-whats-moving';
 import { registerFundamentalsRoutes } from './server-fundamentals';
 import { registerSegmentRoutes } from './server-segments';
@@ -472,8 +473,9 @@ async function startServer() {
   app.use(express.json({ limit: '1mb' }));
   // Everything under /api needs a signed-in user (Neon Auth JWT), except the health
   // check, company logos (plain <img> requests can't carry a token) and the earnings
-  // calendar feed (calendar apps subscribe to it without signing in).
-  const PUBLIC_API = [/^\/api\/health$/, /^\/api\/logo\//, /^\/api\/calendar\/earnings\.ics$/];
+  // calendar feed (calendar apps subscribe to it without signing in) and Truthifi's
+  // OAuth redirect (a browser navigation; server-broker-sync.ts checks its state).
+  const PUBLIC_API = [/^\/api\/health$/, /^\/api\/logo\//, /^\/api\/calendar\/earnings\.ics$/, /^\/api\/broker-sync\/schwab\/callback$/];
   const isPublic = (req: express.Request) => PUBLIC_API.some(re => re.test(req.originalUrl.split('?')[0]));
   app.use('/api', (req, res, next) => (isPublic(req) ? next() : requireUser(req, res, next)));
   // Invite-only: signed in isn't enough, the owner must have invited the address.
@@ -487,6 +489,7 @@ async function startServer() {
   registerAccountRoutes(app);
   registerDataRoutes(app);
   registerBotRoutes(app);
+  registerBrokerSyncRoutes(app);
   registerWhatsMovingRoutes(app, { yahooFinance, yahooWithRetry: fn => yahooWithRetry(fn), finnhubApiKey: process.env.FINNHUB_API_KEY });
   const loadFundamentals = registerFundamentalsRoutes(app);
   registerPortfolioFundamentalsRoutes(app, loadFundamentals, loadCompanyMarketData, loadFxToUsd);

@@ -61,6 +61,8 @@ import { TradingViewChartWithSkeleton } from './components/TradingViewChartWithS
 import { EditHoldingModal } from './components/EditHoldingModal';
 import { computeHoldingFromTransactions } from './utils/portfolioCalculations';
 import { Toaster, toast } from 'sonner';
+import { BrokerSyncModal } from './components/BrokerSyncModal';
+import { SYNC_BROKERS, type SyncBroker } from './lib/brokerSync';
 import { BotStatus, clearBotPortfolio, closeBotPosition, onBotStatus, refreshBotPortfolio, runBotHousekeeping } from './botPortfolio';
 import { BotPortfolioView } from './components/BotPortfolioView';
 import { ConfirmDialogHost, confirmDialog } from './components/ConfirmDialog';
@@ -2167,6 +2169,7 @@ export default function App() {
   }, [widgetOrder]);
 
   const [showAddWidget, setShowAddWidget] = useState(false);
+  const [brokerSyncOpen, setBrokerSyncOpen] = useState<SyncBroker | null>(null);
   const addWidgetRef = useRef<HTMLDivElement>(null);
   const addWidgetBtnRef = useRef<HTMLButtonElement>(null);
   // Statement import (AI extraction from a broker PDF/CSV) lives in a toolbar dropdown.
@@ -3684,6 +3687,21 @@ export default function App() {
   }, [user, isOwnerUser, activeTab]);
   // Someone who isn't the owner never sees the bot tab.
   useEffect(() => { if (account && !account.isOwner && activeTab === 'bot') setActiveTab('global'); }, [account, activeTab]);
+  // Back from Truthifi sign-in (server-broker-sync.ts redirects to /?brokerSync=...).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get('brokerSync');
+    if (!status) return;
+    params.delete('brokerSync');
+    window.history.replaceState(null, '', `${window.location.pathname}${params.size ? `?${params}` : ''}${window.location.hash}`);
+    if (status === 'schwab-connected') {
+      toast.success('Truthifi connected');
+      setActiveTab('global');
+      setBrokerSyncOpen('Schwab');
+    } else {
+      toast.error(`Truthifi sign-in failed (${status.replace(/^schwab-error:/, '')})`);
+    }
+  }, []);
 
   // Close Position places a real market sell through the bot, so it is confirmed by
   // typing the symbol (same as the bot's own dashboard).
@@ -7094,6 +7112,20 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                 </div>
               )}
             </div>
+            {activeTab === 'global' && isOwnerUser && (
+              <div className="flex items-center rounded-lg border border-zinc-200 bg-white shadow-sm overflow-hidden text-sm dark:border-zinc-700 dark:bg-zinc-900" title="Compare this tab with a broker's real account and apply the differences">
+                <span className="hidden md:flex items-center gap-1 pl-2.5 pr-1.5 text-zinc-500"><RefreshCw className="w-3.5 h-3.5" /> Sync</span>
+                {SYNC_BROKERS.map(b => (
+                  <button
+                    key={b}
+                    onClick={() => setBrokerSyncOpen(b)}
+                    className="px-2.5 py-1.5 font-medium text-zinc-900 hover:bg-zinc-50 border-l border-zinc-200 first:border-l-0 md:first-of-type:border-l dark:text-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800 whitespace-nowrap"
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               onClick={() => setShowResetConfirm(true)}
               disabled={isResetting || holdings.length === 0}
@@ -8701,6 +8733,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
       <Toaster position="top-right" richColors />
       <ConfirmDialogHost />
+      {brokerSyncOpen && <BrokerSyncModal broker={brokerSyncOpen} onClose={() => setBrokerSyncOpen(null)} />}
       {fxWarning.length > 0 && (
         <div
           role="status"

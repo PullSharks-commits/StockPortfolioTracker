@@ -345,3 +345,9 @@ export function onSnapshot(ref: DocRef | QueryRef | CollectionRef, next: (snap: 
     changeListeners.get(ref.name)?.delete(refresh);
   };
 }
+
+// Tells open snapshots that the server changed these collections by itself (e.g. a
+// broker sync wrote holdings and transactions), so they refetch.
+export function notifyCollectionsChanged(...names: string[]) {
+  names.forEach(notifyChanged);
+}

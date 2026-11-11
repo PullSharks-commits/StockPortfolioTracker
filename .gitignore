@@ -16,3 +16,6 @@ logs/
 
 # Last good exchange rates (server cache)
 fx-cache.json
+
+# Truthifi OAuth tokens for the Schwab sync (server-broker-sync.ts)
+.truthifi-oauth.json
