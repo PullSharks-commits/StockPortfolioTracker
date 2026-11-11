@@ -115,6 +115,8 @@ export function summarize(ticker: string, fundamentals: any, market: MarketData 
     revenue: revenue.now, revenuePrev: revenue.prev,
     revenueGrowth: revenue.now != null && revenue.prev && revenue.prev > 0 ? revenue.now / revenue.prev - 1 : null,
     grossProfit: lender ? null : same(gross), operatingIncome: same(op), netIncome: same(net), freeCashFlow: lender ? null : same(fcf),
+    netIncomePrev: net.end === revenue.end ? net.prev : null,
+    netIncomeGrowth: net.end === revenue.end && net.now != null && net.prev != null && net.prev > 0 ? net.now / net.prev - 1 : null,
     grossMargin: lender ? null : margin(gross), operatingMargin: margin(op), netMargin: margin(net), fcfMargin: lender ? null : margin(fcf),
     attribution: attr,
   };

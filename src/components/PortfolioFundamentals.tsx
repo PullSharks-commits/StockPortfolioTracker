@@ -73,7 +73,12 @@ export function PortfolioFundamentals({ holdings, currency, loading, error }: {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Tile label="Revenue" value={money(lt.revenue, currency)} sub={<span className={tone(lt.revenueGrowth)}>{pct(lt.revenueGrowth, true)} YoY</span>} hint="Your share of the companies' revenue over the last twelve months, and its growth on the twelve months before." />
         <Tile label="Operating margin" value={pct(lt.operatingMargin)} sub={`Gross ${pct(lt.grossMargin)}`} hint="Combined operating income ÷ combined revenue (holdings that report it)." />
-        <Tile label="Net margin" value={pct(lt.netMargin)} sub={`Earnings ${money(lt.netIncome, currency)}`} hint="Combined net income ÷ combined revenue." />
+        <Tile
+          label="Earnings"
+          value={money(lt.netIncome, currency)}
+          sub={<><span className={tone(lt.earningsGrowth)}>{lt.earningsGrowth == null ? (lt.earningsPrev != null && lt.earningsPrev <= 0 ? 'n/m' : '—') : pct(lt.earningsGrowth, true)} YoY</span> · net margin {pct(lt.netMargin)}</>}
+          hint={`Your share of the companies' net income over the last twelve months, and its growth on the twelve months before (${money(lt.earningsPrev, currency)}), from holdings that report both years. Losses count against profits, as they would for one company; growth is n/m when the earlier year was a combined loss. Net margin = combined net income ÷ combined revenue.`}
+        />
         <Tile label="FCF margin" value={pct(lt.fcfMargin)} sub={`FCF ${money(lt.freeCashFlow, currency)}`} hint="Combined free cash flow (operating cash flow − capex) ÷ combined revenue. Not shown for lenders." />
         <Tile label="P/E" value={multiple(lt.pe)} sub={`Earnings yield ${pct(lt.earningsYield)}`} hint="Value of the covered holdings ÷ your share of their earnings. Losses count against profits, as they would for one company." />
         <Tile label="P/S" value={multiple(lt.ps)} hint="Value of the covered holdings ÷ your share of their revenue." />

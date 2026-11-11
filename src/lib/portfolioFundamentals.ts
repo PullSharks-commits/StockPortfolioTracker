@@ -21,6 +21,7 @@ export interface HoldingFundamentals {
   asOf?: string | null;
   revenue?: number | null; revenuePrev?: number | null; revenueGrowth?: number | null;
   grossProfit?: number | null; operatingIncome?: number | null; netIncome?: number | null; freeCashFlow?: number | null;
+  netIncomePrev?: number | null; netIncomeGrowth?: number | null; // previous twelve months, same basis
   grossMargin?: number | null; operatingMargin?: number | null; netMargin?: number | null; fcfMargin?: number | null;
   attribution?: Attribution[];
 }
@@ -56,6 +57,7 @@ export interface LookThrough {
   excluded: { ticker: string; reason: string }[];
   revenue: number; revenueGrowth: number | null;
   operatingIncome: number | null; netIncome: number; freeCashFlow: number | null;
+  earningsGrowth: number | null; earningsNow: number | null; earningsPrev: number | null;
   grossMargin: number | null; operatingMargin: number | null; netMargin: number | null; fcfMargin: number | null;
   pe: number | null; ps: number | null; earningsYield: number | null; fcfYield: number | null;
 }
@@ -67,7 +69,7 @@ export function lookThrough(holdings: HoldingInput[]): LookThrough {
   let coveredValue = 0, revenue = 0, netIncome = 0;
   // Growth, margins and yields use only holdings that report that item, over the
   // matching revenue/value, so a missing figure doesn't read as zero.
-  const acc = { growthNow: 0, growthPrev: 0, gp: 0, gpRev: 0, op: 0, opRev: 0, fcf: 0, fcfRev: 0, fcfValue: 0 };
+  const acc = { growthNow: 0, growthPrev: 0, earnNow: 0, earnPrev: 0, earnCount: 0, gp: 0, gpRev: 0, op: 0, opRev: 0, fcf: 0, fcfRev: 0, fcfValue: 0 };
 
   for (const h of holdings) {
     const f = h.fundamentals, fx = statementFx(h);
@@ -81,6 +83,9 @@ export function lookThrough(holdings: HoldingInput[]): LookThrough {
     revenue += rev;
     netIncome += f.netIncome * own;
     if (f.revenuePrev && f.revenuePrev > 0) { acc.growthNow += rev; acc.growthPrev += f.revenuePrev * own; }
+    // Earnings growth: holdings with both years' net income, summed before dividing, so
+    // a loss-maker's swing counts as it would inside one company.
+    if (f.netIncomePrev != null) { acc.earnNow += f.netIncome * own; acc.earnPrev += f.netIncomePrev * own; acc.earnCount++; }
     if (f.grossProfit != null) { acc.gp += f.grossProfit * own; acc.gpRev += rev; }
     if (f.operatingIncome != null) { acc.op += f.operatingIncome * own; acc.opRev += rev; }
     if (f.freeCashFlow != null) { acc.fcf += f.freeCashFlow * own; acc.fcfRev += rev; acc.fcfValue += h.value; }
@@ -91,6 +96,10 @@ export function lookThrough(holdings: HoldingInput[]): LookThrough {
     totalValue, coveredValue, included, excluded,
     revenue,
     revenueGrowth: acc.growthPrev > 0 ? acc.growthNow / acc.growthPrev - 1 : null,
+    // Not meaningful when the combined prior year was a loss.
+    earningsGrowth: acc.earnCount && acc.earnPrev > 0 ? acc.earnNow / acc.earnPrev - 1 : null,
+    earningsNow: acc.earnCount ? acc.earnNow : null,
+    earningsPrev: acc.earnCount ? acc.earnPrev : null,
     operatingIncome: acc.opRev > 0 ? acc.op : null,
     netIncome,
     freeCashFlow: acc.fcfRev > 0 ? acc.fcf : null,
