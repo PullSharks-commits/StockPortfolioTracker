@@ -1,5 +1,5 @@
 import React, { memo, useState, useEffect, useRef, useMemo } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Briefcase, Zap, Loader2, ChevronUp, ChevronDown, RefreshCw, Activity } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Briefcase, Zap, ChevronUp, ChevronDown, Activity } from 'lucide-react';
 import { motion, useMotionValue, useTransform, animate } from 'motion/react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
 // ECharts + echarts-gl are about half of the app's JavaScript; load them only when
@@ -131,8 +131,6 @@ export const PortfolioSummary = memo(({
   benchmarkDayChangePercent,
   benchmarkYtdReturn,
   onBenchmarkChange,
-  onSyncHistory,
-  isSyncing,
   activeCurrency,
   riskProfile,
   targetReturn,
@@ -151,8 +149,6 @@ export const PortfolioSummary = memo(({
   benchmarkDayChangePercent: number;
   benchmarkYtdReturn?: number;
   onBenchmarkChange: (ticker: string) => void;
-  onSyncHistory?: () => void;
-  isSyncing?: boolean;
   activeCurrency: string;
   riskProfile?: string;
   targetReturn?: number;
@@ -384,7 +380,7 @@ export const PortfolioSummary = memo(({
               <span className="uppercase tracking-wide text-[9px]">Cost:</span> {formatCurrency(totalCost, activeCurrency)}
             </div>
           </div>
-           {(riskProfile || targetReturn || onSyncHistory) && (
+           {(riskProfile || targetReturn) && (
             <div className="flex flex-wrap items-center gap-2 mt-2">
               {riskProfile && (
                 <div className="px-2 py-0.5 bg-zinc-100 rounded text-[9px] font-bold text-zinc-600 uppercase tracking-widest border border-zinc-200">
@@ -395,17 +391,6 @@ export const PortfolioSummary = memo(({
                 <div className="px-2 py-0.5 bg-indigo-50 rounded text-[9px] font-bold text-indigo-600 uppercase tracking-widest border border-indigo-100">
                   Target: {targetReturn}%
                 </div>
-              )}
-              {onSyncHistory && (
-                <button
-                  onClick={onSyncHistory}
-                  disabled={isSyncing}
-                  className="px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest rounded transition-all bg-indigo-50 text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 flex items-center gap-1 border border-indigo-100"
-                  title="Fetch and store 5-year historical price data for all portfolio holdings"
-                >
-                  {isSyncing ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                  {isSyncing ? 'Syncing...' : 'Sync 5Y History'}
-                </button>
               )}
             </div>
           )}

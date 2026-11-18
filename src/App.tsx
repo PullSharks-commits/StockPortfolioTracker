@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ScatterChart, Scatter, ZAxis, Legend } from 'recharts';
 import { TrendingUp, TrendingDown, Plus, Trash2, AlertCircle, AlertTriangle, DollarSign, PieChart as PieChartIcon, Briefcase, UploadCloud, FileText, Loader2, Edit2, Check, X, BarChart2, Save, ChevronUp, ChevronDown, LineChart, Zap, ExternalLink, Calendar as CalendarIcon, ChevronLeft, ChevronRight, ScatterChart as ScatterChartIcon, Maximize2, Minimize2, GripHorizontal, RefreshCw, Settings, User as UserIcon, PlusCircle, Undo2, Download, Upload, History, Activity, Bell, Sun, Moon, Grid, Eye, Globe, Key, Cpu, Sparkles, Lock, Sliders, EyeOff, RotateCcw } from 'lucide-react';
-import { format, isSameMonth, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, addMonths, subMonths, subYears, parseISO } from 'date-fns';
+import { format, isSameMonth, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, addMonths, subMonths, parseISO } from 'date-fns';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, horizontalListSortingStrategy, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -168,7 +168,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type SortKey = 'ticker' | 'brokerName' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'revenueGrowth' | 'operatingMargin' | 'psRatio' | 'peRatio' | 'manual';
+type SortKey = 'ticker' | 'brokerName' | 'shares' | 'avg_price' | 'displayAvgPrice' | 'costBasis' | 'currentPrice' | 'dayChange' | 'currentValue' | 'profitLoss' | 'growthMultiple' | 'realizedProfitLoss' | 'marketCap' | 'allocation' | 'revenueGrowth' | 'earningsGrowth' | 'operatingMargin' | 'psRatio' | 'peRatio' | 'manual';
 
 interface Holding {
   id: string;
@@ -1869,7 +1869,7 @@ const NO_TRANSACTIONS: never[] = [];
 
 // Holdings table: which columns survive longest when space runs out (first = most
 // important) and roughly how wide each needs to be, in px.
-const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'broker', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'revenueGrowth', 'peRatio', 'psRatio', 'operatingMargin', 'fearGreed'];
+const HOLDINGS_COLUMN_PRIORITY = ['ticker', 'currentValue', 'dayChange', 'profitLoss', 'currentPrice', 'shares', 'allocation', 'broker', 'displayAvgPrice', 'costBasis', 'realizedProfitLoss', 'growthMultiple', 'marketCap', 'revenueGrowth', 'earningsGrowth', 'peRatio', 'psRatio', 'operatingMargin', 'fearGreed'];
 // Always shown (unless the user hides them), even if a narrow screen then has to
 // scroll sideways - a table with only the Asset column isn't useful.
 const HOLDINGS_ALWAYS_SHOWN = new Set(['ticker', 'currentValue', 'dayChange', 'profitLoss']);
@@ -1878,7 +1878,7 @@ const columnPriority = (colId: string) => {
   return i === -1 ? HOLDINGS_COLUMN_PRIORITY.length : i;
 };
 // Minimum widths measured with real data (headers may wrap), plus a small margin.
-const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 165, broker: 110, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124, revenueGrowth: 112, operatingMargin: 112, psRatio: 84, peRatio: 84 };
+const HOLDINGS_COLUMN_WIDTHS: Record<string, number> = { ticker: 165, broker: 110, fearGreed: 151, allocation: 153, shares: 122, displayAvgPrice: 106, costBasis: 155, currentPrice: 131, dayChange: 125, currentValue: 115, profitLoss: 177, growthMultiple: 134, realizedProfitLoss: 133, marketCap: 124, revenueGrowth: 112, earningsGrowth: 112, operatingMargin: 112, psRatio: 84, peRatio: 84 };
 const HOLDINGS_DRAG_COLUMN_WIDTH = 40;
 const HOLDINGS_ACTIONS_COLUMN_WIDTH = 118;
 
@@ -1966,7 +1966,6 @@ export default function App() {
   const [selectedChartTicker, setSelectedChartTicker] = useState<string | null>(null);
   const [chartModalTab, setChartModalTab] = useState<'chart' | 'kpis' | 'history'>('chart');
   const [showRsi, setShowRsi] = useState(false);
-  const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   // Whether the Company view found SEC financials; Yahoo's short charts are a fallback.
   const [fundamentalsSource, setFundamentalsSource] = useState<'sec' | 'none' | 'error' | null>(null);
   const [financialsData, setFinancialsData] = useState<any>(null);
@@ -2239,32 +2238,6 @@ export default function App() {
     setWidgetOrder(prev => prev.filter(w => w !== id));
   };
 
-  const handleSyncHistory = async () => {
-    if (allHoldings.length === 0) return;
-    
-    setIsSyncingHistory(true);
-    try {
-      const tickers = Array.from(new Set(allHoldings.map(h => h.ticker)));
-      const fiveYearsAgo = subYears(new Date(), 5);
-      const fromStr = format(fiveYearsAgo, 'yyyy-MM-dd');
-      
-      const params = new URLSearchParams({
-        symbols: tickers.join(','),
-        from: fromStr,
-        refresh: 'true'
-      });
-      
-      const res = await fetch(`/api/historical-bulk?${params.toString()}`);
-      if (!res.ok) throw new Error('Failed to sync history');
-      
-      toast.success('Portfolio historical data (5Y) has been synced and cached locally.');
-    } catch (err) {
-      console.error('Error syncing history:', err);
-      toast.error('Failed to sync historical data. Please try again later.');
-    } finally {
-      setIsSyncingHistory(false);
-    }
-  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -2317,7 +2290,7 @@ export default function App() {
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [fitColumns, setFitColumns] = useState(true);
   const [columnOrder, setColumnOrder] = useState<string[]>([
-    'ticker', 'broker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
+    'ticker', 'broker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'earningsGrowth', 'operatingMargin', 'psRatio', 'peRatio'
   ]);
 
   const [holdingsTableWidth, setHoldingsTableWidth] = useState(0);
@@ -2568,7 +2541,7 @@ export default function App() {
             // Columns added after the layout was saved go at the end.
             // The Broker column goes next to the asset in layouts saved before it existed.
             if (!loadedOrder.includes('broker')) loadedOrder.splice(Math.max(0, loadedOrder.indexOf('ticker')) + 1, 0, 'broker');
-            for (const col of ['revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio']) {
+            for (const col of ['revenueGrowth', 'earningsGrowth', 'operatingMargin', 'psRatio', 'peRatio']) {
               if (!loadedOrder.includes(col)) loadedOrder.push(col);
             }
             setColumnOrder(loadedOrder);
@@ -2598,7 +2571,7 @@ export default function App() {
           },
           tableLayout: {
             columnOrder: [
-              'ticker', 'broker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'operatingMargin', 'psRatio', 'peRatio'
+              'ticker', 'broker', 'fearGreed', 'shares', 'displayAvgPrice', 'costBasis', 'currentPrice', 'dayChange', 'currentValue', 'allocation', 'profitLoss', 'growthMultiple', 'realizedProfitLoss', 'marketCap', 'revenueGrowth', 'earningsGrowth', 'operatingMargin', 'psRatio', 'peRatio'
             ],
             tableGrouping: 'none',
             sortConfig: { key: 'currentValue', direction: 'desc' }
@@ -5812,10 +5785,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     }));
   }, [portfolioStats.enrichedHoldings, holdingFundamentals, activeCurrency, quotes]);
   const fundamentalsByTicker = useMemo(() => {
-    const out: Record<string, { revenueGrowth: number | null; operatingMargin: number | null; psRatio: number | null; peRatio: number | null }> = {};
+    const out: Record<string, { revenueGrowth: number | null; earningsGrowth: number | null; operatingMargin: number | null; psRatio: number | null; peRatio: number | null }> = {};
     for (const h of fundamentalsInputs) {
       const f = h.fundamentals, m = holdingMultiples(h);
-      out[h.ticker] = { revenueGrowth: f?.revenueGrowth ?? null, operatingMargin: f?.operatingMargin ?? null, psRatio: m.ps, peRatio: m.pe };
+      out[h.ticker] = { revenueGrowth: f?.revenueGrowth ?? null, earningsGrowth: f?.netIncomeGrowth ?? null, operatingMargin: f?.operatingMargin ?? null, psRatio: m.ps, peRatio: m.pe };
     }
     return out;
   }, [fundamentalsInputs]);
@@ -6191,6 +6164,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
     { id: 'realizedProfitLoss', label: `Realized P&L (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'realizedProfitLoss' as SortKey },
     { id: 'marketCap', label: `Market Cap (${getCurrencySymbol(activeCurrency).trim()})`, align: 'right' as const, sortKey: 'marketCap' as SortKey },
     { id: 'revenueGrowth', label: 'Revenue Growth', align: 'right' as const, sortKey: 'revenueGrowth' as SortKey },
+    { id: 'earningsGrowth', label: 'Earnings Growth', align: 'right' as const, sortKey: 'earningsGrowth' as SortKey },
     { id: 'operatingMargin', label: 'Op. Margin', align: 'right' as const, sortKey: 'operatingMargin' as SortKey },
     { id: 'psRatio', label: 'P/S', align: 'right' as const, sortKey: 'psRatio' as SortKey },
     { id: 'peRatio', label: 'P/E', align: 'right' as const, sortKey: 'peRatio' as SortKey },
@@ -6657,6 +6631,15 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             ) : '-'}
           </td>
         );
+      case 'earningsGrowth': {
+        const v = (holding as any).earningsGrowth as number | null | undefined;
+        return (
+          <td key={colId} className={cn("px-3 py-4 text-right font-mono text-sm", v == null ? "text-zinc-400" : v >= 0 ? "text-emerald-600" : "text-rose-600")}
+            title="Net income, last twelve months vs the twelve before (SEC filings). Blank when the earlier year was a loss or isn't reported.">
+            {v == null ? '-' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`}
+          </td>
+        );
+      }
       case 'revenueGrowth':
       case 'operatingMargin': {
         const v = (holding as any)[colId] as number | null | undefined;
@@ -7224,8 +7207,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
               }, { merge: true }).catch(err => console.error('Error saving benchmark:', err));
             }
           }}
-          onSyncHistory={handleSyncHistory}
-          isSyncing={isSyncingHistory}
           activeCurrency={activeCurrency}
           riskProfile={tabSettings[activeTab]?.riskProfile}
           targetReturn={tabSettings[activeTab]?.targetReturn}
