@@ -7,7 +7,7 @@ import { Loader2, AlertCircle } from 'lucide-react';
 import { formatCurrency } from '../lib/currency';
 import { db, collection, query, where, getDocs } from '../backend';
 import type { User } from '../backend';
-import { BLEND, moneyWeightedReturn, simulatePerformance, symbolCurrency } from '../lib/performanceSimulation';
+import { BLEND, moneyWeightedReturn, simulatePerformance, symbolCurrency, type Split } from '../lib/performanceSimulation';
 
 // `tradeCurrency` / `benchmark`: set when holdings from several tabs are simulated
 // together (the combined view) - the currency the holding's trades are in, and the
@@ -54,6 +54,27 @@ const BASE_BENCHMARKS: Record<string, string> = {
 // Combined view: also each tab's money in its own market (Global and the bot in the
 // S&P 500, Australia in the ASX 200).
 export const COMBINED_BENCHMARKS: Record<string, string> = { ...BASE_BENCHMARKS, [BLEND]: 'Own markets' };
+
+// Value view: what your actual deposits and withdrawals, on the same days, would be
+// worth in the S&P 500.
+const DEPOSITS_LINE = 'S&P 500 · your deposits';
+
+// From the range's first day: the portfolio's value then, moved with the S&P 500
+// each day, plus each day's net cash in or out (buys less sells at the prices you
+// actually paid, so stock bought with cash already in the account nets out).
+function withDepositsLine(rows: any[]) {
+  let v = 0;
+  return rows.map((d, i) => {
+    if (i === 0) v = d.Portfolio;
+    else {
+      const prev = rows[i - 1];
+      const move = prev['S&P 500Index'] > 0 ? d['S&P 500Index'] / prev['S&P 500Index'] : 1;
+      const net = (d.grossInvested - prev.grossInvested) - (d.cumulativeWithdrawn - prev.cumulativeWithdrawn);
+      v = Math.max(0, v * move + net);
+    }
+    return { ...d, [DEPOSITS_LINE]: Number(v.toFixed(2)), [`${DEPOSITS_LINE}Index`]: d['S&P 500Index'] };
+  });
+}
 
 const COLORS: Record<string, string> = {
   portfolio: '#6366f1', // Indigo 500
@@ -236,7 +257,15 @@ export function usePerformanceData({ user, holdings, activeCurrency = 'USD', ben
           historicalData = {};
         }
 
-        const chartData = simulatePerformance({ transactions, historicalData, holdings, allSymbols, earliestDate, benchmarks: BENCHMARKS, activeCurrency });
+        // Splits, to put trades recorded at the day's real price on Yahoo's adjusted basis.
+        let splits: Record<string, Split[]> = {};
+        try {
+          const sr = await fetch(`/api/splits?symbols=${encodeURIComponent(tickers.join(','))}`);
+          if (sr.ok) splits = await sr.json();
+        } catch { /* chart still works, just without split adjustment */ }
+        if (!isMounted) return;
+
+        const chartData = simulatePerformance({ transactions, historicalData, holdings, allSymbols, earliestDate, benchmarks: BENCHMARKS, activeCurrency, splits });
 
         if (isMounted) {
           setData(chartData);
@@ -321,7 +350,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
 
   const filteredData = useMemo(() => {
     if (visibleData.length === 0) return [];
-    if (displayMode === 'value') return visibleData;
+    if (displayMode === 'value') return withDepositsLine(visibleData);
 
     if (visibleData.length === 0) return [];
     
@@ -597,6 +626,17 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
         </div>
       )}
 
+      {displayMode === 'value' && filteredData.length > 1 && filteredData[0][DEPOSITS_LINE] !== undefined && (() => {
+        const end = filteredData[filteredData.length - 1];
+        const mine = end.Portfolio, index = end[DEPOSITS_LINE], diff = mine - index;
+        return (
+          <p className="-mt-3 mb-4 text-xs text-zinc-500" title="Your portfolio's value at the start of the range, plus every deposit and withdrawal since on the same dates, as if it had all been in the S&P 500 instead (price only, dividends not included).">
+            The same money in the S&P 500 would be worth <span className="font-semibold text-zinc-800 dark:text-zinc-200">{formatCurrency(index, activeCurrency)}</span> today, vs your <span className="font-semibold text-zinc-800 dark:text-zinc-200">{formatCurrency(mine, activeCurrency)}</span>{' '}
+            (<span className={diff >= 0 ? 'text-emerald-600' : 'text-rose-600'}>{diff >= 0 ? '+' : '−'}{formatCurrency(Math.abs(diff), activeCurrency)}</span> {diff >= 0 ? 'ahead' : 'behind'}).
+          </p>
+        );
+      })()}
+
       <div className="flex-1 w-full min-h-[300px]">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={filteredData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
@@ -618,6 +658,9 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = memo(({ user, h
               </LineChart>
             </Brush>
             <Line type="monotone" dataKey="Portfolio" stroke={COLORS.portfolio} strokeWidth={3} dot={false} activeDot={{ r: 6, strokeWidth: 0 }} />
+            {displayMode === 'value' && (
+              <Line type="monotone" dataKey={DEPOSITS_LINE} stroke={COLORS['^GSPC']} strokeWidth={2} strokeDasharray="6 4" dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
+            )}
             {Object.entries(BENCHMARKS).map(([symbol, name]) => (
               visibleBenchmarks.has(symbol) && (
                 <Line 

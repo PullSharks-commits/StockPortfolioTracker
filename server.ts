@@ -1154,6 +1154,34 @@ async function startServer() {
     }
   });
 
+  // Stock splits per symbol since 2010, from Yahoo: [{ date: 'YYYY-MM-DD', ratio }],
+  // ratio = new shares per old share (4 for a 4-for-1, 0.1 for a 1-for-10 reverse).
+  // Yahoo's daily closes are adjusted for these, so the Performance chart uses them
+  // to put trades recorded at the day's real price on the same basis.
+  const splitCache = new Map<string, { at: number; splits: { date: string; ratio: number }[] }>();
+  app.get('/api/splits', async (req, res) => {
+    const symbols = String(req.query.symbols ?? '').split(',').map(s => s.trim().toUpperCase())
+      .filter(s => /^[A-Z0-9^][A-Z0-9.\-=^]{0,14}$/.test(s) && s !== 'CASH').slice(0, 200);
+    const out: Record<string, { date: string; ratio: number }[]> = {};
+    for (const sym of [...new Set(symbols)]) {
+      const hit = splitCache.get(sym);
+      if (hit && Date.now() - hit.at < 12 * 3600_000) { out[sym] = hit.splits; continue; }
+      try {
+        const r: any = await yahooWithRetry(() => yahooFinance.chart(sym, { period1: new Date('2010-01-01'), period2: new Date(), interval: '1mo', events: 'split' } as any, { validateResult: false }));
+        const splits = Object.values(r?.events?.splits ?? {})
+          .map((x: any) => ({ date: new Date(x.date).toISOString().slice(0, 10), ratio: Number(x.numerator) / Number(x.denominator) }))
+          .filter(x => Number.isFinite(x.ratio) && x.ratio > 0 && x.ratio !== 1)
+          .sort((a, b) => a.date.localeCompare(b.date));
+        splitCache.set(sym, { at: Date.now(), splits });
+        out[sym] = splits;
+      } catch (err: any) {
+        console.warn(`[splits] ${sym}: ${err?.message ?? err}`);
+        out[sym] = [];
+      }
+    }
+    res.json(out);
+  });
+
   app.get(['/api/historical-bulk', '/api/historical-bulk/'], async (req, res) => {
     const symbols = req.query.symbols as string;
     const period1Str = req.query.from as string;

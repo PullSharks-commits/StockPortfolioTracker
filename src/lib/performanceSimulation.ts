@@ -21,7 +21,39 @@ export function symbolCurrency(sym: string): string {
 // A benchmarks key: the money each trade moves goes into that trade's own `benchmark`.
 export const BLEND = '@blend';
 
-export function simulatePerformance({ transactions: rawTransactions, historicalData, holdings, allSymbols: symbolList, earliestDate, benchmarks, activeCurrency, today = startOfDay(new Date()) }: {
+export interface Split { date: string; ratio: number } // ratio = new shares per old share
+
+// Yahoo's closes are adjusted for every later split, but a trade is usually recorded at
+// that day's real price and share count (LCID bought at $45 before its 1-for-10 shows
+// as $450 in Yahoo's history). Each trade is put on Yahoo's basis using the splits after
+// it - only when its price is clearly nearer the unadjusted close, so trades already
+// entered split-adjusted are left alone. A trade can also predate only some of the
+// splits on its recorded basis, so each run of the latest splits is tried.
+export function splitAdjust(
+  txs: SimTransaction[],
+  closeOn: (sym: string, date: string) => number | undefined,
+  splits: Record<string, Split[]>,
+  tradeCurrency: (tx: SimTransaction) => string,
+): SimTransaction[] {
+  return txs.map(tx => {
+    const later = (splits[tx.ticker] ?? []).filter(sp => sp.date > tx.date.split('T')[0]);
+    if (!later.length || !(tx.price > 0) || tradeCurrency(tx) !== symbolCurrency(tx.ticker)) return tx;
+    const close = closeOn(tx.ticker, tx.date.split('T')[0]);
+    if (!close) return tx;
+    let best = 1, err = Math.abs(Math.log(close / tx.price));
+    let f = 1;
+    for (let i = later.length - 1; i >= 0; i--) {
+      f *= later[i].ratio;
+      const e = Math.abs(Math.log((close * f) / tx.price));
+      if (e < err) { err = e; best = f; }
+    }
+    // Within ~40% of the unadjusted close: a real match, not a coincidence.
+    if (best === 1 || err > Math.log(1.4)) return tx;
+    return { ...tx, shares: tx.shares * best, price: tx.price / best };
+  });
+}
+
+export function simulatePerformance({ transactions: unsplitTransactions, historicalData, holdings, allSymbols: symbolList, earliestDate, benchmarks, activeCurrency, splits = {}, today = startOfDay(new Date()) }: {
   transactions: SimTransaction[];
   historicalData: Record<string, { date: string; close: number }[]>;
   holdings: SimHolding[];
@@ -29,6 +61,7 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
   earliestDate: Date;
   benchmarks: Record<string, string>;
   activeCurrency: string;
+  splits?: Record<string, Split[]>;
   today?: Date;
 }) {
   const BENCHMARKS = benchmarks;
@@ -44,6 +77,18 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
       }
     });
   });
+
+  // Close on a trading day, or the next one within a week (trades on weekends/holidays).
+  const closeOn = (sym: string, d: string) => {
+    const m = priceMap[sym];
+    if (!m) return undefined;
+    for (let i = 0; i < 7; i++) {
+      const k = format(addDays(new Date(`${d}T12:00:00Z`), i), 'yyyy-MM-dd');
+      if (m[k]) return m[k];
+    }
+    return undefined;
+  };
+  const rawTransactions = splitAdjust(unsplitTransactions, closeOn, splits, tx => tx.currency || activeCurrency);
 
   // "<CUR>=X" (currency per US dollar) on a day, or the nearest earlier/later close.
   const fxDates: Record<string, string[]> = {};

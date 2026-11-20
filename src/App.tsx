@@ -3897,20 +3897,44 @@ export default function App() {
     let ws: WebSocket | null = null;
     let cancelled = false;
     const pendingTrades = new Map<string, { p: number; pc?: number; ms?: string }>();
-    (async () => {
+    // The connection drops when the server restarts, the network changes or a phone
+    // sleeps; reconnect by itself (1 s, doubling to 30 s), and at once when the page
+    // comes back into view. A new connection re-subscribes (wsGeneration) and the
+    // server answers it with fresh prices for every symbol.
+    let retryMs = 1000;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let connecting = false;
+    const scheduleReconnect = () => {
+      if (cancelled || retryTimer) return;
+      retryTimer = setTimeout(() => { retryTimer = null; connect(); }, retryMs);
+      retryMs = Math.min(retryMs * 2, 30_000);
+    };
+    const connect = async () => {
+      if (cancelled || connecting) return;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      connecting = true;
       const token = await sessionToken().catch(() => null);
-      if (cancelled || !token) return;
+      connecting = false;
+      if (cancelled) return;
+      if (!token) { scheduleReconnect(); return; }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/api/ws?token=${encodeURIComponent(token)}`;
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+      const sock = new WebSocket(wsUrl);
+      ws = sock;
+      wsRef.current = sock;
       setWsGeneration(g => g + 1);
+      sock.onopen = () => { retryMs = 1000; };
+      sock.onclose = () => {
+        if (ws !== sock) return;
+        if (wsRef.current === sock) wsRef.current = null;
+        scheduleReconnect();
+      };
 
       // Trades arrive several times a second; applying each one re-renders the whole
       // app. Collect them and apply at most once per second instead. Per symbol, the
       // latest price wins and previous close / market state keep the latest value any
       // trade in the batch carried - the same result as applying them one by one.
-      ws.onmessage = (event) => {
+      sock.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'trade' && data.data) {
@@ -3928,7 +3952,16 @@ export default function App() {
           console.error('Error parsing WS message', e);
         }
       };
-    })();
+    };
+    connect();
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+      retryMs = 1000;
+      connect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onVisible);
 
     const flushTrades = () => {
       if (pendingTrades.size === 0) return;
@@ -3955,6 +3988,9 @@ export default function App() {
     return () => {
       cancelled = true;
       clearInterval(flushTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onVisible);
       ws?.close();
       if (wsRef.current === ws) wsRef.current = null;
     };
