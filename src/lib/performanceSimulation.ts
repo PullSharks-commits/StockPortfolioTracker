@@ -72,6 +72,18 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
   const allSymbols = Array.from(new Set([...symbolList, ...transactions.map(tx => tx.ticker)]));
   allSymbols.forEach(sym => { priceMap[sym] ??= {}; });
 
+  // A listing's market history can start after you first traded it: Yahoo drops a
+  // company's history when it relists after a bankruptcy or spin-off (Vroom from
+  // 2025-02, Lithium Americas from 2023-10). Before its first market price such a
+  // stock is valued like an unpriced asset - along your own trade prices - and then
+  // joins its market history, so a loss taken in that gap still shows.
+  const firstMarketDate: Record<string, string> = {};
+  priced.forEach(sym => { firstMarketDate[sym] = Object.keys(priceMap[sym]).sort()[0]; });
+  const preHistory = new Set(transactions.filter(tx => priced.has(tx.ticker) && tx.price > 0 && tx.date.split('T')[0] < firstMarketDate[tx.ticker]).map(tx => tx.ticker));
+  let currentDay = '';
+  // Whether `sym` is valued from market prices today (otherwise from trade prices).
+  const onMarket = (sym: string) => priced.has(sym) && !(preHistory.has(sym) && currentDay < firstMarketDate[sym]);
+
   // Group transactions by date string (yyyy-mm-dd)
   const txByDate: Record<string, SimTransaction[]> = {};
   transactions.forEach(tx => {
@@ -103,7 +115,7 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
   const lastKnownPrices: Record<string, number> = {};
   allSymbols.forEach(sym => {
     const datePrices = priceMap[sym] ? Object.values(priceMap[sym]) : [];
-    if (datePrices.length > 0) {
+    if (datePrices.length > 0 && !preHistory.has(sym)) {
       lastKnownPrices[sym] = datePrices[0];
     } else {
       const tx = transactions.filter(t => t.ticker === sym && t.price > 0).sort((a, b) => a.date.localeCompare(b.date))[0];
@@ -125,7 +137,7 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
   // Last known price of `sym`, in the tab's currency.
   const px = (sym: string) => {
     const raw = lastKnownPrices[sym] || 0;
-    if (!hasHistory.has(sym)) return raw; // trade prices are already in the tab's currency
+    if (!onMarket(sym)) return raw; // trade prices are already in the tab's currency
     const from = symbolCurrency(sym);
     if (from === activeCurrency) return raw;
     const rFrom = fxRate(from), rTo = fxRate(activeCurrency);
@@ -136,8 +148,17 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
   // traded price to the next, so a fund's gains don't all land on the days you traded.
   const tradePoints: Record<string, { t: number; p: number }[]> = {};
   transactions.forEach(tx => {
-    if (hasHistory.has(tx.ticker) || !(tx.price > 0)) return;
-    (tradePoints[tx.ticker] ??= []).push({ t: Date.parse(tx.date.split('T')[0]), p: tx.price });
+    if (!(tx.price > 0)) return;
+    const d = tx.date.split('T')[0];
+    if (hasHistory.has(tx.ticker) && !(preHistory.has(tx.ticker) && d < firstMarketDate[tx.ticker])) return;
+    (tradePoints[tx.ticker] ??= []).push({ t: Date.parse(d), p: tx.price });
+  });
+  // The trade path of a stock without early history ends at its first market price.
+  preHistory.forEach(sym => {
+    const d = firstMarketDate[sym], from = symbolCurrency(sym);
+    const rFrom = fxAt(from, d), rTo = fxAt(activeCurrency, d);
+    const p = from === activeCurrency ? priceMap[sym][d] : rFrom > 0 && rTo > 0 ? (priceMap[sym][d] / rFrom) * rTo : 0;
+    if (p > 0) (tradePoints[sym] ??= []).push({ t: Date.parse(d), p });
   });
   Object.values(tradePoints).forEach(pts => pts.sort((a, b) => a.t - b.t));
   const interpolated = (sym: string, t: number): number | undefined => {
@@ -161,12 +182,13 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
 
   while (currentDate <= today) {
     const dateStr = format(currentDate, 'yyyy-MM-dd');
+    currentDay = dateStr;
 
     // Update last known prices for today if available
     allSymbols.forEach(sym => {
       if (priceMap[sym] && priceMap[sym][dateStr] !== undefined) {
         lastKnownPrices[sym] = priceMap[sym][dateStr];
-      } else if (!hasHistory.has(sym)) {
+      } else if (!onMarket(sym)) {
         const p = interpolated(sym, Date.parse(dateStr));
         if (p !== undefined) lastKnownPrices[sym] = p;
       }
@@ -180,7 +202,7 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
       dailyTxs.forEach(tx => {
         const sym = tx.ticker;
         if (!sym) return;
-        if (!hasHistory.has(sym) && tx.price > 0) lastKnownPrices[sym] = tx.price;
+        if (!onMarket(sym) && tx.price > 0) lastKnownPrices[sym] = tx.price;
 
         // Value of portfolio immediately before this transaction
         let valBeforeTx = 0;
@@ -213,7 +235,7 @@ export function simulatePerformance({ transactions: rawTransactions, historicalD
         // Units received for free (price 0, e.g. a referral bonus) are a gain, not a flow.
         const txValue = tx.price * tx.shares;
         const isBuy = tx.type.toLowerCase() === 'buy';
-        const marketValue = tx.price > 0 ? tx.shares * (hasHistory.has(sym) ? px(sym) : tx.price) : 0;
+        const marketValue = tx.price > 0 ? tx.shares * (onMarket(sym) ? px(sym) : tx.price) : 0;
         const flow = isBuy ? marketValue : -marketValue;
 
         if (isBuy) {
