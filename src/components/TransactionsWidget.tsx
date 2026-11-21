@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { matchSalesFifo, type SaleMatch } from '../lib/fifo';
 import { 
   Plus, 
   Search, 
@@ -176,6 +177,17 @@ export default function TransactionsWidget({
 
   // Denormalize Transactions (find ticker symbol & portfolio tab for each transaction)
   const enrichedTransactions = useMemo(() => {
+    // Each sale's realized P&L, FIFO against that holding's buys (as the broker does).
+    const byHolding = new Map<string, any[]>();
+    for (const tx of allTransactions) {
+      const list = byHolding.get(tx.holdingId);
+      if (list) list.push(tx); else byHolding.set(tx.holdingId, [tx]);
+    }
+    const saleMatch = new Map<string, SaleMatch>();
+    for (const list of byHolding.values()) {
+      const sorted = [...list].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      for (const [id, m] of matchSalesFifo(sorted)) saleMatch.set(id, m);
+    }
     return allTransactions.map(tx => {
       const holding = allHoldings.find(h => h.id === tx.holdingId);
       const ticker = holding ? holding.ticker : 'UNKNOWN';
@@ -198,16 +210,15 @@ export default function TransactionsWidget({
         }
         plType = 'unrealized';
       } else if (tx.type === 'sell') {
-        let costPrice = holding ? holding.avg_price : 0;
-        if ((tx as any).lotId) {
-          const buyLot = allTransactions.find(t => t.id === (tx as any).lotId);
-          if (buyLot && buyLot.price > 0) {
-            costPrice = buyLot.price;
-          }
-        }
-        if (costPrice > 0 && tx.price > 0) {
-          profitLoss = (tx.price - costPrice) * tx.shares;
-          profitLossPercent = ((tx.price - costPrice) / costPrice) * 100;
+        const m = saleMatch.get(tx.id);
+        if (m && m.matchedShares > 0) {
+          // Unmatched shares (more sold than ever bought) count at no gain.
+          profitLoss = m.realized;
+          profitLossPercent = m.cost > 0 ? (m.realized / m.cost) * 100 : 0;
+        } else if (holding && holding.avg_price > 0 && tx.price > 0) {
+          // No recorded buys to match (an imported position): fall back to avg cost.
+          profitLoss = (tx.price - holding.avg_price) * tx.shares;
+          profitLossPercent = ((tx.price - holding.avg_price) / holding.avg_price) * 100;
         }
         plType = 'realized';
       }

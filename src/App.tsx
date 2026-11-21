@@ -80,6 +80,7 @@ import { CombinedDetails, SummaryCardButton, type CombinedDetailKey } from './co
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
 import { AI_BUCKETS, AI_BUCKET_LABEL, aiExposureOf, type AiRow } from './lib/aiExposure';
 import { AiExposure } from './components/AiExposure';
+import { matchSalesFifo } from './lib/fifo';
 import { RATING_EMOJI, RATING_LABEL, TICKER_ALIASES, canonicalTicker, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
 import { isMergedId, mergeShareClasses } from './lib/shareClasses';
 import { ThesisPanel } from './components/ThesisPanel';
@@ -5503,8 +5504,6 @@ Use professional Markdown formatting with clear headings and bullet points.`;
         const hTransactions = transactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
         if (hTransactions.length > 0) {
           const sortedTxs = sortedTransactionsByHolding.get(h.id) ?? NO_TRANSACTIONS;
-          const buyPool: { id: string; shares: number; priceInTarget: number }[] = [];
-          
           let conversionRate = 1;
           const storedCurrency = h.avgPriceCurrency || sourceCurrency;
           if (storedCurrency && storedCurrency !== targetCurrency) {
@@ -5514,60 +5513,9 @@ Use professional Markdown formatting with clear headings and bullet points.`;
             }
           }
 
-          const buys = sortedTxs.filter(tx => tx.type === 'buy');
-          const sells = sortedTxs.filter(tx => tx.type === 'sell').map(tx => ({
-            ...tx,
-            remainingToMatch: tx.shares
-          }));
-
-          buys.forEach(tx => {
-            buyPool.push({
-              id: tx.id,
-              shares: tx.shares,
-              priceInTarget: tx.price * conversionRate
-            });
-          });
-
-          // Match specific lots first
-          sells.forEach(tx => {
-            if (tx.lotId) {
-              const txPriceInTarget = tx.price * conversionRate;
-              const targetBuy = buyPool.find(b => b.id === tx.lotId);
-              if (targetBuy && targetBuy.shares > 0) {
-                const consumed = Math.min(tx.remainingToMatch, targetBuy.shares);
-                const buyCost = consumed * targetBuy.priceInTarget;
-                const sellValue = consumed * txPriceInTarget;
-                realizedProfitLoss += (sellValue - buyCost);
-                targetBuy.shares -= consumed;
-                tx.remainingToMatch -= consumed;
-              }
-            }
-          });
-
-          // Match remainder with FIFO
-          sells.forEach(tx => {
-            let sharesToSell = tx.remainingToMatch;
-            const txPriceInTarget = tx.price * conversionRate;
-            
-            while (sharesToSell > 0 && buyPool.some(b => b.shares > 0)) {
-              const oldestBuy = buyPool.find(b => b.shares > 0);
-              if (!oldestBuy) break;
-
-              if (oldestBuy.shares <= sharesToSell) {
-                const buyCost = oldestBuy.shares * oldestBuy.priceInTarget;
-                const sellValue = oldestBuy.shares * txPriceInTarget;
-                realizedProfitLoss += (sellValue - buyCost);
-                sharesToSell -= oldestBuy.shares;
-                oldestBuy.shares = 0;
-              } else {
-                const buyCost = sharesToSell * oldestBuy.priceInTarget;
-                const sellValue = sharesToSell * txPriceInTarget;
-                realizedProfitLoss += (sellValue - buyCost);
-                oldestBuy.shares -= sharesToSell;
-                sharesToSell = 0;
-              }
-            }
-          });
+          // FIFO (lot-specific sales first), as the broker does; same matching as
+          // each sale's P&L in the Transactions Registry.
+          for (const m of matchSalesFifo(sortedTxs).values()) realizedProfitLoss += m.realized * conversionRate;
         }
       }
 
