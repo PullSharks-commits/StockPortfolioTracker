@@ -156,6 +156,8 @@ export const PortfolioSummary = memo(({
     score: number;
     rating: string;
     details: any[];
+    relativeTo?: string;
+    benchmark?: { symbol: string; momentum: number; rsi: number };
   };
   periodStats?: {
     sixMonths: { realized: number; unrealized: number };
@@ -279,13 +281,20 @@ export const PortfolioSummary = memo(({
                   )}
                 >
                   <Activity size={10} />
-                  {fearGreed.rating} ({fearGreed.score})
+                  {fearGreed.rating} ({fearGreed.score}){fearGreed.relativeTo ? ' vs S&P' : ''}
                 </button>
                 
                 {showFearDetails && (
                   <div className="absolute top-full left-0 mt-3 z-[100] w-80 bg-white rounded-2xl shadow-2xl border border-zinc-100 p-4 ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-200">
                     <div className="flex items-center justify-between mb-3 border-b border-zinc-100 pb-2.5">
-                      <div className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Sentiment Drivers</div>
+                      <div className="flex flex-col">
+                        <div className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Sentiment Drivers</div>
+                        {fearGreed.benchmark && (
+                          <div className="text-[9px] text-zinc-400 font-medium mt-0.5" title="Scores compare each holding with the S&P 500: 50 = moving with the market">
+                            vs S&P 500 (S&P {fearGreed.benchmark.momentum > 0 ? '+' : ''}{fearGreed.benchmark.momentum.toFixed(1)}% over ~6 wks)
+                          </div>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1 bg-zinc-100 p-0.5 rounded-lg border border-zinc-200">
                         <button
                           onClick={() => setFearViewTab('groups')}

@@ -1913,14 +1913,20 @@ async function startServer() {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 45); // Get extra for RSI calculation
 
+      // Scored relative to the S&P 500 (SPY): each stock's price divided by SPY's
+      // close on the same day (or the last one before it, for other exchanges'
+      // trading days), so 50 means "moving with the market", below it lagging the
+      // market, above it beating it - rather than every stock reading Extreme Fear
+      // whenever the whole market falls.
+      const BENCH = 'SPY';
       const results: Record<string, any> = {};
-      
+      const toFetch = Array.from(new Set([BENCH, ...symbolList]));
+
       // Fetch in parallel in batches of 10 to avoid rate limits
-      for (let i = 0; i < symbolList.length; i += 10) {
-        const batch = symbolList.slice(i, i + 10);
+      for (let i = 0; i < toFetch.length; i += 10) {
+        const batch = toFetch.slice(i, i + 10);
         await Promise.all(batch.map(async (symbol) => {
           try {
-            // Use Date objects for period1 and period2 to avoid format issues
             const chartData: any = await yahooWithRetry(() => yahooFinance.chart(symbol, {
               period1: thirtyDaysAgo,
               period2: now,
@@ -1936,38 +1942,55 @@ async function startServer() {
         }));
       }
 
+      const dayKey = (d: any) => new Date(d).toISOString().slice(0, 10);
+      const bench: { d: string; c: number }[] = (results[BENCH] || []).map((p: any) => ({ d: dayKey(p.date), c: p.close }));
+      if (bench.length < 15) {
+        return res.json({ score: 50, rating: 'Neutral', details: 'No S&P 500 history to compare against' });
+      }
+      const benchOn = (d: string) => {
+        let c: number | null = null;
+        for (const b of bench) { if (b.d <= d) c = b.c; else break; }
+        return c;
+      };
+
+      // 14-day RSI and window return of a series.
+      const rsiOf = (xs: number[]) => {
+        let gains = 0, losses = 0;
+        for (let i = xs.length - 14; i < xs.length; i++) {
+          const diff = xs[i] - xs[i - 1];
+          if (diff >= 0) gains += diff; else losses -= diff;
+        }
+        if (losses === 0) return gains === 0 ? 50 : 100;
+        return 100 - 100 / (1 + gains / losses);
+      };
+      const benchCloses = bench.map(b => b.c);
+      const benchMove = (benchCloses[benchCloses.length - 1] / benchCloses[0] - 1) * 100;
+
       const scores: number[] = [];
       const details: any[] = [];
 
-      Object.entries(results).forEach(([symbol, prices]) => {
-        const closes = prices.map((p: any) => p.close).filter((c: any) => c !== undefined);
-        if (closes.length < 15) return;
+      symbolList.forEach(symbol => {
+        const prices = results[symbol];
+        if (!prices) return;
+        const pts = prices
+          .map((p: any) => ({ c: p.close as number, b: benchOn(dayKey(p.date)) }))
+          .filter((x: any) => x.c > 0 && x.b != null && x.b > 0);
+        if (pts.length < 15) return;
+        const closes = pts.map((x: any) => x.c);
+        const ratio = pts.map((x: any) => x.c / x.b);
 
-        // RSI Calculation (14-day)
-        let gains = 0;
-        let losses = 0;
-        for (let i = closes.length - 14; i < closes.length; i++) {
-          const diff = closes[i] - closes[i - 1];
-          if (diff >= 0) gains += diff;
-          else losses -= diff;
-        }
-        const avgGain = gains / 14;
-        const avgLoss = losses / 14;
-        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-        const rsi = 100 - (100 / (1 + rs));
+        // Relative strength: RSI of the stock/S&P ratio, and the stock's move minus
+        // the S&P's over the same days.
+        const rsi = rsiOf(ratio);
+        const absMomentum = (closes[closes.length - 1] / closes[0] - 1) * 100;
+        const benchSpan = (pts[pts.length - 1].b / pts[0].b - 1) * 100;
+        const momentum = ((ratio[ratio.length - 1] / ratio[0]) - 1) * 100;
 
-        // Momentum (1 month approx)
-        const currentPrice = closes[closes.length - 1];
-        const monthAgoPrice = closes[0];
-        const momentum = ((currentPrice - monthAgoPrice) / monthAgoPrice) * 100;
-        
-        // Normalize Momentum (-10% to +10% -> 0 to 100)
+        // Normalize relative momentum (-10% to +10% vs the S&P -> 0 to 100)
         const momentumScore = Math.min(Math.max((momentum + 10) * 5, 0), 100);
-        
-        // Combined Score for this symbol
         const symbolScore = (rsi + momentumScore) / 2;
         scores.push(symbolScore);
-        details.push({ symbol, rsi, momentum, score: symbolScore });
+        details.push({ symbol, rsi, momentum, absMomentum, benchMomentum: benchSpan, score: symbolScore });
       });
 
       if (scores.length === 0) {
@@ -1986,6 +2009,8 @@ async function startServer() {
       res.json({
         score: Math.round(averageScore),
         rating,
+        relativeTo: BENCH,
+        benchmark: { symbol: BENCH, momentum: benchMove, rsi: rsiOf(benchCloses) },
         details: details.sort((a, b) => b.score - a.score)
       });
 

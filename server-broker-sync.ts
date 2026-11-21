@@ -26,6 +26,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from '
 import { homedir } from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
+import YahooFinance from 'yahoo-finance2';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -240,6 +241,8 @@ async function fetchWebull(): Promise<BrokerSnapshot> {
 
 interface Preview { userId: string; broker: SyncBroker; changes: SyncChange[]; expires: number }
 
+const yahoo = new YahooFinance({ suppressNotices: ['yahooSurvey'] } as any);
+
 export function registerBrokerSyncRoutes(app: Express) {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -283,6 +286,26 @@ export function registerBrokerSyncRoutes(app: Express) {
       const snap = broker === 'Schwab' ? await fetchSchwab() : broker === 'IBKR' ? await fetchIbkr() : await fetchWebull();
       const userId = authedUser(req).id;
       const changes = computeChanges(await loadGlobal(pool, userId), snap);
+      // A position the broker no longer reports (sold out) comes with no broker
+      // price, and the diff falls back to the app's average cost, which would
+      // record the sale at break-even. Price those at the market instead; the
+      // owner can still type the actual fill before applying.
+      const unpriced = changes.filter(c => c.kind === 'sell' && c.priceSource.startsWith('app avg cost'));
+      if (unpriced.length) {
+        try {
+          const quotes: any = await yahoo.quote(unpriced.map(c => c.ticker), {}, { validateResult: false });
+          const bySym = new Map<string, number>((Array.isArray(quotes) ? quotes : [quotes])
+            .filter((q: any) => q?.symbol && q.regularMarketPrice > 0)
+            .map((q: any) => [String(q.symbol).toUpperCase(), Number(q.regularMarketPrice)]));
+          for (const c of unpriced) {
+            const px = bySym.get(c.ticker.toUpperCase());
+            if (px) { c.txPrice = px; c.priceSource = 'market price (check your actual fill)'; }
+            else { c.txPrice = null; c.priceSource = 'unknown: enter your actual fill'; }
+          }
+        } catch {
+          for (const c of unpriced) { c.txPrice = null; c.priceSource = 'unknown: enter your actual fill'; }
+        }
+      }
       const now = Date.now();
       for (const [id, p] of previews) if (p.expires < now) previews.delete(id);
       const previewId = randomUUID();

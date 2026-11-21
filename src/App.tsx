@@ -78,6 +78,8 @@ import { AccountSection } from './components/AccountSection';
 import { computeCombinedBreakdown, realizedByWindow } from './lib/combinedBreakdown';
 import { CombinedDetails, SummaryCardButton, type CombinedDetailKey } from './components/CombinedDetails';
 import { holdingMultiples, type HoldingFundamentals, type HoldingInput } from './lib/portfolioFundamentals';
+import { AI_BUCKETS, AI_BUCKET_LABEL, aiExposureOf, type AiRow } from './lib/aiExposure';
+import { AiExposure } from './components/AiExposure';
 import { RATING_EMOJI, RATING_LABEL, TICKER_ALIASES, canonicalTicker, fmtDay, type TrackerSnapshot } from './lib/thesisTracker';
 import { isMergedId, mergeShareClasses } from './lib/shareClasses';
 import { ThesisPanel } from './components/ThesisPanel';
@@ -2053,6 +2055,7 @@ export default function App() {
       upload: 1,
       sectorHeatmap: 3,
       portfolioFundamentals: 3,
+      aiExposure: 3,
     };
     const saved = localStorage.getItem('widgetSizes');
     if (saved) {
@@ -2127,8 +2130,8 @@ export default function App() {
     ];
     // Widgets introduced later are added once to saved layouts (after Holdings), so a
     // user who removes one doesn't get it back.
-    const LATER_WIDGETS = [{ id: 'portfolioFundamentals', after: 'watchlist' }];
-    defaultOrder.splice(defaultOrder.indexOf('watchlist') + 1, 0, 'portfolioFundamentals');
+    const LATER_WIDGETS = [{ id: 'portfolioFundamentals', after: 'watchlist' }, { id: 'aiExposure', after: 'portfolioFundamentals' }];
+    defaultOrder.splice(defaultOrder.indexOf('watchlist') + 1, 0, 'portfolioFundamentals', 'aiExposure');
     let order = [...defaultOrder];
     if (saved) {
       try {
@@ -2232,6 +2235,7 @@ export default function App() {
     { id: 'priceAlerts', label: 'Price Alerts' },
     { id: 'sectorHeatmap', label: 'Sector Heatmap' },
     { id: 'portfolioFundamentals', label: 'Portfolio as One Company' },
+    { id: 'aiExposure', label: 'AI Build-out Exposure' },
   ];
 
   const removeWidget = (id: string) => {
@@ -2281,7 +2285,7 @@ export default function App() {
 
   // Sort state
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' }>({ key: 'currentValue', direction: 'desc' });
-  const [tableGrouping, setTableGrouping] = useState<'none' | 'theme' | 'assetType' | 'sector' | 'industry' | 'marketCap'>('none');
+  const [tableGrouping, setTableGrouping] = useState<'none' | 'theme' | 'aiExposure' | 'assetType' | 'sector' | 'industry' | 'marketCap'>('none');
 
 
   const [filterGroup, setFilterGroup] = useState<string | null>(null);
@@ -5820,6 +5824,10 @@ Use professional Markdown formatting with clear headings and bullet points.`;
       usdToDisplay,
     }));
   }, [portfolioStats.enrichedHoldings, holdingFundamentals, activeCurrency, quotes]);
+  const aiRows = useMemo<AiRow[]>(() => portfolioStats.enrichedHoldings
+    .filter(h => h.shares !== 0 && (h.currentValue ?? 0) > 0)
+    .map(h => ({ ticker: h.ticker, value: h.currentValue ?? 0, meta: securityMeta(h, metadata) })),
+  [portfolioStats.enrichedHoldings, metadata]);
   const fundamentalsByTicker = useMemo(() => {
     const out: Record<string, { revenueGrowth: number | null; earningsGrowth: number | null; operatingMargin: number | null; psRatio: number | null; peRatio: number | null }> = {};
     for (const h of fundamentalsInputs) {
@@ -6387,7 +6395,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                   hFg.score <= 75 ? "text-emerald-600 bg-emerald-50 border-emerald-100" :
                   "text-blue-600 bg-blue-50 border-blue-100"
                 )}
-                title={`RSI: ${Math.round(hFg.rsi)} | Momentum: ${hFg.momentum > 0 ? '+' : ''}${hFg.momentum.toFixed(1)}%`}
+                title={`vs S&P 500 - relative RSI: ${Math.round(hFg.rsi)} | ${hFg.momentum > 0 ? '+' : ''}${hFg.momentum.toFixed(1)}% vs the S&P over ~6 weeks${hFg.absMomentum != null ? ` (stock ${hFg.absMomentum > 0 ? '+' : ''}${hFg.absMomentum.toFixed(1)}%, S&P ${hFg.benchMomentum > 0 ? '+' : ''}${hFg.benchMomentum.toFixed(1)}%)` : ''}`}
               >
                 <Activity size={10} />
                 {Math.round(hFg.score)}
@@ -7912,6 +7920,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                           >
                             <option value="none">No Grouping</option>
                             <option value="theme">Group by Investing Theme (AI, Crypto, Defense, Clean Energy, etc.)</option>
+                            <option value="aiExposure">Group by AI Build-out Exposure (Chips, Hyperscalers, Software, None)</option>
                             <option value="assetType">Group by Asset Type (Stocks vs Cash)</option>
                             <option value="sector">Group by Business Area (Sector)</option>
                             <option value="industry">Group by Specific Industry (e.g., Semiconductors)</option>
@@ -8048,6 +8057,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                                 const meta = securityMeta(holding, metadata);
                                 const groupKey =
                                   tableGrouping === 'theme' ? THEME_LABEL[themeOf(holding.ticker, meta, themeOverrides, lookupMeta).theme]
+                                  : tableGrouping === 'aiExposure' ? AI_BUCKET_LABEL[aiExposureOf(holding.ticker, meta).bucket]
                                   : tableGrouping === 'assetType' ? ASSET_KIND_LABEL[assetKind(holding.ticker, meta)]
                                   : tableGrouping === 'sector' ? sectorOf(holding.ticker, meta)
                                   : tableGrouping === 'industry' ? industryOf(holding.ticker, meta)
@@ -8080,7 +8090,7 @@ Use professional Markdown formatting with clear headings and bullet points.`;
 
                               // Fixed order where the groups have one (themes, asset types, cap bands);
                               // otherwise largest first, with Cash / Funds / Other buckets last.
-                              const order = groupOrder(tableGrouping as Grouping);
+                              const order = tableGrouping === 'aiExposure' ? AI_BUCKETS.map(b => b.label) as string[] : groupOrder(tableGrouping as Grouping);
                               const rank = (g: string) => {
                                 const i = order.indexOf(g);
                                 if (i !== -1) return i;
@@ -8737,6 +8747,32 @@ Use professional Markdown formatting with clear headings and bullet points.`;
                         </div>
                       </div>
                       <PortfolioFundamentals holdings={fundamentalsInputs} currency={activeCurrency} loading={fundamentalsLoading} error={fundamentalsError} />
+                    </SortableWidget>
+                  );
+                }
+
+                if (widgetId === 'aiExposure') {
+                  return (
+                    <SortableWidget key="aiExposure" id="aiExposure" className={cn("p-6 flex flex-col", getWidgetClass('aiExposure'))} onDoubleClick={() => toggleWidgetSize('aiExposure')}>
+                      <div className="flex items-center justify-between mb-3 relative z-20">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                          <Cpu className="w-5 h-5 text-zinc-400" />
+                          AI Build-out Exposure
+                        </h2>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => toggleWidgetSize('aiExposure')} className="p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 rounded-lg transition-all relative z-20" title="Resize Widget">
+                            {(widgetSizes.aiExposure || 3) === 3 ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                          </button>
+                          <button
+                            onClick={() => removeWidget('aiExposure')}
+                            className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                            title="Remove widget"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <AiExposure rows={aiRows} currency={activeCurrency} />
                     </SortableWidget>
                   );
                 }
